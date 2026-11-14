@@ -1,0 +1,145 @@
+"""Disc data: tracks, playlists and chapters."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Track:
+    track_id: int
+    kind: str           # "video" | "audio" | "subtitles"
+    codec: str           # human-readable codec string from mkvmerge JSON, e.g. "TrueHD Atmos"
+    codec_id: str = ""   # internal codec id, e.g. "A_TRUEHD", "V_MPEG4/ISO/AVC"
+    language: str = ""   # ISO 639-2 code, e.g. "eng" - empty if not set on the track
+    channels: Optional[int] = None   # audio channel count, None for non-audio tracks
+    title: str = ""       # track name/title embedded in the container, if any
+    sample_rate: Optional[int] = None       # Hz, from mkvmerge's audio_sampling_frequency
+    bits_per_sample: Optional[int] = None   # from mkvmerge's audio_bits_per_sample
+    bitrate_kbps: Optional[float] = None    # best-effort only - see enrich_bitrates_ffprobe();
+                                              # None whenever it couldn't be determined, rather
+                                              # than guessing, since a wrong bitrate is worse than
+                                              # no bitrate shown
+    default_track: Optional[bool] = None
+    stream_id: Optional[int] = None   # transport-stream PID on Blu-ray (mkvmerge "number"), used for previews
+    properties: dict = field(default_factory=dict, repr=False, compare=False)   # raw mkvmerge track properties
+
+    @property
+    def is_atmos(self) -> bool:
+        return "atmos" in self.codec.lower()
+
+    @property
+    def channel_layout(self) -> str:
+        """
+        Best-effort "2.0" / "5.1" / "7.1" style layout string. mkvmerge
+        only reports a raw channel count, not the front/LFE split, so
+        this covers the layouts that actually ship on Blu-ray audio discs
+        rather than guessing at anything more exotic.
+        """
+        if not self.channels:
+            return ""
+        return {1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1"}.get(self.channels, str(self.channels))
+
+    @property
+    def display_label(self) -> str:
+        """
+        Human-readable summary for a track picker, e.g.:
+        "DTS-HD Master Audio - 5.1, 96kHz, 8407kbps, 24-bit [eng]"
+        Degrades gracefully - any field mkvmerge/ffprobe couldn't
+        determine is simply left out rather than shown as a placeholder.
+        """
+        parts = []
+        if self.channel_layout:
+            parts.append(self.channel_layout)
+        if self.sample_rate:
+            khz = self.sample_rate / 1000
+            parts.append(f"{khz:g}kHz")
+        if self.bitrate_kbps:
+            parts.append(f"{self.bitrate_kbps:.0f}kbps")
+        if self.bits_per_sample:
+            parts.append(f"{self.bits_per_sample}-bit")
+
+        label = self.codec or "Unknown codec"
+        if parts:
+            label += " - " + ", ".join(parts)
+        if self.language:
+            label += f" [{self.language}]"
+        if self.title:
+            label += f' "{self.title}"'
+        return label
+
+
+@dataclass
+class Playlist:
+    path: Path
+    tracks: list[Track] = field(default_factory=list)
+    chapter_count: int = 0
+    duration_seconds: float = 0.0
+    iso_image: Optional[Path] = None  # ISO playlists use a path relative to the disc root.
+
+    @property
+    def atmos_track(self) -> Optional[Track]:
+        for t in self.tracks:
+            if t.is_atmos:
+                return t
+        return None
+
+    @property
+    def video_track(self) -> Optional[Track]:
+        for t in self.tracks:
+            if t.kind == "video":
+                return t
+        return None
+
+    @property
+    def has_atmos(self) -> bool:
+        return self.atmos_track is not None
+
+    @property
+    def audio_tracks(self) -> list[Track]:
+        """Every audio track on this playlist, in mkvmerge/disc order."""
+        return [t for t in self.tracks if t.kind == "audio"]
+
+    @property
+    def subtitle_tracks(self) -> list[Track]:
+        return [t for t in self.tracks if t.kind == "subtitles"]
+
+    def best_default_audio_track(self) -> Optional[Track]:
+        """
+        The track to pre-select in a track picker: the Atmos track if
+        there is one (matches the old auto-pick behaviour exactly), else
+        the "best" remaining audio track by a simple, defensible
+        preference order - lossless codec first, then more channels,
+        then higher bit depth. Never silently outranks an explicit user
+        choice; this is only ever used as the initial dropdown value.
+        """
+        if self.has_atmos:
+            return self.atmos_track
+        tracks = self.audio_tracks
+        if not tracks:
+            return None
+
+        LOSSLESS_HINTS = ("truehd", "dts-hd master", "flac", "pcm", "lpcm", "alac")
+
+        def sort_key(t: Track) -> tuple:
+            codec_lower = t.codec.lower()
+            is_lossless = any(h in codec_lower for h in LOSSLESS_HINTS)
+            return (is_lossless, t.channels or 0, t.bits_per_sample or 0)
+
+        return max(tracks, key=sort_key)
+
+
+@dataclass
+class Chapter:
+    index: int
+    start_seconds: float
+    end_seconds: Optional[float] = None   # filled in after all chapters read
+    name: str = ""                        # final song title used for the output filename
+    embedded_name: str = ""               # ChapterString read from the source, if any
+    language: str = ""                    # ChapterLanguage of the embedded name, if any

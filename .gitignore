@@ -1,0 +1,27 @@
+# Build artifacts
+build/
+dist/
+*.spec.bak
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Tests
+.pytest_cache/
+pytest-cache-files-*/
+tests/_screenshots/
+tests/runtime/
+
+# Installers kept next to the checkout
+node-v26.7.0-x64.msi
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Release builds go to GitHub Releases, not the repository
+*.exe
