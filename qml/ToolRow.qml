@@ -14,5 +14,5 @@ SettingRow {
     implicitHeight: 56
     Copy { text: win.tr(toolRow.available ? "found" : "missing"); color: toolRow.available ? Theme.goodText : Theme.danger; wrapMode: Text.NoWrap; font.pixelSize: Theme.px(12)}
     ActionButton { text: win.tr("download"); visible: !toolRow.available; implicitHeight: 28; onClicked: backend.downloadTool(toolRow.tool) }
-    ActionButton { text: win.tr("browse"); primary: !toolRow.available; implicitHeight: 28; enabled: !win.appView.busy; onClicked: win.browseTool(toolRow.tool) }
+    ActionButton { text: win.tr("browse"); primary: !toolRow.available; implicitHeight: 28; enabled: !win.appView.working; onClicked: win.browseTool(toolRow.tool) }
 }

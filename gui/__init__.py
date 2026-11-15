@@ -1,1 +1,1 @@
-"""Qt Quick presentation layer; extractor remains the business API."""
+"""Qt Quick presentation layer: the bridge between the core package and the QML screens."""

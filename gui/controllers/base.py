@@ -1,7 +1,13 @@
 """What every controller shares: its own slice of the UI state, and the app's services."""
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Property, Signal
+from PySide6.QtCore import QObject, Property, QUrl, Signal
+
+
+def local_path(text: str) -> str:
+    """A path as QML hands it over: a file: URL from a dialog or a drop, or a plain path typed in."""
+    text = str(text or '').strip()
+    return QUrl(text).toLocalFile() if text.startswith('file:') else text
 
 
 class View(QObject):
@@ -41,17 +47,32 @@ class Controller(View):
     cfg = property(lambda self: self.app.cfg)
     smoke = property(lambda self: self.app.smoke)
     state = property(lambda self: self.app.state)        # every slice, read-only
+    working = property(lambda self: self.app.working)    # a job is running: no other may start
     disc = property(lambda self: self.app.disc)          # the disc being worked on
     dialogRequested = property(lambda self: self.app.dialogRequested)
 
     def put(self, **values):
-        self.app.put(**values)
+        """
+        Update this controller's own slice of the state. Another controller's state is changed by
+        calling that controller (it knows what else has to follow); the page by show().
+        """
+        foreign = [key for key in values if key not in self._view]
+        assert not foreign, f'{type(self).__name__} does not own {foreign}'
+        if self.update_view(values):
+            self.app.changed.emit()
+
+    def show(self, page):
+        """Go to a page of the app."""
+        self.app.put(page=page)
 
     def task(self, *args, **kwargs):
         return self.app.task(*args, **kwargs)
 
     def notify(self, *args, **kwargs):
         self.app.notify(*args, **kwargs)
+
+    def report(self, exc):
+        self.app.report(exc)
 
     def tr(self, key):
         return self.app.tr(key)

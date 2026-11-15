@@ -143,7 +143,7 @@ Rectangle {
                     }
                     BusyIndicator {
                         id: busyMark
-                        running: win.appView.busy && !win.appView.pipeline; visible: running
+                        running: win.appView.working && !win.appView.pipeline; visible: running
                         Layout.preferredWidth: 20; Layout.preferredHeight: 20
                         ToolTip.visible: running && busyHover.hovered; ToolTip.text: win.tr(win.appView.status)
                         HoverHandler { id: busyHover }
@@ -157,7 +157,7 @@ Rectangle {
                         Layout.preferredWidth: 28; Layout.preferredHeight: 28; Layout.alignment: Qt.AlignTop
                         // Spins while the disc is being scanned or chapters are read.
                         RotationAnimation on rotation {
-                            running: Theme.animate && win.appView.busy && !win.appView.pipeline
+                            running: Theme.animate && win.appView.working && !win.appView.pipeline
                             from: 0; to: 360; duration: 1400; loops: Animation.Infinite
                             onRunningChanged: if (!running) discIcon.rotation = 0
                         }
@@ -176,7 +176,7 @@ Rectangle {
                         spacing: 8
                         ActionButton {
                             id: changeSourceButton
-                            text: win.tr("changeFolder"); Layout.fillWidth: true; enabled: !win.appView.busy
+                            text: win.tr("changeFolder"); Layout.fillWidth: true; enabled: !win.appView.working
                             onClicked: sourceMenu.popup(changeSourceButton, 0, changeSourceButton.height + 4)
                             AppMenu {
                                 id: sourceMenu
@@ -185,7 +185,7 @@ Rectangle {
                                 AppMenuItem { text: win.tr("sourceFile"); onTriggered: win.openSourceFile() }
                             }
                         }
-                        ActionButton { text: win.tr("rescan"); Layout.fillWidth: true; enabled: !win.appView.busy; onClicked: backend.disc.scan() }
+                        ActionButton { text: win.tr("rescan"); Layout.fillWidth: true; enabled: !win.appView.working; onClicked: backend.disc.scan() }
                     }
                 }
                 SectionTitle { text: win.tr("playlist"); note: win.fmt("candidateCount", { n: playlistList.count }); Layout.fillWidth: true }
@@ -226,7 +226,7 @@ Rectangle {
                             // Only the chosen playlist explains itself; the others keep to name, length and chapters.
                             Copy { visible: pl.chosen && pl.headline !== ""; text: pl.headline; font.pixelSize: Theme.px(12); color: Theme.sub; Layout.fillWidth: true; lineHeight: 1.3 }
                         }
-                        MouseArea { anchors.fill: parent; enabled: !win.appView.busy; cursorShape: Qt.PointingHandCursor; onClicked: backend.disc.selectPlaylist(pl.index) }
+                        MouseArea { anchors.fill: parent; enabled: !win.appView.working; cursorShape: Qt.PointingHandCursor; onClicked: backend.disc.selectPlaylist(pl.index) }
                     }
                 }
                 ColumnLayout {
@@ -234,7 +234,7 @@ Rectangle {
                     Copy { text: win.tr("sidecars"); color: Theme.muted; font.pixelSize: Theme.px(12); Layout.fillWidth: true }
                     Repeater {
                         model: win.discView.sidecars.slice(0, 3)
-                        ActionButton { required property string modelData; Layout.fillWidth: true; text: modelData.split(/[\\/]/).pop(); enabled: !win.appView.busy; onClicked: backend.names.importFile(modelData) }
+                        ActionButton { required property string modelData; Layout.fillWidth: true; text: modelData.split(/[\\/]/).pop(); enabled: !win.appView.working; onClicked: backend.names.importFile(modelData) }
                     }
                 }
                 // Recent exports: open the folder, or load that disc again
@@ -264,7 +264,7 @@ Rectangle {
                                     }
                                     IconButton {
                                         visible: recentItem.modelData.canReload
-                                        iconKind: "refresh"; implicitWidth: 26; implicitHeight: 24; enabled: !win.appView.busy
+                                        iconKind: "refresh"; implicitWidth: 26; implicitHeight: 24; enabled: !win.appView.working
                                         onClicked: backend.disc.reloadRecent(recentItem.index)
                                         ToolTip.visible: hovered; ToolTip.delay: 300; ToolTip.text: win.tr("recentReload")
                                         Accessible.name: win.tr("recentReload")
@@ -335,7 +335,7 @@ Rectangle {
                         Item { Layout.fillWidth: true }
                         ActionButton {
                             id: sourceBar
-                            text: win.tr("getTitles"); selected: true; enabled: !win.appView.busy && chapterList.count > 0
+                            text: win.tr("getTitles"); selected: true; enabled: !win.appView.working && chapterList.count > 0
                             onClicked: backend.names.openTitles()
                         }
                     }
@@ -720,7 +720,7 @@ Rectangle {
                         current: backend.config.language
                         onPicked: function(key) { backend.setPreference("language", key) }
                     }
-                    IconButton { iconKind: "gear"; enabled: !win.appView.busy; onClicked: backend.navigate("settings"); ToolTip.visible: hovered; ToolTip.text: win.tr("settings"); Accessible.name: win.tr("settings") }
+                    IconButton { iconKind: "gear"; enabled: !win.appView.working; onClicked: backend.navigate("settings"); ToolTip.visible: hovered; ToolTip.text: win.tr("settings"); Accessible.name: win.tr("settings") }
                     IconButton { id: helpButton; iconKind: "help"; onClicked: win.openHelp(helpButton); ToolTip.visible: hovered; ToolTip.text: win.tr("help"); Accessible.name: win.tr("help") }
                 }
                 // Video stream (video mode): one line of key parameters, full details on click
@@ -833,7 +833,7 @@ Rectangle {
                         }
                         Copy { text: win.tr("metaEdit"); color: Theme.accentText; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; enabled: !win.appView.busy; onClicked: backend.navigate("metadata") }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; enabled: !win.appView.working; onClicked: backend.navigate("metadata") }
                 }
                 // Export estimate: what the current selection will produce, and whether it fits
                 Rectangle {
@@ -884,10 +884,10 @@ Rectangle {
                                 ToolTip.visible: folderHover.hovered && truncated; ToolTip.delay: 400; ToolTip.text: text
                             }
                             Copy {
-                                text: win.tr("change"); color: win.appView.busy ? Theme.faint : Theme.accentText
+                                text: win.tr("change"); color: win.appView.working ? Theme.faint : Theme.accentText
                                 font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap
                                 MouseArea {
-                                    anchors.fill: parent; anchors.margins: -4; enabled: !win.appView.busy
+                                    anchors.fill: parent; anchors.margins: -4; enabled: !win.appView.working
                                     cursorShape: Qt.PointingHandCursor; onClicked: win.openFolder("output")
                                 }
                                 Accessible.role: Accessible.Button; Accessible.name: win.tr("output")
@@ -908,7 +908,7 @@ Rectangle {
                     }
                     ActionButton {
                         text: win.tr("extract"); primary: true; large: true; Layout.fillWidth: true
-                        enabled: !win.appView.busy && win.discView.chapterSelected > 0 && win.discView.audioSelected > 0
+                        enabled: !win.appView.working && win.discView.chapterSelected > 0 && win.discView.audioSelected > 0
                         onClicked: backend.exporter.startExport()
                     }
                 }

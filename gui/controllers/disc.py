@@ -4,27 +4,20 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-import threading
-
-from PySide6.QtCore import QUrl, Signal, Slot
+from PySide6.QtCore import QUrl, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
-from core import bluray_iso, dvd
-import extractor
-import preview
-import setlist
+from core import bluray_iso, chapter_marks, dvd, models, naming, preview, setlist, sources, space, tracklist
 from .. import logic, track_info
+from ..background import SideJob
 from ..i18n import localize_reason
 from ..models import Rows, SelectedChapters
-from .base import Controller
+from .base import Controller, local_path
 
 
 class DiscController(Controller):
     """The disc being worked on: source and destination, the chosen playlist, its tracks and
     chapters (with edits), and the track details sheet."""
-
-    infoReady = Signal(int, object)
-    videoProbed = Signal(object, object)
 
     def __init__(self, app):
         cfg = app.cfg
@@ -52,38 +45,36 @@ class DiscController(Controller):
         # Any change to chapter titles refreshes which rows still need a name (timeline highlight).
         self.chapter_model.modelReset.connect(self.update_unnamed)
         self.chapter_model.dataChanged.connect(lambda *args: self.update_unnamed())
-        self.info_serial = 0
         self.info_target = None
-        self.infoReady.connect(self.info_done)
-        self.videoProbed.connect(self.video_probed)
+        # Stream details read in the background: the card's video line, and the details sheet.
+        self.video_probe = SideJob(self, self.video_probed)
+        self.info_probe = SideJob(self, self.info_done, self.info_failed)
+        self._kind_key, self._kind_overrides = None, {}     # music / talk set by hand, per playlist
 
     @Slot(str)
     def setSource(self, source):
-        if self.state['busy']:
+        if self.working:
             return
-        if source.startswith('file:'):
-            source = QUrl(source).toLocalFile()
-        source = source.strip().strip('"')
+        source = local_path(source).strip('"')
         self.put(source=source)
         self.app.exporter.refresh_resume()
         path = Path(source)
-        if source and (path.is_dir() or extractor.is_mkv_source(path) or bluray_iso.is_iso(path)):
+        if source and (path.is_dir() or sources.is_mkv_source(path) or bluray_iso.is_iso(path)):
             self.scan()
 
     @Slot(str)
     def setOutput(self, output):
         if self.state['busy']:
             return
-        if output.startswith('file:'):
-            output = QUrl(output).toLocalFile()
-        self.app.set_config(last_output_folder=output.strip())
-        self.put(output=output.strip())
+        output = local_path(output)
+        self.app.set_config(last_output_folder=output)
+        self.put(output=output)
         self.app.exporter.refresh_resume()
         self.refresh_insights()
 
     @Slot()
     def scan(self):
-        if self.state['busy'] or not self.state['source']:
+        if self.working or not self.state['source']:
             return
         source = Path(self.state['source'])
         self.app.preview.stopPreview()
@@ -97,16 +88,16 @@ class DiscController(Controller):
             # Another disc: none of the old chapter titles belong to it. (A rescan of the
             # same disc keeps them, as switching between its playlists does.)
             self.forget_chapters()
-        self.put(page='main', audioSelected=0, subtitleSelected=0, chapterSelected=0,
-                 hasVideo=False, keepVideo=False)
+        self.show('main')
+        self.put(audioSelected=0, subtitleSelected=0, chapterSelected=0, hasVideo=False, keepVideo=False)
         keeper = self.app.preview_mounts
         def work(progress):
             keeper.close()
-            sidecar_folder = (source.parent if extractor.is_mkv_source(source) or bluray_iso.is_iso(source)
+            sidecar_folder = (source.parent if sources.is_mkv_source(source) or bluray_iso.is_iso(source)
                               else dvd.disc_folder(source) or source)
-            return (extractor.score_playlists(extractor.scan_source(source)),
-                    extractor.find_sidecar_tracklist_files(sidecar_folder),
-                    extractor.guess_artist_album_year(extractor.source_name_path(source)))
+            return (sources.score_playlists(sources.scan_source(source)),
+                    tracklist.find_sidecar_tracklist_files(sidecar_folder),
+                    naming.guess_artist_album_year(sources.source_name_path(source)))
         def done(result):
             scores, sidecars, guessed = result
             self.playlists = scores
@@ -126,7 +117,7 @@ class DiscController(Controller):
             self.chapters = []
             self.chapter_model.replace([])
             self.put(sidecars=[], artist='', album='')
-            self.notify(str(exc))
+            self.report(exc)
         self.task(work, done, failed, label='scanning')
 
     def forget_chapters(self):
@@ -207,7 +198,7 @@ class DiscController(Controller):
                 start = 0.0
             length = playlist.duration_seconds or 0
             at = min(self.VIDEO_SAMPLE_AT, length / 3) if length else 0
-            if extractor.is_mkv_source(path) or dvd.is_title(path):
+            if sources.is_mkv_source(path) or dvd.is_title(path):
                 start = 0.0          # these seek on their own timeline; m2ts clocks start elsewhere
             probe['sampled_kbps'] = preview.sample_bitrate(path, track, 0, 'video', at=start + at)
         return probe
@@ -220,17 +211,14 @@ class DiscController(Controller):
         if track is None or self.smoke or self.state['busy']:
             return
         keeper = self.app.preview_mounts
-        def run():
-            try:
-                with keeper.use(playlist.path, playlist.iso_image) as path:
-                    probe = self.probe_video(path, playlist, track, False)
-            except Exception:
-                return
-            self.videoProbed.emit(playlist, probe)
-        threading.Thread(target=run, daemon=True).start()
 
-    @Slot(object, object)
-    def video_probed(self, playlist, probe):
+        def probe(cancel, progress):
+            with keeper.use(playlist.path, playlist.iso_image) as path:
+                return playlist, self.probe_video(path, playlist, track, False)
+        self.video_probe.start(probe)
+
+    def video_probed(self, result):
+        playlist, probe = result
         if playlist is self.playlist and playlist.video_track is not None and probe:
             self.put(videoSummary=track_info.video_summary(playlist.video_track, probe))
 
@@ -240,35 +228,29 @@ class DiscController(Controller):
         if kind not in ('audio', 'subtitle', 'video') or self.info_track(kind, row) is None:
             return
         self.info_target = (kind, row)
-        self.info_serial += 1
+        self.info_probe.cancel()
         if self.state['busy'] or self.smoke:
             self.publish_info()             # don't touch the disc while a job runs (or in the offline smoke run)
             return
         self.publish_info(probing=True)
         playlist, track, keeper = self.playlist, self.info_track(kind, row), self.app.preview_mounts
         index = self.info_tracks(kind).index(track)
-        number = self.info_serial
-        def run():
-            try:
-                with keeper.use(playlist.path, playlist.iso_image) as path:
-                    if kind == 'video':
-                        result = ('ok', self.probe_video(path, playlist, track, True))
-                    else:
-                        result = ('ok', preview.probe_stream(path, track, index, kind))
-            except Exception as exc:
-                result = ('error', str(exc))
-            self.infoReady.emit(number, result)     # queued back to the GUI thread
-        threading.Thread(target=run, daemon=True).start()
 
-    @Slot(int, object)
-    def info_done(self, number, result):
-        status, value = result
-        if number != self.info_serial or self.info_target is None:
-            return
-        if status == 'ok':
-            self.publish_info(value)
-        else:
-            self.publish_info(error=value.strip().splitlines()[-1] if value.strip() else '')
+        def probe(cancel, progress):
+            with keeper.use(playlist.path, playlist.iso_image) as path:
+                if kind == 'video':
+                    return self.probe_video(path, playlist, track, True)
+                return preview.probe_stream(path, track, index, kind)
+        self.info_probe.start(probe)
+
+    def info_done(self, probe):
+        if self.info_target is not None:
+            self.publish_info(probe)
+
+    def info_failed(self, exc):
+        text = str(exc).strip()
+        if self.info_target is not None:
+            self.publish_info(error=text.splitlines()[-1] if text else '')
 
     @Slot(result=bool)
     def copyTrackInfo(self):
@@ -279,7 +261,7 @@ class DiscController(Controller):
 
     @Slot(int)
     def selectPlaylist(self, index):
-        if self.state['busy'] or not 0 <= index < len(self.playlists):
+        if self.working or not 0 <= index < len(self.playlists):
             return
         preserved = {r['number']: (r['title'], r['origin']) for r in self.chapter_model.rows if r['title'].strip()}
         self.app.preview.stopPreview()
@@ -289,7 +271,7 @@ class DiscController(Controller):
             self.playlist_model.change(i, chosen=i == index)
         self.audio = self.playlist.best_default_audio_track()
         self.populate_tracks([self.audio.track_id] if self.audio else [], [])
-        self.chapters = [extractor.Chapter(i, 0) for i in range(1, self.playlist.chapter_count + 1)]
+        self.chapters = [models.Chapter(i, 0) for i in range(1, self.playlist.chapter_count + 1)]
         self.source_chapters = None
         self.put(chaptersEdited=False)
         self.rebuild_chapters({i: value[0] for i, value in preserved.items()})
@@ -301,10 +283,15 @@ class DiscController(Controller):
         self.source_size = None
         def work(progress):
             with self.app.preview_mounts.use(playlist.path, playlist.iso_image) as path:
-                return (extractor.read_chapters_from_source(path, preferred_language=language),
-                        extractor.source_size_bytes(path))
+                return (chapter_marks.read_chapters_from_source(path, preferred_language=language),
+                        space.source_size_bytes(path),
+                        # Measured for the chosen playlist only (a scan reads hundreds of them).
+                        sources.audio_bitrates(playlist, path) if not playlist.measured else {})
         def done(result):
-            chapters, self.source_size = result
+            chapters, self.source_size, rates = result
+            sources.apply_bitrates(playlist, rates)
+            playlist.measured = True
+            self.refresh_stream_texts()
             self.chapters = chapters or self.chapters
             # The last chapter "runs to the end of the file"; give it a real length for display and matching.
             if self.chapters and self.chapters[-1].end_seconds is None and playlist.duration_seconds:
@@ -320,15 +307,41 @@ class DiscController(Controller):
             self.app.metadata.search_when_due()
             if any(c.embedded_name for c in chapters):
                 # The disc has its own chapter names: "Get titles" starts there, but nothing opens by itself.
-                self.put(mbRelease='', reviewSource='disc', reviewSourceName='')
+                self.app.names.offer_disc_titles()
         self.task(work, done, label='reading')
+
+    # ------------------------------------------------------------ what is chosen (the export reads these)
+    def titles(self) -> dict[int, str]:
+        """Chapter number -> title, for the chapters that have one."""
+        return {r['number']: r['title'] for r in self.chapter_model.rows if r['title'].strip()}
+
+    def included_numbers(self) -> list[int]:
+        """The chapters ticked for export, in order."""
+        return [r['number'] for r in self.chapter_model.rows if r['included']]
+
+    def selected_ids(self, kind) -> list[int]:
+        """Track IDs of the ticked audio ("audio") or subtitle tracks."""
+        return [t.track_id for t in self.selected_tracks(kind)]
+
+    def restore_job(self, playlist, audio, source_size, manifest):
+        """Put a checkpointed export back on screen: its playlist, tracks, chapters, titles and ticks."""
+        self.playlist, self.audio, self.source_size = playlist, audio, source_size
+        self.put(outputFormat=manifest.container)
+        self.populate_tracks(manifest.audio_track_ids or [manifest.audio_track_id], manifest.subtitle_track_ids,
+                             keep_video=manifest.video_track_id is not None)
+        fields = {'index', 'start_seconds', 'end_seconds', 'name'}
+        self.chapters = ([models.Chapter(**{k: v for k, v in row.items() if k in fields}) for row in manifest.chapters]
+                         or [models.Chapter(i, 0) for i in range(1, playlist.chapter_count + 1)])
+        self.source_chapters = None
+        self.put(chaptersEdited=False)
+        self.rebuild_chapters({int(k): v for k, v in manifest.track_names.items()}, manifest.chapter_indices)
 
     # ------------------------------------------------------------ chapter editing
     def edited_layout(self):
         """Edited chapter start times for the export, or None when the source's chapters are used as they are."""
-        if self.source_chapters is None or extractor.same_layout(self.chapters, self.source_chapters):
+        if self.source_chapters is None or chapter_marks.same_layout(self.chapters, self.source_chapters):
             return None
-        return extractor.chapter_layout(self.chapters)
+        return chapter_marks.chapter_layout(self.chapters)
 
     def carried_rows(self):
         return [dict(title=r['title'], origin=r['origin'], included=r['included'], artist=r['artist'])
@@ -364,7 +377,7 @@ class DiscController(Controller):
         named = a if a['title'].strip() else b
         merged = dict(title=named['title'], origin=named['origin'], included=a['included'] or b['included'],
                       artist=a['artist'] or b['artist'])
-        self.edit_chapters(extractor.merge_chapters(self.chapters, row), rows[:row] + [merged] + rows[row + 2:])
+        self.edit_chapters(chapter_marks.merge_chapters(self.chapters, row), rows[:row] + [merged] + rows[row + 2:])
 
     @Slot(int, float)
     def splitChapter(self, row, offset):
@@ -372,7 +385,7 @@ class DiscController(Controller):
         if not self.can_edit(row):
             return
         try:
-            chapters = extractor.split_chapter(self.chapters, row, self.chapters[row].start_seconds + offset)
+            chapters = chapter_marks.split_chapter(self.chapters, row, self.chapters[row].start_seconds + offset)
         except ValueError:
             self.notify(self.tr('splitTooClose'), 'chapterEdit')
             return
@@ -386,7 +399,7 @@ class DiscController(Controller):
         if not self.can_edit(row) or row == 0:
             return
         try:
-            chapters = extractor.move_chapter_start(self.chapters, row, self.chapters[row].start_seconds + delta)
+            chapters = chapter_marks.move_chapter_start(self.chapters, row, self.chapters[row].start_seconds + delta)
         except ValueError:
             self.notify(self.tr('splitTooClose'), 'chapterEdit')
             return
@@ -415,8 +428,7 @@ class DiscController(Controller):
         names = names or {}
         selected = set(chapter_indices) if chapter_indices is not None else None
         self.chapter_model.replace([dict(number=c.index, title=names.get(c.index, ''), origin='',
-            duration=logic.format_time(c.end_seconds-c.start_seconds if c.end_seconds is not None else None),
-            seconds=max(1, (c.end_seconds-c.start_seconds) if c.end_seconds is not None else 1),
+            duration=logic.format_time(c.duration), seconds=max(1, c.duration or 1),
             start=logic.format_time(c.start_seconds), begin=c.start_seconds, status='pending', file='',
             included=selected is not None and c.index in selected, verify='', verifyText='',
             artist=self.app.metadata.track_artist(c.index)) for c in self.chapters])
@@ -433,7 +445,6 @@ class DiscController(Controller):
         has_video = self.playlist.video_track is not None
         self.put(hasVideo=has_video, keepVideo=has_video and keep_video)
         self.refresh_video_summary()
-        self.app.metadata.sync_audio_metadata()
         self.update_track_selection()
 
     def update_track_selection(self):
@@ -509,7 +520,6 @@ class DiscController(Controller):
         tracks = self.playlist.audio_tracks
         self.audio = tracks[row] if chosen else next(
             (t for t, r in zip(tracks, self.audio_model.rows) if r['chosen']), None)
-        self.app.metadata.sync_audio_metadata()
         self.update_track_selection()
 
     @Slot(int)
@@ -531,7 +541,8 @@ class DiscController(Controller):
             return
         lang = self.cfg.get('language', 'zh')
         for i, t in enumerate(self.playlist.audio_tracks[:len(self.audio_model.rows)]):
-            self.audio_model.change(i, **track_info.audio_card(t, lang, self.tr))
+            self.audio_model.change(i, label=t.display_label, details=t.display_label.removeprefix(t.codec).lstrip(' -'),
+                                    **track_info.audio_card(t, lang, self.tr))
         for i, t in enumerate(self.playlist.subtitle_tracks[:len(self.subtitle_model.rows)]):
             self.subtitle_model.change(i, **track_info.subtitle_card(t, lang, self.tr))
         self.refresh_insights()
@@ -560,16 +571,16 @@ class DiscController(Controller):
         keep_video = container == 'mkv' and self.state['keepVideo']
         size = need = None
         if timed:
-            size = extractor.estimate_output_bytes(playlist, chapters, audio_tracks=audio, keep_video=keep_video,
+            size = space.estimate_output_bytes(playlist, chapters, audio_tracks=audio, keep_video=keep_video,
                                                    container=container, source_size=self.source_size)
-            need = extractor.estimate_export_bytes(playlist, chapters, audio_track_ids=[t.track_id for t in audio],
+            need = space.estimate_export_bytes(playlist, chapters, audio_track_ids=[t.track_id for t in audio],
                                                    keep_video=keep_video, container=container,
                                                    source_size=self.source_size)
             if need is None and size and dvd.is_title(playlist.path) and self.source_size:
                 need = size + self.source_size      # the title is remuxed whole before it is cut
         folder = (logic.album_output(self.state['source'], self.state['output'])
                   if self.state['source'] and self.state['output'] else None)
-        free = extractor.free_space_bytes(folder) if folder else None
+        free = space.free_space_bytes(folder) if folder else None
         return dict(files=len(chapters), duration=logic.format_length(seconds) if chapters and timed else '',
                     size=logic.format_bytes(size) if size else '', free=logic.format_bytes(free) if free is not None else '',
                     drive=(folder.drive or folder.anchor) if folder else '',
@@ -604,7 +615,7 @@ class DiscController(Controller):
     # others are split or merged; another disc or playlist starts with none.
     def kind_overrides(self) -> dict:
         key = (self.state['source'], str(self.playlist.path) if self.playlist is not None else None)
-        if getattr(self, '_kind_key', None) != key:
+        if self._kind_key != key:
             self._kind_key, self._kind_overrides = key, {}
         return self._kind_overrides
 
@@ -650,7 +661,7 @@ class DiscController(Controller):
     @Slot(int)
     def reloadRecent(self, row):
         rows = self.state['recentExports']
-        if 0 <= row < len(rows) and rows[row]['canReload'] and not self.state['busy']:
+        if 0 <= row < len(rows) and rows[row]['canReload'] and not self.working:
             self.setSource(rows[row]['source'])
 
     @Slot(str, bool)
@@ -663,7 +674,6 @@ class DiscController(Controller):
             model.change(i, chosen=checked)
         if kind == 'audio':
             self.audio = self.playlist.best_default_audio_track() if checked else None
-            self.app.metadata.sync_audio_metadata()
         self.update_track_selection()
 
     @Slot(int, str)

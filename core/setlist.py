@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-import extractor
+from . import models, tracklist
 
 SONG, EXTRA, SKIP, HEADER, DISC, BLANK = "song", "extra", "skip", "header", "disc", "blank"
 NOTE, OFF, MERGED = "note", "off", "merged"      # credits / remarks; switched off by hand; joined to the line above
@@ -44,7 +44,7 @@ _SURE_NUMBER_RE = re.compile(
     r"^\s*(?:[・•●○◆◇■□▶►*]\s*)?(?:(?:m|w-?en|en|ec)\s*-?\s*\d{1,3}\b[.):．：]?|#\s*\d{1,3}[.):．：]?|tr(?:ack)?\.?\s*\d{1,3}[.):．：]?|"
     r"[①-⑳])\s*", re.IGNORECASE)
 # Numbering that might be a title ("1/3の純情な感情", "99 Luftballons"): stripped when most lines carry it
-_MAYBE_NUMBER_RE = re.compile(r"^\s*(?:[・•●○◆◇■□▶►*]\s*)?[(（]?\d{1,3}(?:[.)．、:：）]\s*|\s+|\t)")
+_MAYBE_NUMBER_RE = re.compile(r"^\s*(?:[・•●○◆◇■□▶►*]\s*)?[(（]?\d{1,3}(?:[.)．、:：）]\s*|\s*[-–—]\s+|\s+|\t)")
 _BULLET_RE = re.compile(r"^\s*[・•●○◆◇■□▶►*]\s*")
 _DURATION_RE = re.compile(r'[\s\t]*[(（\[［]?\s*(\d{1,2})[:\'’′]([0-5]\d)(?::([0-5]\d))?["”″]?\s*[)）\]］]?\s*$')
 _CELL_DURATION_RE = re.compile(r"^\s*\d{1,2}[:'’′][0-5]\d(?::[0-5]\d)?[\"”″]?\s*$")
@@ -439,12 +439,12 @@ class Plan:
     extras: int
     chapters: int
     can_duration: bool
-    entries: list[extractor.TracklistEntry]   # what the review page gets
+    entries: list[tracklist.TracklistEntry]   # what the review page gets
     extra_chapters: dict[int, str]            # chapter -> label of a non-song line on it
     entry_mode: str                           # match mode for the review page
 
 
-def plan(setlist: Setlist, chapters: list[extractor.Chapter], disc: Optional[int] = None, start: int = 1,
+def plan(setlist: Setlist, chapters: list[models.Chapter], disc: Optional[int] = None, start: int = 1,
          mode: str = "auto", extras_take_chapter: bool = True, tolerance: float = 20.0,
          skip_chapters: frozenset = frozenset(), end: int = 0) -> Plan:
     """skip_chapters: chapters that are not songs (talk, opening film): order alignment passes over them.
@@ -454,16 +454,16 @@ def plan(setlist: Setlist, chapters: list[extractor.Chapter], disc: Optional[int
     if not extras_take_chapter:
         picked = [(i, l) for i, l in picked if l.kind != EXTRA]
     songs = [(i, l) for i, l in picked if l.kind == SONG]
-    song_entries = [extractor.TracklistEntry(l.title, index=n + 1, duration_seconds=l.seconds)
+    song_entries = [tracklist.TracklistEntry(l.title, index=n + 1, duration_seconds=l.seconds)
                     for n, (_, l) in enumerate(songs)]
-    can_duration = bool(songs) and extractor.can_align_by_duration(chapters, song_entries)
+    can_duration = bool(songs) and tracklist.can_align_by_duration(chapters, song_entries)
     use_duration = can_duration and mode != "order"
     numbers = [c.index for c in chapters]
     placements: list[Placement] = []
     extra_chapters: dict[int, str] = {}
 
     if use_duration:
-        result = extractor.match_tracklist_to_chapters(chapters, song_entries, duration_tolerance_seconds=tolerance)
+        result = tracklist.match_tracklist_to_chapters(chapters, song_entries, duration_tolerance_seconds=tolerance)
         where = {m.entry_index: m.chapter_index for m in result.matches if m.entry_index is not None}
         for n, (i, _) in enumerate(songs):
             placements.append(Placement(i, where.get(n)))
@@ -474,17 +474,17 @@ def plan(setlist: Setlist, chapters: list[extractor.Chapter], disc: Optional[int
                     song_entries, extra_chapters, "auto")
 
     slots = [n for n in numbers[max(0, start - 1):end if end > 0 else None] if n not in skip_chapters]
-    entries: list[extractor.TracklistEntry] = []
+    entries: list[tracklist.TracklistEntry] = []
     for n, (i, l) in enumerate(picked):
         chapter = slots[n] if n < len(slots) else None
         placements.append(Placement(i, chapter))
         if chapter is None:
             continue
         if l.kind == SONG:
-            entries.append(extractor.TracklistEntry(l.title, index=chapter, duration_seconds=l.seconds))
+            entries.append(tracklist.TracklistEntry(l.title, index=chapter, duration_seconds=l.seconds))
         elif l.kind == EXTRA:
             extra_chapters[chapter] = l.title
-            entries.append(extractor.TracklistEntry(l.title, index=chapter, duration_seconds=l.seconds))
+            entries.append(tracklist.TracklistEntry(l.title, index=chapter, duration_seconds=l.seconds))
     return Plan("order", placements, len(songs), len(picked) - len(songs), len(chapters), can_duration,
                 entries, extra_chapters, "chapter")
 
@@ -494,7 +494,7 @@ INTERLUDE = "interlude"      # music that is not a song: overture, costume-chang
 NON_SONGS = frozenset({TALK, INTERLUDE})
 
 
-def chapter_kinds(chapters: list[extractor.Chapter], peaks: list[float], per_second: float,
+def chapter_kinds(chapters: list[models.Chapter], peaks: list[float], per_second: float,
                   ripple: Optional[list[float]] = None) -> dict[int, str]:
     """
     Music, interlude, talk or unsure per chapter, from the programme's outline. A guess,

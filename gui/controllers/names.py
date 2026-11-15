@@ -1,30 +1,24 @@
-"""Song titles from every source (pasted text, screenshots, web pages, files, the disc, MusicBrainz),
+"""Song titles from every source (pasted text, screenshots, web pages, files, the disc, online catalogues),
 reviewed against the chapters before they are applied."""
 from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from uuid import uuid4
 
-from PySide6.QtCore import QUrl, Slot
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import Slot
 
-import extractor
-import metadata_sources
-import tagging
-import ocr
-import preview
-import setlist
-import webpage
+from core import models, naming, preview, setlist, tagging, tracklist
 from .. import logic
-from core import naming
 from ..models import Rows
-from .base import Controller
+from .base import Controller, local_path
+from .releases import ReleaseSearch
+from .setlist_sources import SetlistSources
 
 
-class NamesController(Controller):
-    """Song titles from every source (pasted text, screenshots, web pages, files, the disc, MusicBrainz),
-    reviewed against the chapters before they are applied."""
+class NamesController(SetlistSources, ReleaseSearch, Controller):
+    """Song titles from every source (pasted text, screenshots, web pages, files, the disc, online
+    catalogues), reviewed against the chapters before they are applied. Reading screenshots and web
+    pages lives in SetlistSources, searching the catalogues in ReleaseSearch."""
 
     def __init__(self, app):
         super().__init__(
@@ -51,6 +45,9 @@ class NamesController(Controller):
         self.release_model = Rows(['label', 'detail', 'tracks', 'chapters', 'fit', 'chosen', 'thumb'], self)
         self.candidates = []
         self.disc_number = None
+        self.in_place = False           # review rows are updated in place (the table keeps its scroll position)
+        self.import_text = ''           # the text file behind an imported set list
+        self.setlist_options = {}       # options the pasted / imported set list was laid out with
 
     def removed_chapters(self) -> set[int]:
         key = (self.state['source'], tuple(c.index for c in self.disc.chapters))
@@ -77,19 +74,19 @@ class NamesController(Controller):
     def review_entries(self, entries, origin='edited', mode='auto', show=True):
         if not entries or not self.disc.chapters:
             self.notify(self.tr('noNames'))
-            return
+            return False
         if mode == 'chapter' and not {entry.index for entry in entries}.issubset(c.index for c in self.disc.chapters):
             self.notify(self.tr('tracklistChapterMismatch'))
-            return
+            return False
         chapters = self.naming_chapters()
         removed = self.removed_chapters()
         # Exported tracklists name chapters by number: names of removed chapters are left out
         matched_entries = [e for e in entries if e.index not in removed] if mode == 'chapter' else entries
-        result = extractor.match_tracklist_to_chapters(chapters, matched_entries, mode=mode,
+        result = tracklist.match_tracklist_to_chapters(chapters, matched_entries, mode=mode,
                                                        duration_tolerance_seconds=self.app.exporter.tolerance()) \
             if chapters and matched_entries else None
         current = {r['number']: r for r in self.disc.chapter_model.rows}
-        lengths = {c.index: (c.end_seconds - c.start_seconds) if c.end_seconds is not None else None for c in self.disc.chapters}
+        lengths = {c.index: c.duration for c in self.disc.chapters}
         kinds = self.kinds_by_number()
         self.entries_source = origin
         self.review_pool = list(entries)
@@ -108,23 +105,26 @@ class NamesController(Controller):
             rows.append(row)
         rows += [self.removed_row(n, current, lengths, kinds) for n in removed if n in current]
         rows.sort(key=lambda r: r['number'])
-        (self.review_model.refresh if getattr(self, 'in_place', False) else self.review_model.replace)(rows)
+        (self.review_model.refresh if self.in_place else self.review_model.replace)(rows)
         self.publish_counts()
-        can_align = mode != 'chapter' and bool(chapters) and extractor.can_align_by_duration(chapters, entries) and not any(
+        can_align = mode != 'chapter' and bool(chapters) and tracklist.can_align_by_duration(chapters, entries) and not any(
             e.start_seconds is not None for e in entries)
-        self.put(**({'page': 'review'} if show else {}), reviewChecked=self.count_checked(), reviewCanAlign=can_align,
+        if show:
+            self.show('review')
+        self.put(reviewChecked=self.count_checked(), reviewCanAlign=can_align,
                  reviewRemoved=len(removed), reviewTolerance=self.app.exporter.tolerance(),
                  reviewMode=('chapter' if mode == 'chapter' else 'duration' if can_align and mode != 'order' else 'order'))
         self.publish_pool()
+        return True
 
     def show_waiting_rows(self):
         """
         Before a release (or list) is chosen the table still shows the chapters, with their
         lengths and current titles, so versions can be compared against them.
         """
-        lengths = {c.index: (c.end_seconds - c.start_seconds) if c.end_seconds is not None else 0 for c in self.disc.chapters}
+        lengths = {c.index: c.duration for c in self.disc.chapters}
         removed, kinds = self.removed_chapters(), self.kinds_by_number()
-        (self.review_model.refresh if getattr(self, 'in_place', False) else self.review_model.replace)(
+        (self.review_model.refresh if self.in_place else self.review_model.replace)(
             [dict(number=r['number'], current=r['title'], proposed='', duration=r['duration'],
                                         confidence='removed' if r['number'] in removed else 'waiting', detail='',
                                         checked=False, seconds=lengths.get(r['number']) or 0,
@@ -190,7 +190,7 @@ class NamesController(Controller):
     @Slot()
     def reviewEmbedded(self):
         self.put(mbRelease=self.tr('srcDiscBadge'), reviewSource='disc', reviewSourceName='')
-        self.review_entries([extractor.TracklistEntry(c.embedded_name or c.name) for c in self.naming_chapters()], 'disc')
+        self.review_entries([tracklist.TracklistEntry(c.embedded_name or c.name) for c in self.naming_chapters()], 'disc')
 
     @Slot(str)
     def reviewPaste(self, text):
@@ -258,7 +258,7 @@ class NamesController(Controller):
         """What a paste will do, line by line, while the user is still editing it."""
         self.put(pasteDraft=text)
         try:
-            exported = extractor.parse_exported_tracklist(text)
+            exported = tracklist.parse_exported_tracklist(text)
         except ValueError:
             exported = []
         if exported is not None:
@@ -270,7 +270,7 @@ class NamesController(Controller):
             return
         parsed, disc, start, plan, o = self.paste_plan(text, options)
         placed = {p.line: p.chapter for p in plan.placements}
-        lengths = {c.index: (c.end_seconds - c.start_seconds) if c.end_seconds is not None else None for c in self.disc.chapters}
+        lengths = {c.index: c.duration for c in self.disc.chapters}
         rows = []
         for i, line in enumerate(parsed.lines):
             if line.kind == setlist.BLANK:
@@ -317,21 +317,30 @@ class NamesController(Controller):
 
     @Slot(str, 'QVariantMap')
     def applyPaste(self, text, options):
-        self.last_paste_options = dict(options or {})
+        self.setlist_options = dict(options or {})
         self.put(mbRelease=self.tr('srcPasteBadge'), reviewSource='paste', reviewSourceName='', pasteDraft=text)
+        self.review_setlist(text, options)
+
+    def setlist_text(self):
+        """The set-list text behind the review (pasted, or read from an imported file), to lay it out again."""
+        source = self.state['reviewSource']
+        return self.state['pasteDraft'] if source == 'paste' else self.import_text if source == 'import' else ''
+
+    def review_setlist(self, text, options, show=True):
+        """Lay a set list (pasted or from a text file) over the chapters and show it for review."""
         try:
-            entries = extractor.parse_exported_tracklist(text)
+            entries = tracklist.parse_exported_tracklist(text)
         except ValueError:
             self.notify(self.tr('invalidChapterTracklist'))
-            return
+            return False
         if entries is not None:
-            self.review_entries(entries, mode='chapter')
-            return
+            return self.review_entries(entries, mode='chapter', show=show)
         parsed, disc, start, plan, o = self.paste_plan(text, options)
         if not plan.entries:
             self.notify(self.tr('noNames'))
-            return
-        self.review_entries(plan.entries, mode=plan.entry_mode)
+            return False
+        if not self.review_entries(plan.entries, mode=plan.entry_mode, show=show):
+            return False
         left_out = {p.chapter for p in plan.placements
                     if p.chapter is not None and parsed.lines[p.line].key in o['excluded']}
         if left_out:
@@ -348,7 +357,7 @@ class NamesController(Controller):
                     self.review_model.change(row, confidence='extra', checked=False)
             # Songs past the last chapter stay available for picking by hand.
             placed = {p.line for p in plan.placements if p.chapter is not None}
-            spare = [extractor.TracklistEntry(l.title) for i, l in enumerate(parsed.lines)
+            spare = [tracklist.TracklistEntry(l.title) for i, l in enumerate(parsed.lines)
                      if l.kind == setlist.SONG and (not parsed.discs or l.disc == disc) and i not in placed]
             if spare:
                 self.review_pool.extend(spare)
@@ -356,102 +365,34 @@ class NamesController(Controller):
                 self.publish_pool()
             self.publish_counts()
             self.put(reviewChecked=self.count_checked())
-
-    # ------------------------------------------------------------ set lists from screenshots and web pages
-    @Slot(result=bool)
-    def clipboardHasImage(self):
-        mime = QGuiApplication.clipboard().mimeData()
-        return bool(mime and mime.hasImage() and not mime.hasText())
-
-    @Slot()
-    def ocrClipboard(self):
-        image = QGuiApplication.clipboard().image()
-        if image.isNull():
-            self.put(pasteOcr=dict(self.state['pasteOcr'], state='failed', error=self.tr('ocrNoImage')))
-            return
-        target = self.app.preview_dir / f'screenshot-{uuid4().hex[:8]}.png'
-        image.save(str(target), 'PNG')
-        self.read_screenshot(target)
-
-    @Slot(str)
-    def ocrImage(self, location):
-        path = Path(QUrl(location).toLocalFile() if location.startswith('file:') else location)
-        if path.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tif', '.tiff') or not path.is_file():
-            self.put(pasteOcr=dict(self.state['pasteOcr'], state='failed', error=self.tr('ocrNotImage')))
-            return
-        self.read_screenshot(path)
-
-    @Slot(str)
-    def ocrAgain(self, language):
-        """Read the same screenshot again in another language."""
-        path = self.state['pasteOcr'].get('path')
-        if path and Path(path).is_file():
-            self.read_screenshot(Path(path), language, again=True)
-
-    def read_screenshot(self, path, language='auto', again=False):
-        def work(progress):
-            text, used = ocr.recognize(path, language)
-            return text, used, ocr.languages()[0]
-
-        def done(result):
-            text, used, available = result
-            self.put(pasteOcr=dict(self.state['pasteOcr'], state='done', text=text, language=used,
-                                   languages=available, again=again,
-                                   serial=self.state['pasteOcr'].get('serial', 0) + 1))
-
-        def failed(exc):
-            message = self.tr('ocrUnavailable') if isinstance(exc, ocr.OcrUnavailable) else str(exc)
-            self.put(pasteOcr=dict(self.state['pasteOcr'], state='failed', error=message))
-        self.task(work, done, failed, label='ocrRunning',
-                  begin=dict(pasteOcr=dict(self.state['pasteOcr'], state='running', error='', path=str(path),
-                                           image=QUrl.fromLocalFile(str(path)).toString())))
-
-    @Slot(str)
-    def fetchSetlist(self, address):
-        address = address.strip()
-        if not address:
-            return
-        timeout = float(self.cfg.get('net_timeout', '15') or 15)
-
-        def work(progress):
-            found = webpage.candidates(webpage.fetch(address, timeout))
-            return [dict(kind=c.kind, text=c.text, songs=c.songs, heading=c.heading[:40]) for c in found[:8]]
-
-        def done(found):
-            serial = self.state['pasteWeb'].get('serial', 0) + 1
-            if not found:
-                self.put(pasteWeb=dict(self.state['pasteWeb'], state='failed', candidates=[],
-                                       error=self.tr('webNothing')))
-                return
-            self.put(pasteWeb=dict(self.state['pasteWeb'], state='done', candidates=found, chosen=0, serial=serial))
-
-        def failed(exc):
-            message = self.tr('webBadAddress') if isinstance(exc, ValueError) else str(exc)
-            self.put(pasteWeb=dict(self.state['pasteWeb'], state='failed', error=message))
-        self.task(work, done, failed, label='webFetching',
-                  begin=dict(pasteWeb=dict(self.state['pasteWeb'], state='running', error='', url=address)))
+        return True
 
     @Slot(str)
     def importFile(self, path):
-        if path.startswith('file:'):
-            path = QUrl(path).toLocalFile()
+        path = local_path(path)
         source = Path(path)
         def work(progress):
+            # A text file is a set list like a pasted one (numbering, MC lines, lengths, disc sections):
+            # it goes through the same parser. CUE sheets and JSON lists carry their own structure.
+            if tracklist.is_setlist_text(source):
+                return tracklist.read_tracklist_text(source), None, None
             if source.suffix.lower() == '.json':
-                entries = extractor.parse_exported_tracklist(source.read_text(encoding='utf-8-sig', errors='replace'))
+                entries = tracklist.parse_exported_tracklist(tracklist.read_tracklist_text(source))
                 if entries is not None:
-                    return entries, 'chapter'
-            return extractor.load_sidecar_tracklist(source), 'auto'
+                    return '', entries, 'chapter'
+            return '', tracklist.load_sidecar_tracklist(source), 'auto'
         def done(result):
-            entries, mode = result
+            text, entries, mode = result
             # From the workspace the file's matching titles go straight onto the chapters (the same rows the
             # review would have ticked); "Get titles" reopens the list for adjusting. On the review page it shows there.
             here = self.state['page'] == 'review'
+            self.import_text, self.setlist_options = text, {}
             self.put(mbRelease=Path(path).name, reviewSource='import', reviewSourceName=Path(path).name)
-            self.review_entries(entries, mode=mode, show=here)
-            if not here and self.review_model.rows:
+            shown = (self.review_setlist(text, {}, show=here) if text
+                     else self.review_entries(entries, mode=mode, show=here))
+            if shown and not here and self.review_model.rows:
                 self.applyReview()
-        self.task(work, done)
+        self.task(work, done, self.report)
 
     def refresh_removed(self):
         """Match again without (or with) the chapters just taken out (or put back). Rows are updated
@@ -466,28 +407,18 @@ class NamesController(Controller):
         self.put(reviewRemoved=len(self.removed_chapters()))
         if self.state['reviewCount'] == 0:
             self.show_waiting_rows()
-        elif self.state['reviewSource'] == 'paste' and self.state['pasteDraft'] and self.review_model.rows and self.state['reviewMode'] == 'chapter':
-            # A pasted list is laid out over the chapters again, passing over the removed ones
-            self.applyPaste(self.state['pasteDraft'], getattr(self, 'last_paste_options', {}))
+        elif self.setlist_text() and self.review_model.rows and self.state['reviewMode'] == 'chapter':
+            # A set list is laid out over the chapters again, passing over the removed ones
+            self.review_setlist(self.setlist_text(), self.setlist_options, show=False)
             self.put(reviewRemoved=len(self.removed_chapters()))
         elif self.entries_source == 'disc':
-            self.review_entries([extractor.TracklistEntry(c.embedded_name or c.name) for c in self.naming_chapters()],
+            self.review_entries([tracklist.TracklistEntry(c.embedded_name or c.name) for c in self.naming_chapters()],
                                 'disc', show=False)
         else:
             mode = self.state['reviewMode']
             self.review_entries(self.review_pool, self.entries_source,
                                 'chapter' if mode == 'chapter' else 'order' if mode == 'order' else 'auto', show=False)
         self.refresh_release_fits()
-
-    def refresh_release_fits(self):
-        """Releases compare their track count with the chapters still being named."""
-        chapters = self.naming_count()
-        for i, row in enumerate(self.release_model.rows):
-            if row['fit'] == 'unknown':
-                self.release_model.change(i, chapters=chapters)
-                continue
-            diff = abs(row['tracks'] - chapters)
-            self.release_model.change(i, chapters=chapters, fit='exact' if diff == 0 else 'close' if diff <= 2 else 'far')
 
     @Slot(int, bool)
     def removeChapter(self, number, removed):
@@ -518,7 +449,7 @@ class NamesController(Controller):
             template = self.app.exporter.filename_template()
             included = [r['number'] for r in self.disc.chapter_model.rows if r.get('included')]
             position = included.index(number) + 1 if number in included else number
-            base = naming.sanitize_filename(title.strip() or f'Track {number:02d}')
+            base = naming.sanitize_filename(title.strip() or models.default_title(number))
             if template != 'title':
                 metadata = self.app.metadata.export_metadata() if self.disc.state['outputFormat'] == 'flac' else None
                 base = naming.sanitize_filename(naming.render_filename(template, position, base,
@@ -578,16 +509,18 @@ class NamesController(Controller):
                 self.disc.chapter_model.change(current[row['number']], title=title, origin=self.entries_source)
                 if self.entries_source == 'disc':
                     self.disc.disc_baselines[row['number']] = row['proposed'].strip()
-        self.put(page='main')
+        self.show('main')
 
     @Slot()
     def openTitles(self):
         """The workspace's single "get titles" entry: reopen whichever source was used last."""
-        if self.state['busy']:
+        if self.working:
             return
         source = self.state['reviewSource']
         if source == 'disc' and self.disc.chapters:
             self.reviewEmbedded()
+        elif source == 'import' and self.import_text:
+            self.review_setlist(self.import_text, self.setlist_options)
         elif source == 'import' and self.review_pool:
             # A file imported from the workspace was applied directly: reopen it, matched against the current titles.
             self.review_entries(self.review_pool, origin=self.entries_source,
@@ -596,139 +529,30 @@ class NamesController(Controller):
             # Nothing to re-run without the text/file: show that tab with a prompt.
             self.review_pool = []
             self.show_waiting_rows()
-            self.put(page='review', reviewChecked=0, reviewCount=0, mbRelease='', reviewSourceName='', reviewCanAlign=False)
+            self.show('review')
+            self.put(reviewChecked=0, reviewCount=0, mbRelease='', reviewSourceName='', reviewCanAlign=False)
         else:
             self.openOnline()
 
     @Slot()
     def openOnline(self):
         """Enter the MusicBrainz review: start from a clean table, search right away when there is a query."""
-        if self.state['busy']:
+        if self.working:
             return
         self.show_waiting_rows()
         chosen = next((i for i, r in enumerate(self.release_model.rows) if r['chosen']), None)
-        self.put(page='review', reviewChecked=0, mbRelease='', reviewSource='online', reviewSourceName='', reviewCanAlign=False)
+        self.show('review')
+        self.put(reviewChecked=0, mbRelease='', reviewSource='online', reviewSourceName='', reviewCanAlign=False)
         if chosen is not None:
             self.selectRelease(chosen)
         elif not self.candidates and (self.state['mbArtist'].strip() or self.state['mbAlbum'].strip()):
             self.search(self.state['mbArtist'], self.state['mbAlbum'], '')
 
-    def start_over(self, artist, album):
-        """A new source: forget the releases found for the last one. Returns the album name to search for."""
-        album, self.disc_number = extractor.split_disc_tag(album)
-        self.candidates = []
-        self.release_model.replace([])
-        self.put(mb='idle', mbError='', mbRelease='', mbArtist=artist, mbAlbum=album)
-        return album
+    def offer_disc_titles(self):
+        """The disc carries its own chapter names: "Get titles" starts there (nothing opens by itself)."""
+        self.put(mbRelease='', reviewSource='disc', reviewSourceName='')
 
-    def mb_error(self, exc):
-        return self.tr('mbBusy') if isinstance(exc, extractor.MusicBrainzBusy) else str(exc)
-
-    def release_fit(self, candidate):
-        """Track count of the disc that would be used, and how well it fits the chapter count."""
-        counts = candidate.medium_track_counts or ([candidate.track_count] if candidate.track_count else [])
-        if not counts:
-            return 0, 'unknown'
-        tracks = counts[extractor.pick_medium(counts, self.naming_count(), self.disc_number)]
-        diff = abs(tracks - self.naming_count())
-        return tracks, 'exact' if diff == 0 else 'close' if diff <= 2 else 'far'
-
-    @Slot(str, str, str)
-    def search(self, artist, album, barcode):
-        if self.state['busy']:
-            return
-        self.put(mbArtist=artist, mbAlbum=album)
-        if not (artist.strip() or album.strip() or barcode.strip()):
-            self.put(mb='error', mbError=self.tr('mbNeedQuery'))
-            return
-        if self.state['titleSource'] != 'musicbrainz':
-            self.search_other(self.state['titleSource'], artist, album, barcode)
-            return
-        def work(p):
-            return (extractor.search_musicbrainz_releases_by_barcode(barcode) if barcode.strip()
-                    else extractor.search_musicbrainz_releases(artist, album))
-        def done(candidates):
-            order = {'exact': 0, 'close': 1, 'unknown': 2, 'far': 3}
-            fits = {id(c): self.release_fit(c) for c in candidates}
-            candidates = sorted(candidates, key=lambda c: (order[fits[id(c)][1]], -c.score))
-            self.candidates = candidates
-            self.release_model.replace([dict(label=f'{c.artist} — {c.title}' if c.artist else c.title,
-                detail=' · '.join(x for x in (c.format_hint, c.date,
-                    self.tr('mbDiscs').format(n=len(c.medium_track_counts)) if len(c.medium_track_counts) > 1 else '') if x),
-                tracks=fits[id(c)][0], chapters=self.naming_count(), fit=fits[id(c)][1], chosen=False, thumb='') for c in candidates])
-            self.put(mb='results' if candidates else 'empty', mbError='')
-            # Preview the best fit straight away; nothing is applied until the user confirms.
-            if candidates and fits[id(candidates[0])][1] == 'exact':
-                self.selectRelease(0)
-        def failed(exc):
-            self.put(mb='error', mbError=self.mb_error(exc))
-        self.task(work, done, failed, begin=dict(mb='searching', mbError=''))
-
-    @Slot(int)
-    def selectRelease(self, row):
-        if self.state['busy'] or not 0 <= row < len(self.candidates):
-            return
-        release = self.candidates[row]
-        for i in range(len(self.release_model.rows)):
-            self.release_model.change(i, chosen=i == row)
-        if isinstance(release, metadata_sources.Candidate):
-            self.select_other(release, self.release_model.rows[row]['label'])
-            return
-        chapters, disc = self.naming_count(), self.disc_number
-        label = self.release_model.rows[row]['label']
-        def done(entries):
-            self.put(mb='results')
-            if not entries:
-                self.show_waiting_rows()
-                self.put(mbRelease='', reviewChecked=0, mb='error', mbError=self.tr('mbNoTracks'))
-                return
-            self.put(mbRelease=label, reviewSource='online')
-            self.review_entries(entries)
-        def failed(exc):
-            self.put(mb='error', mbError=self.mb_error(exc))
-        self.task(lambda p: extractor.fetch_musicbrainz_tracklist(release.release_id, chapters, disc), done, failed,
-                  begin=dict(mb='loading', mbError=''))
-
-    @Slot(str)
-    def setTitleSource(self, source):
-        if source not in metadata_sources.SOURCES or self.state['busy'] or source == self.state['titleSource']:
-            return
-        self.candidates = []
-        self.release_model.replace([])
-        self.put(titleSource=source, mb='idle', mbError='')
-
-    def search_other(self, source, artist, album, barcode):
-        chapters = self.naming_count()
-        def fit(count):
-            if not count:
-                return 'unknown'
-            diff = abs(count - chapters)
-            return 'exact' if diff == 0 else 'close' if diff <= 2 else 'far'
-        def done(found):
-            order = {'exact': 0, 'close': 1, 'unknown': 2, 'far': 3}
-            found = sorted(found, key=lambda c: order[fit(c.track_count)])
-            self.candidates = found
-            self.release_model.replace([dict(label=f'{c.artist} \u2014 {c.title}' if c.artist else c.title,
-                detail=c.detail, tracks=c.track_count, chapters=chapters, fit=fit(c.track_count),
-                chosen=False, thumb=c.thumb) for c in found])
-            self.put(mb='results' if found else 'empty', mbError='')
-        def failed(exc):
-            self.put(mb='error', mbError=self.app.metadata.source_error(exc))
-        self.task(lambda p: metadata_sources.search(source, artist, album, barcode), done, failed,
-                  begin=dict(mb='searching', mbError=''))
-
-    def select_other(self, candidate, label):
-        def work(p):
-            return metadata_sources.fetch(candidate.source, candidate.id)
-        def done(info):
-            self.put(mb='results')
-            if not info.tracks:
-                self.show_waiting_rows()
-                self.put(mbRelease='', reviewChecked=0, mb='error', mbError=self.tr('mbNoTracks'))
-                return
-            self.put(mbRelease=label, reviewSource='online')
-            self.review_entries([extractor.TracklistEntry(t.title, index=i + 1, duration_seconds=t.seconds)
-                                 for i, t in enumerate(info.tracks)])
-        def failed(exc):
-            self.put(mb='error', mbError=self.app.metadata.source_error(exc))
-        self.task(work, done, failed, begin=dict(mb='loading', mbError=''))
+    def review_online(self, label, entries):
+        """Show a release's tracklist (found on the titles or the tags page) for review."""
+        self.put(mbRelease=label, reviewSource='online')
+        return self.review_entries(entries)

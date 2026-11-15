@@ -1,7 +1,7 @@
 import time
 
-import extractor as x
-import preview
+import core.models
+from core import preview
 from gui import track_info
 from gui.i18n import CATALOGUES
 
@@ -15,7 +15,7 @@ def sheet_dict(sheet):
 
 
 def test_audio_sheet_order_and_formatting():
-    track = x.Track(2, 'audio', 'TrueHD Atmos', 'A_TRUEHD', 'jpn', 8, 'Main', 48000, 24, default_track=True,
+    track = core.models.Track(2, 'audio', 'TrueHD Atmos', 'A_TRUEHD', 'jpn', 8, 'Main', 48000, 24, default_track=True,
                     stream_id=0x1100, properties={'language_ietf': 'ja-JP', 'forced_track': False})
     probe = {'codec_long_name': 'TrueHD', 'channel_layout': '7.1', 'sample_fmt': 's32', 'bit_rate': '4560000'}
     sheet = sheet_dict(track_info.sections(track, 'audio', 8133, probe, tr, 'zh'))
@@ -31,7 +31,7 @@ def test_audio_sheet_order_and_formatting():
 
 
 def test_missing_values_are_left_out_and_text_export():
-    track = x.Track(5, 'subtitles', 'HDMV PGS', language='')
+    track = core.models.Track(5, 'subtitles', 'HDMV PGS', language='')
     sheet = track_info.sections(track, 'subtitle', 0, None, tr, 'en')
     flat = [row['label'] for section in sheet for row in section['rows']]
     assert flat == ['编码', '轨道编号']                    # nothing blank, no audio-only rows

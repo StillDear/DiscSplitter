@@ -195,7 +195,7 @@ Item {
                         SettingRow {
                             first: true; title: win.tr("defaultOutput")
                             hint: win.discView.output || win.tr("notSet")
-                            ActionButton { text: win.tr("browse"); enabled: !win.appView.busy; onClicked: win.openFolder("output") }
+                            ActionButton { text: win.tr("browse"); enabled: !win.appView.working; onClicked: win.openFolder("output") }
                         }
                     }
                     SettingGroup {
@@ -309,7 +309,7 @@ Item {
                                     HoverHandler { id: badgeHover }
                                 }
                             }
-                            ActionButton { text: win.tr("netTestRun"); enabled: !win.appView.busy; onClicked: backend.testConnection() }
+                            ActionButton { text: win.tr("netTestRun"); enabled: !win.appView.working; onClicked: backend.testConnection() }
                         }
                         SettingRow {
                             title: win.tr("netTimeout")
@@ -384,7 +384,7 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         Copy { text: win.tr("tools"); font.pixelSize: Theme.px(15); font.weight: Font.DemiBold; Layout.fillWidth: true }
-                        ActionButton { text: win.tr("checkTools"); ghost: true; enabled: !win.appView.busy; onClicked: backend.checkTools() }
+                        ActionButton { text: win.tr("checkTools"); ghost: true; enabled: !win.appView.working; onClicked: backend.checkTools() }
                     }
                     SettingGroup {
                         Repeater { model: toolModel; delegate: ToolRow { win: page.win } }

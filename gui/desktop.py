@@ -11,7 +11,7 @@ import sys
 from PySide6.QtCore import QObject, QRect, QTimer
 from PySide6.QtGui import QGuiApplication, QIcon, QWindow
 
-import settings
+from . import settings
 
 
 # ---------------------------------------------------------------- geometry

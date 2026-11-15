@@ -344,7 +344,7 @@ def audio_card(track, lang: str, tr) -> dict:
         rate = _rate_text(track.bitrate_kbps, False, tr)
     else:
         stored = space.audio_rate_bytes(track)
-        rate = _rate_text(stored * 8 / 1000 if stored else None, not space._is_pcm(track), tr)
+        rate = _rate_text(stored * 8 / 1000 if stored else None, not track.is_pcm, tr)
     # Disc track names often just repeat the format ("Dolby Atmos 7.1" on a TrueHD Atmos track)
     codec_words = {w for w in (track.codec or '').lower().split() if len(w) > 2}
     title_words = {w for w in (track.title or '').lower().split() if len(w) > 2 and w.isalpha()}

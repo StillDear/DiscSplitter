@@ -58,7 +58,7 @@ def test_motion_preference(backend):
 
 
 def test_new_defaults():
-    import settings
+    from gui import settings
     assert settings.DEFAULTS['interface_scale'] == 'system'
     assert settings.DEFAULTS['font_scale'] == '1'
     assert settings.DEFAULTS['motion'] == 'full'

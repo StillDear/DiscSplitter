@@ -1,7 +1,7 @@
-import ocr
-import setlist
-import webpage
-from ocr import Word
+from core import ocr
+from core import setlist
+from core import webpage
+from core.ocr import Word
 
 NL = "\n"
 

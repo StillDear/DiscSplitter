@@ -9,6 +9,30 @@ class JobCancelled(Exception):
     """Raised when a running job is stopped via a cancel_event."""
 
 
+class Failure(RuntimeError):
+    """
+    Something went wrong that the user will read about. str() is the full English message, as
+    before (logs, tests, the command line); the meaning rides along so a UI can say it in its
+    own language instead of showing that wording:
+
+    code:   what happened: "tool_failed" | "tool_timeout" | "tool_missing" | "no_chapters" |
+            "tracks_unavailable" | "dvd_unsupported" | "dvd_unreadable" | "iso_failed" |
+            "iso_missing" | "unreachable" | "http_error" | "bad_response" | "region_blocked"
+    params: the names that go into the sentence (tool="mkvmerge", host="musicbrainz.org", ...)
+    detail: the tool's or system's own words, shown under the sentence as they are
+    """
+
+    def __init__(self, code: str, message: str, detail: str = "", **params):
+        super().__init__(message)
+        self.code, self.detail, self.params = code, str(detail or "").strip(), params
+
+
+def tool_failed(tool: str, output: str, what: str = "") -> Failure:
+    """An external tool ended with an error; `what` says which step ("on chapter 3")."""
+    head = f"{tool} failed{' ' + what if what else ''}"
+    return Failure("tool_failed", f"{head}:\n{output}", detail=output, tool=tool)
+
+
 class ProgressEvent(str):
     """
     A progress message that also says what it means, so a UI never has to

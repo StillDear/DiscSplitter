@@ -1,4 +1,4 @@
-import settings
+from gui import settings
 
 
 def test_dragged_sizes_are_clamped_and_remembered(backend):

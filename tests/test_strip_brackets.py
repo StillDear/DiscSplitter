@@ -1,5 +1,6 @@
-import extractor
-import setlist
+import core.models
+import core.tracklist
+from core import setlist
 
 LIVE = '(Live on Special Live "Christmas Magic")'
 
@@ -26,11 +27,11 @@ def test_a_title_is_never_emptied():
 
 
 def test_review_button_strips_rows_and_tracklist(backend):
-    backend.disc.chapters = [extractor.Chapter(i, (i - 1) * 300, i * 300) for i in range(1, 5)]
+    backend.disc.chapters = [core.models.Chapter(i, (i - 1) * 300, i * 300) for i in range(1, 5)]
     backend.disc.rebuild_chapters({})
     names = backend.names
-    entries = [extractor.TracklistEntry(f'Song {i} (Live on Tour)', index=i, duration_seconds=300) for i in range(1, 4)]
-    entries.append(extractor.TracklistEntry('Song 4 (Acoustic) (Live on Tour)', index=4, duration_seconds=300))
+    entries = [core.tracklist.TracklistEntry(f'Song {i} (Live on Tour)', index=i, duration_seconds=300) for i in range(1, 4)]
+    entries.append(core.tracklist.TracklistEntry('Song 4 (Acoustic) (Live on Tour)', index=4, duration_seconds=300))
     names.review_entries(entries)
     assert names.state['reviewStrippable'] is True
 

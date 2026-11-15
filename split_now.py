@@ -1,10 +1,13 @@
 r"""
 split_now.py
 
-CLI tool: splits an already-extracted single-audio-track MKV (the
-intermediate file the GUI app normally deletes after a successful run)
-into named track files, without going through the GUI. Uses the same
-extractor.py logic the app itself uses, so behaviour matches exactly.
+CLI tool: splits an MKV that has chapters (for example the intermediate
+file a FLAC export leaves in _work when it is interrupted) into named
+track files, without going through the GUI. Uses the same core code the
+app itself uses, so behaviour matches exactly.
+
+--container mkv (the default) cuts every stream losslessly with mkvmerge;
+--container flac encodes the first audio track of each chapter.
 
 Track names come from a text file, one name per line, in chapter order.
 Leading numbering like "1.", "01 -", "1)" is stripped automatically, so
@@ -27,7 +30,7 @@ import argparse
 import sys
 from pathlib import Path
 
-import extractor
+from core import chapter_marks, sources, split, tools, tracklist
 
 
 def read_track_names(names_file: Path) -> dict[int, str]:
@@ -39,7 +42,7 @@ def read_track_names(names_file: Path) -> dict[int, str]:
         if not line:
             continue
         chapter_index += 1
-        names[chapter_index] = extractor.strip_leading_number(line)
+        names[chapter_index] = tracklist.strip_leading_number(line)
     return names
 
 
@@ -69,7 +72,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--container",
         default="mkv",
-        help="Output container extension (default: mkv).",
+        choices=("mkv", "flac"),
+        help="mkv: lossless cut of every stream (default). flac: encode the first audio track.",
     )
     parser.add_argument(
         "--list-only",
@@ -91,11 +95,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
 
-    missing = [name for name, ok in extractor.check_tools().items() if not ok]
+    missing = [name for name, ok in tools.check_tools().items() if not ok]
     if missing:
         print("Warning: the following required tools were not found on PATH:", file=sys.stderr)
         for name in missing:
-            url = extractor.TOOL_DOWNLOAD_URLS.get(name, "")
+            url = tools.TOOL_DOWNLOAD_URLS.get(name, "")
             print(f"  - {name}  ({url})", file=sys.stderr)
         print("Continuing anyway - this will fail if they're actually needed.\n", file=sys.stderr)
 
@@ -104,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"Reading chapters from {args.extracted_mkv.name} ...")
-    chapters = extractor.read_chapters(args.extracted_mkv)
+    chapters = chapter_marks.read_chapters(args.extracted_mkv)
     print(f"Found {len(chapters)} chapters.")
 
     if args.list_only:
@@ -126,13 +130,13 @@ def main(argv: list[str] | None = None) -> int:
             ch.name = track_names[ch.index]
 
     print(f"Splitting into {args.output_folder} ...")
-    results = extractor.split_chapters(
-        args.extracted_mkv,
-        chapters,
-        args.output_folder,
-        container=args.container,
-        progress_cb=print,
-    )
+    if args.container == "flac":
+        results = split.split_flac(args.extracted_mkv, chapters, args.output_folder, progress_cb=print)
+    else:
+        source = sources.inspect_playlist(args.extracted_mkv)
+        results = split.split_mkv_direct(
+            args.extracted_mkv, chapters, args.output_folder, audio_tracks=source.audio_tracks,
+            subtitle_tracks=source.subtitle_tracks, video_track=source.video_track, progress_cb=print)
 
     print(f"\nDone. Wrote {len(results)} files:")
     for p in results:

@@ -37,7 +37,7 @@ def qt_app():
 
 @pytest.fixture
 def backend(qt_app, monkeypatch, tmp_path):
-    import settings
+    from gui import settings
     from gui.backend import Backend
     from gui.controllers.exporter import ExportController
     monkeypatch.setattr(settings, 'SETTINGS_PATH', tmp_path / 'settings.json')

@@ -5,7 +5,7 @@ import QtQuick.Dialogs
 RowLayout {
     id: metaPage
     required property var win
-    readonly property var meta: win.metaView.meta || ({ album: {}, audio: {}, track_artists: {}, cover: "" })
+    readonly property var meta: win.metaView.meta || ({ album: {}, track_artists: {}, cover: "" })
     readonly property string coverUrl: meta.cover ? "file:///" + String(meta.cover).replace(/\\/g, "/") : ""
     property string source: backend.config.meta_source || "musicbrainz"
     property bool applyAlbum: true
@@ -22,7 +22,7 @@ RowLayout {
     readonly property real leftWidth: leftLive > 0 ? leftLive : fit(layoutSizes.meta_left || 300, 0.32)
     readonly property real rightWidth: rightLive > 0 ? rightLive : fit(layoutSizes.meta_right || 340, 0.36)
     function searchOnline() {
-        if (!win.appView.busy)
+        if (!win.appView.working)
             backend.metadata.metaSearch(source, qArtist.text, qAlbum.text, metaBarcodeToggle.open ? qBarcode.text : "")
     }
     spacing: 12
@@ -69,8 +69,8 @@ RowLayout {
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 8
-                ActionButton { text: win.tr("cropCover"); Layout.fillWidth: true; enabled: !!metaPage.meta.cover && !win.appView.busy; onClicked: cropDialog.showCover() }
-                ActionButton { text: win.tr("cropRestore"); ghost: true; visible: !!win.metaView.canRestoreCover; enabled: !win.appView.busy; onClicked: backend.metadata.restoreCover() }
+                ActionButton { text: win.tr("cropCover"); Layout.fillWidth: true; enabled: !!metaPage.meta.cover && !win.appView.working; onClicked: cropDialog.showCover() }
+                ActionButton { text: win.tr("cropRestore"); ghost: true; visible: !!win.metaView.canRestoreCover; enabled: !win.appView.working; onClicked: backend.metadata.restoreCover() }
             }
             Copy { text: win.tr("coverHint"); color: Theme.faint; font.pixelSize: Theme.px(12); Layout.fillWidth: true; lineHeight: 1.3 }
 
@@ -193,7 +193,7 @@ RowLayout {
             }
             ActionButton {
                 text: win.metaView.metaStatus === "loading" ? win.tr("searching") : win.tr("searchMeta")
-                Layout.fillWidth: true; enabled: !win.appView.busy
+                Layout.fillWidth: true; enabled: !win.appView.working
                 onClicked: metaPage.searchOnline()
             }
             ListView {
@@ -263,7 +263,7 @@ RowLayout {
             ActionButton {
                 text: win.metaView.metaChosen >= 0 ? win.tr("applyChosen") : win.tr("pickResult")
                 primary: win.metaView.metaChosen >= 0; Layout.fillWidth: true
-                enabled: !win.appView.busy && win.metaView.metaChosen >= 0 && (metaPage.applyAlbum || metaPage.applyCover || metaPage.applyArtists || metaPage.applyTitles)
+                enabled: !win.appView.working && win.metaView.metaChosen >= 0 && (metaPage.applyAlbum || metaPage.applyCover || metaPage.applyArtists || metaPage.applyTitles)
                 onClicked: backend.metadata.metaApply(metaPage.applyAlbum, metaPage.applyCover, metaPage.applyArtists, metaPage.applyTitles)
             }
             Copy {

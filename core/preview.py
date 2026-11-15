@@ -19,20 +19,19 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
-from core import bluray_iso, dvd
-import extractor
+from . import bluray_iso, dvd, jobs, models, sources, tools
 
 MAX_PREVIEW_SECONDS = 15 * 60   # a chapter longer than this is previewed from its start only
-# The .mpls reader lives in extractor (scans need it too); re-exported for callers here.
-CLOCK = extractor.MPLS_CLOCK
-PlayItem = extractor.PlayItem
-read_play_items = extractor.read_play_items
-locate = extractor.locate_play_item
+# The .mpls reader lives in sources (scans need it too); re-exported for callers here.
+CLOCK = sources.MPLS_CLOCK
+PlayItem = sources.PlayItem
+read_play_items = sources.read_play_items
+locate = sources.locate_play_item
 
 
 def _start_time(path: Path) -> float:
     """First timestamp of a transport stream (m2ts clocks rarely start at zero)."""
-    result = extractor.run([extractor.TOOL_PATHS["ffprobe"], "-v", "error", "-show_entries", "format=start_time",
+    result = tools.run([tools.TOOL_PATHS["ffprobe"], "-v", "error", "-show_entries", "format=start_time",
                              "-of", "default=nw=1:nk=1", str(path)], timeout=60)
     try:
         return float(result.stdout.strip())
@@ -40,7 +39,7 @@ def _start_time(path: Path) -> float:
         return 0.0
 
 
-def clip_input(source: Path, track: extractor.Track, audio_index: int, start: float,
+def clip_input(source: Path, track: models.Track, audio_index: int, start: float,
                length: float) -> tuple[list[str], float]:
     """ffmpeg input arguments (seek, file, stream map) and the playable length."""
     if source.suffix.lower() == ".mpls":
@@ -61,7 +60,7 @@ def clip_input(source: Path, track: extractor.Track, audio_index: int, start: fl
     return ["-ss", f"{start:.3f}", "-i", str(source), "-map", f"0:{track.track_id}"], length
 
 
-def _probe_target(source: Path, track: extractor.Track, kind_index: int, kind: str) -> tuple[list[str], str]:
+def _probe_target(source: Path, track: models.Track, kind_index: int, kind: str) -> tuple[list[str], str]:
     """ffprobe input arguments and stream selector for one track of a source."""
     if source.suffix.lower() == ".mpls":
         items = read_play_items(source)
@@ -76,7 +75,7 @@ def _probe_target(source: Path, track: extractor.Track, kind_index: int, kind: s
     return inputs, str(track.track_id)
 
 
-def probe_stream(source: Path, track: extractor.Track, kind_index: int, kind: str = "audio") -> dict:
+def probe_stream(source: Path, track: models.Track, kind_index: int, kind: str = "audio") -> dict:
     """
     ffprobe's view of one stream (decoder name, profile, channel layout, sample format...).
     For video the first decoded frame is added as "frame" (scan type, colour, HDR side data).
@@ -85,7 +84,7 @@ def probe_stream(source: Path, track: extractor.Track, kind_index: int, kind: st
     if not inputs:
         return {}
     extra = ["-read_intervals", "%+#1", "-show_frames"] if kind == "video" else []
-    result = extractor.run([extractor.TOOL_PATHS["ffprobe"], "-v", "error", "-select_streams", select,
+    result = tools.run([tools.TOOL_PATHS["ffprobe"], "-v", "error", "-select_streams", select,
                              "-show_streams", *extra, "-of", "json", *inputs], timeout=60)
     if result.returncode != 0:
         raise RuntimeError((result.stderr or "ffprobe failed").strip()[-400:])
@@ -101,7 +100,7 @@ def probe_stream(source: Path, track: extractor.Track, kind_index: int, kind: st
 SAMPLE_SECONDS = 60
 
 
-def sample_bitrate(source: Path, track: extractor.Track, kind_index: int, kind: str = "video",
+def sample_bitrate(source: Path, track: models.Track, kind_index: int, kind: str = "video",
                    at: float = 0.0, seconds: float = SAMPLE_SECONDS) -> Optional[float]:
     """
     Average bitrate (kbps) of one stream measured over `seconds` of packets starting
@@ -110,7 +109,7 @@ def sample_bitrate(source: Path, track: extractor.Track, kind_index: int, kind: 
     inputs, select = _probe_target(source, track, kind_index, kind)
     if not inputs:
         return None
-    result = extractor.run([extractor.TOOL_PATHS["ffprobe"], "-v", "error", "-select_streams", select,
+    result = tools.run([tools.TOOL_PATHS["ffprobe"], "-v", "error", "-select_streams", select,
                              "-read_intervals", f"{at:.3f}%+{seconds:g}", "-show_entries", "packet=size,dts_time",
                              "-of", "json", *inputs], timeout=120)
     import json
@@ -142,6 +141,11 @@ class MountKeeper:
         self._stack = None
         self._root = None
         self._users = 0
+
+    @property
+    def mounted(self) -> bool:
+        """Whether an image is being kept mounted right now."""
+        return self._image is not None
 
     @contextmanager
     def use(self, playlist: Path, image: Optional[Path]):
@@ -189,19 +193,19 @@ def _finish(result, partial: Path, output: Path, what: str) -> Path:
     return output
 
 
-def render(source: Path, track: extractor.Track, audio_index: int, start: float, end: Optional[float],
+def render(source: Path, track: models.Track, audio_index: int, start: float, end: Optional[float],
            output: Path, cancel_event: Optional[threading.Event] = None) -> Path:
     """Decode [start, end) of one audio track to a stereo FLAC at `output`."""
     args, length = clip_input(source, track, audio_index, start, _clip_length(start, end))
     output.parent.mkdir(parents=True, exist_ok=True)
     partial = output.with_name(output.stem + ".partial.flac")
-    command = [extractor.TOOL_PATHS["ffmpeg"], "-v", "error", "-y", *args,
+    command = [tools.TOOL_PATHS["ffmpeg"], "-v", "error", "-y", *args,
                "-t", f"{max(0.5, length):.3f}", "-vn", "-sn", "-dn",
                "-ac", "2", "-c:a", "flac", "-compression_level", "0", str(partial)]
-    return _finish(extractor.run(command, timeout=600, cancel_event=cancel_event), partial, output, "audio")
+    return _finish(tools.run(command, timeout=600, cancel_event=cancel_event), partial, output, "audio")
 
 
-def render_video(source: Path, track: extractor.Track, audio_index: int, video: extractor.Track,
+def render_video(source: Path, track: models.Track, audio_index: int, video: models.Track,
                  start: float, end: Optional[float], output: Path,
                  cancel_event: Optional[threading.Event] = None) -> Path:
     """
@@ -217,10 +221,10 @@ def render_video(source: Path, track: extractor.Track, audio_index: int, video: 
         video_map = ["-map", f"0:{video.track_id}"]
     output.parent.mkdir(parents=True, exist_ok=True)
     partial = output.with_name(output.stem + ".partial.mkv")
-    command = [extractor.TOOL_PATHS["ffmpeg"], "-v", "error", "-y", *args[:-2], *video_map, *audio_map,
+    command = [tools.TOOL_PATHS["ffmpeg"], "-v", "error", "-y", *args[:-2], *video_map, *audio_map,
                "-t", f"{max(0.5, length):.3f}", "-sn", "-dn", "-c:v", "copy",
                "-ac", "2", "-c:a", "flac", "-compression_level", "0", str(partial)]
-    return _finish(extractor.run(command, timeout=900, cancel_event=cancel_event), partial, output, "video")
+    return _finish(tools.run(command, timeout=900, cancel_event=cancel_event), partial, output, "video")
 
 
 def _peak(chunk) -> float:
@@ -244,7 +248,7 @@ def _ripple(chunk, parts: int = 10) -> float:
 
 def _run_bytes(args: list[str], timeout: float = 300) -> bytes:
     result = subprocess.run(args, capture_output=True, stdin=subprocess.DEVNULL, timeout=timeout,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                            creationflags=tools.NO_WINDOW)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode("utf-8", "replace").strip()[-400:] or "ffmpeg failed")
     return result.stdout
@@ -252,7 +256,7 @@ def _run_bytes(args: list[str], timeout: float = 300) -> bytes:
 
 def clip_peaks(clip: Path, buckets: int = 800) -> list[float]:
     """Loudness outline of a preview clip: about `buckets` peaks between 0 and 1."""
-    data = _run_bytes([extractor.TOOL_PATHS["ffmpeg"], "-v", "error", "-i", str(clip), "-map", "0:a:0",
+    data = _run_bytes([tools.TOOL_PATHS["ffmpeg"], "-v", "error", "-i", str(clip), "-map", "0:a:0",
                        "-ac", "1", "-ar", "4000", "-f", "s16le", "-"])
     samples = array.array("h")
     samples.frombytes(data[:len(data) - len(data) % 2])
@@ -266,7 +270,7 @@ DISC_RATE = 400          # samples per second decoded for the whole-disc outline
 DISC_PER_SECOND = 2      # peaks kept per second
 
 
-def disc_peaks(source: Path, track: extractor.Track, audio_index: int, total_seconds: float,
+def disc_peaks(source: Path, track: models.Track, audio_index: int, total_seconds: float,
                progress: Optional[Callable[[float], None]] = None,
                cancel_event: Optional[threading.Event] = None,
                ripple: Optional[list] = None) -> list[float]:
@@ -283,10 +287,10 @@ def disc_peaks(source: Path, track: extractor.Track, audio_index: int, total_sec
         inputs = [*dvd.input_args(source), "-map", f"0:{track.track_id}"]
     else:
         inputs = ["-i", str(source), "-map", f"0:{track.track_id}"]
-    command = [extractor.TOOL_PATHS["ffmpeg"], "-v", "error", *inputs, "-vn", "-sn", "-dn",
+    command = [tools.TOOL_PATHS["ffmpeg"], "-v", "error", *inputs, "-vn", "-sn", "-dn",
                "-ac", "1", "-ar", str(DISC_RATE), "-f", "s16le", "-"]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                               creationflags=tools.NO_WINDOW)
     per_peak = DISC_RATE // DISC_PER_SECOND
     expected = max(1.0, total_seconds * DISC_RATE)
     peaks: list[float] = []
@@ -295,7 +299,7 @@ def disc_peaks(source: Path, track: extractor.Track, audio_index: int, total_sec
     try:
         while True:
             if cancel_event is not None and cancel_event.is_set():
-                raise extractor.JobCancelled("Waveform cancelled")
+                raise jobs.JobCancelled("Waveform cancelled")
             data = process.stdout.read(per_peak * 2 * 200)
             if not data:
                 break

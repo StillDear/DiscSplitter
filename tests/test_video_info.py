@@ -1,5 +1,5 @@
-import extractor
-import preview
+import core.models
+from core import preview
 from gui import track_info
 import core.tools
 
@@ -22,7 +22,7 @@ DVD_PROBE = dict(codec_name='mpeg2video', width=720, height=480, sample_aspect_r
 
 
 def sheet(probe, sampled=None, track=None):
-    track = track or extractor.Track(0, 'video', 'AVC/H.264/MPEG-4p10', 'V_MPEG4/ISO/AVC', stream_id=0x1011,
+    track = track or core.models.Track(0, 'video', 'AVC/H.264/MPEG-4p10', 'V_MPEG4/ISO/AVC', stream_id=0x1011,
                                      properties={'pixel_dimensions': '1920x1080'})
     out = track_info.sections(track, 'video', 8988, probe, lambda k: k, 'zh', sampled_kbps=sampled)
     return {row['label']: row['value'] for section in out for row in section['rows']}, [s['title'] for s in out]
@@ -38,7 +38,7 @@ def test_blu_ray_video_sheet():
     assert rows['tiBitrate'] == '≈ 23.91 Mbps tiSampled'
     assert rows['tiDynamicRange'] == 'SDR' and rows['tiBitDepth'] == '8-bit' and rows['tiChroma'] == '4:2:0'
     assert rows['tiCodedSize'] == '1920 × 1088' and rows['tiTimecode'] == '01:00:00:00' and rows['tiPid'] == '0x1011 (4113)'
-    assert track_info.video_summary(extractor.Track(0, 'video', 'AVC', 'V_MPEG4/ISO/AVC'), BD_PROBE) == \
+    assert track_info.video_summary(core.models.Track(0, 'video', 'AVC', 'V_MPEG4/ISO/AVC'), BD_PROBE) == \
         'H.264 · 1920×1080 · 23.976p · SDR'
 
 
@@ -51,7 +51,7 @@ def test_hdr_and_dolby_vision_are_named():
 
 
 def test_dvd_video_sheet():
-    track = extractor.Track(0, 'video', 'MPEG-2', 'mpeg2video', properties=dict(width=720, height=480))
+    track = core.models.Track(0, 'video', 'MPEG-2', 'mpeg2video', properties=dict(width=720, height=480))
     rows, _ = sheet(DVD_PROBE, track=track)
     assert rows['tiAspect'] == '16:9 (tiPixelAspect 32:27)'
     assert rows['tiScan'] == 'tiInterlaced · tiTopFirst'
@@ -60,7 +60,7 @@ def test_dvd_video_sheet():
     assert track_info.video_summary(track, DVD_PROBE) == 'MPEG-2 · 720×480 · 29.97i · SDR'
     # before ffprobe answers, the card still names the codec and size
     assert track_info.video_summary(track, None) == 'MPEG-2'
-    assert track_info.video_summary(extractor.Track(0, 'video', 'AVC/H.264/MPEG-4p10', 'V_MPEG4/ISO/AVC',
+    assert track_info.video_summary(core.models.Track(0, 'video', 'AVC/H.264/MPEG-4p10', 'V_MPEG4/ISO/AVC',
                                                     properties={'pixel_dimensions': '1920x1080'}), None) == 'H.264 · 1920×1080'
 
 
@@ -71,19 +71,19 @@ def test_bitrate_is_measured_from_packets(monkeypatch, tmp_path):
     monkeypatch.setattr(core.tools, 'run', lambda args, timeout=None: seen.append(args) or
                         subprocess.CompletedProcess(args, 0, json.dumps(dict(packets=packets)), ''))
     source = tmp_path / 'movie.mkv'
-    rate = preview.sample_bitrate(source, extractor.Track(0, 'video', 'AVC'), 0, at=300)
+    rate = preview.sample_bitrate(source, core.models.Track(0, 'video', 'AVC'), 0, at=300)
     assert round(rate) == round(241 * 100_000 * 8 / 10 / 1000)
     assert seen[0][seen[0].index('-read_intervals') + 1] == '300.000%+60'
 
 
 def test_backend_sheet_for_the_video_track(backend):
-    backend.disc.playlist = extractor.Playlist(path=extractor.Path('movie.mkv'), tracks=[
-        extractor.Track(0, 'video', 'AVC/H.264/MPEG-4p10', 'V_MPEG4/ISO/AVC', properties={'pixel_dimensions': '1920x1080'}),
-        extractor.Track(1, 'audio', 'FLAC', 'A_FLAC', channels=2)], duration_seconds=60)
+    backend.disc.playlist = core.models.Playlist(path=core.models.Path('movie.mkv'), tracks=[
+        core.models.Track(0, 'video', 'AVC/H.264/MPEG-4p10', 'V_MPEG4/ISO/AVC', properties={'pixel_dimensions': '1920x1080'}),
+        core.models.Track(1, 'audio', 'FLAC', 'A_FLAC', channels=2)], duration_seconds=60)
     backend.disc.showTrackInfo('video', 0)
     info = backend.state['trackInfo']
     assert info['title'] == backend.tr('tiVideoTitle') and info['heading'] == 'H.264 · 1920×1080'
-    backend.disc.info_done(backend.disc.info_serial, ('ok', dict(BD_PROBE, sampled_kbps=24000.0)))
+    backend.disc.info_done(dict(BD_PROBE, sampled_kbps=24000.0))
     info = backend.state['trackInfo']
     assert info['heading'] == 'H.264 · 1920×1080 · 23.976p · SDR'
     assert backend.state['videoSummary'] == info['heading']

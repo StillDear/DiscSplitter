@@ -260,8 +260,8 @@ Popup {
                 Copy { text: win.tr("paste"); font.pixelSize: Theme.px(20); font.bold: true }
                 Copy { text: win.tr("pasteHint"); color: Theme.muted; font.pixelSize: Theme.px(12); Layout.fillWidth: true }
             }
-            ActionButton { text: win.tr("pasteFromClipboard"); implicitHeight: 30; enabled: !win.appView.busy; onClicked: dialog.pasteSmart() }
-            ActionButton { text: win.tr("ocrPick"); implicitHeight: 30; enabled: !win.appView.busy; onClicked: imagePicker.open() }
+            ActionButton { text: win.tr("pasteFromClipboard"); implicitHeight: 30; enabled: !win.appView.working; onClicked: dialog.pasteSmart() }
+            ActionButton { text: win.tr("ocrPick"); implicitHeight: 30; enabled: !win.appView.working; onClicked: imagePicker.open() }
             ActionButton {
                 text: win.tr("pasteClear"); ghost: true; implicitHeight: 30
                 enabled: pasteText.text !== ""
@@ -284,11 +284,11 @@ Popup {
                         Layout.fillWidth: true; implicitHeight: 32
                         placeholderText: win.tr("webPlaceholder")
                         text: dialog.web.url
-                        onAccepted: if (text.trim() !== "" && !win.appView.busy) backend.names.fetchSetlist(text)
+                        onAccepted: if (text.trim() !== "" && !win.appView.working) backend.names.fetchSetlist(text)
                     }
                     ActionButton {
                         text: dialog.web.state === "running" ? win.tr("webFetchingShort") : win.tr("webFetch")
-                        implicitHeight: 32; enabled: address.text.trim() !== "" && !win.appView.busy
+                        implicitHeight: 32; enabled: address.text.trim() !== "" && !win.appView.working
                         onClicked: backend.names.fetchSetlist(address.text)
                     }
                 }
@@ -363,7 +363,7 @@ Popup {
                                     itemHeight: 22
                                     options: dialog.ocrState.languages.map(function(tag) { return { key: tag, label: win.tr("ocrLang_" + tag.split("-")[0]) } })
                                     current: dialog.ocrState.language
-                                    onPicked: function(key) { if (!win.appView.busy) backend.names.ocrAgain(key) }
+                                    onPicked: function(key) { if (!win.appView.working) backend.names.ocrAgain(key) }
                                 }
                             }
                         }
@@ -393,7 +393,7 @@ Popup {
                         Keys.onPressed: function(event) {
                             if (event.matches(StandardKey.Paste) && backend.names.clipboardHasImage()) {
                                 event.accepted = true
-                                if (!win.appView.busy) backend.names.ocrClipboard()
+                                if (!win.appView.working) backend.names.ocrClipboard()
                             }
                         }
                         background: Rectangle {
@@ -794,7 +794,7 @@ Popup {
                 text: dialog.pv.exported ? win.tr("pasteExportedTracklist") : win.tr("pasteFootnote")
             }
             ActionButton { text: win.tr("cancel"); onClicked: dialog.close() }
-            ActionButton { text: win.tr("preview"); primary: true; enabled: dialog.pv.valid && !win.appView.busy; onClicked: dialog.apply() }
+            ActionButton { text: win.tr("preview"); primary: true; enabled: dialog.pv.valid && !win.appView.working; onClicked: dialog.apply() }
         }
     }
 
@@ -804,7 +804,7 @@ Popup {
         anchors.fill: parent
         keys: ["text/uri-list", "text/plain"]
         onDropped: function(event) {
-            if (win.appView.busy) return          // another job holds the worker: same rule as the buttons
+            if (win.appView.working) return          // another job holds the worker: same rule as the buttons
             if (event.hasUrls && event.urls.length > 0) {
                 const url = event.urls[0].toString()
                 if (url.startsWith("http")) { address.text = url; backend.names.fetchSetlist(url) }

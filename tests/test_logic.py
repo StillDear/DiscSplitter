@@ -1,19 +1,23 @@
 from pathlib import Path
 import json
 import pytest
-import extractor
-import settings
+import core.jobs
+import core.manifest
+import core.models
+import core.sources
+import core.tracklist
+from gui import settings
 from gui import logic
 from gui.i18n import ZH, EN
 
 
 @pytest.mark.parametrize('event,text,stage,chapter,status', [
-    (extractor.splitting(5, 'Why Worry'), 'Splitting chapter 5: Why Worry', 'splitting', 5, 'running'),
-    (extractor.already_done(2, 'Already'), 'Chapter 2 (Already) already done - skipping.', 'splitting', 2, 'done'),
-    (extractor.extracting('Extracting audio'), 'Extracting audio', 'extracting', None, ''),
-    (extractor.cleaning_up(), 'Cleaning up temporary files...', 'cleanup', None, ''),
-    (extractor.job_failed(RuntimeError('ffmpeg failed on chapter 7:')), 'Failed: ffmpeg failed on chapter 7:', '', None, 'failed'),
-    (extractor.job_cancelled(), 'Cancelled.', '', None, 'cancelled'),
+    (core.jobs.splitting(5, 'Why Worry'), 'Splitting chapter 5: Why Worry', 'splitting', 5, 'running'),
+    (core.jobs.already_done(2, 'Already'), 'Chapter 2 (Already) already done - skipping.', 'splitting', 2, 'done'),
+    (core.jobs.extracting('Extracting audio'), 'Extracting audio', 'extracting', None, ''),
+    (core.jobs.cleaning_up(), 'Cleaning up temporary files...', 'cleanup', None, ''),
+    (core.jobs.job_failed(RuntimeError('ffmpeg failed on chapter 7:')), 'Failed: ffmpeg failed on chapter 7:', '', None, 'failed'),
+    (core.jobs.job_cancelled(), 'Cancelled.', '', None, 'cancelled'),
 ])
 def test_progress_events_carry_their_meaning(event, text, stage, chapter, status):
     assert event == text                       # still the same log line
@@ -27,14 +31,15 @@ def test_plain_text_is_never_parsed(text):
 
 
 def test_paste_numbers_unicode_and_empty_lines():
-    result = extractor.parse_plain_text_tracklist('01. 第一曲\r\n\n02 - Why Worry\n3) One World\nUnnumbered')
-    assert [x.name for x in result] == ['第一曲', 'Why Worry', 'One World', 'Unnumbered']
-    assert extractor.strip_leading_number('01 - Track') == 'Track'
-    assert extractor.parse_plain_text_tracklist(' \n\n') == []
+    from core import setlist
+    result = setlist.parse('01. 第一曲\r\n\n02 - Why Worry\n3) One World\nUnnumbered').items()
+    assert [x.title for x in result] == ['第一曲', 'Why Worry', 'One World', 'Unnumbered']
+    assert core.tracklist.strip_leading_number('01 - Track') == 'Track'
+    assert setlist.parse(' \n\n').items() == []
 
 
 def manifest(output, status='splitting'):
-    return extractor.JobManifest(source_playlist='disc/BDMV/PLAYLIST/00001.mpls', audio_track_id=1,
+    return core.manifest.JobManifest(source_playlist='disc/BDMV/PLAYLIST/00001.mpls', audio_track_id=1,
         audio_track_label='Atmos', video_track_id=0, output_folder=str(output), container='mkv',
         track_names={'1': 'One'}, tool_versions={}, created_at='', status=status)
 
@@ -42,12 +47,12 @@ def manifest(output, status='splitting'):
 def test_resume_discovery_and_complete(tmp_path):
     assert logic.resumable_job(tmp_path) is None
     m = manifest(tmp_path)
-    extractor.write_manifest(tmp_path / '_work', m)
+    core.manifest.write_manifest(tmp_path / '_work', m)
     assert logic.resumable_job(tmp_path).status == 'splitting'
     m.status = 'complete'
-    extractor.write_manifest(tmp_path / '_work', m)
+    core.manifest.write_manifest(tmp_path / '_work', m)
     assert logic.resumable_job(tmp_path) is None
-    (tmp_path / '_work' / extractor.MANIFEST_FILENAME).write_text('{broken')
+    (tmp_path / '_work' / core.manifest.MANIFEST_FILENAME).write_text('{broken')
     assert logic.resumable_job(tmp_path) is None
 
 
@@ -73,7 +78,7 @@ def test_resume_only_exempts_checkpoint_owned_collisions(tmp_path):
     m.completed_outputs = [str(first)]
     legacy_data = json.loads(m.to_json())
     del legacy_data['number_filenames']
-    m = extractor.JobManifest.from_json(json.dumps(legacy_data))
+    m = core.manifest.JobManifest.from_json(json.dumps(legacy_data))
     plan = logic.collision_plan(tmp_path, 2, {1: 'One', 2: 'Two'}, manifest=m)
     assert [p.path for p in plan.collisions] == [second]
 
@@ -116,10 +121,13 @@ def test_qml_literal_translation_keys_exist():
             assert key in ZH, (path, key)
 
 
-def test_scoring_reasons_translate_without_changing_extractor():
+def test_scoring_reasons_translate_without_changing_the_scores():
     from gui.i18n import localize_reason
-    playlist = extractor.Playlist(Path('00001.mpls'),
-        [extractor.Track(0, 'video', 'AVC'), extractor.Track(1, 'audio', 'TrueHD Atmos')], 9, 3600)
-    for reason in extractor.score_playlists([playlist])[0].reasons:
+    playlist = core.models.Playlist(Path('00001.mpls'),
+        [core.models.Track(0, 'video', 'AVC'), core.models.Track(1, 'audio', 'TrueHD Atmos')], 9, 3600)
+    for reason in core.sources.score_playlists([playlist])[0].reasons:
         assert localize_reason(reason, 'en') == reason
         assert localize_reason(reason, 'zh') != reason
+    # Every reason the scoring can give has a translation.
+    from gui.i18n import REASONS_ZH
+    assert set(REASONS_ZH) == set(core.sources.REASON_TEXT)

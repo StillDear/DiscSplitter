@@ -1,4 +1,4 @@
-"""MusicBrainz lookup, an optional online source of track names."""
+"""The MusicBrainz web service: rate-limited requests, release search, picking a disc of a release."""
 
 from __future__ import annotations
 
@@ -10,24 +10,25 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+
+from . import appinfo
+from .jobs import Failure
 from typing import Optional
 
-from .tracklist import TracklistEntry
 
 
 # ---------------------------------------------------------------------------
-# MusicBrainz lookup - an optional, online track-name source. Never applied
-# automatically: search -> pick a release -> fetch its tracklist -> the
-# same match_tracklist_to_chapters()/review flow as any other source.
+# The MusicBrainz web service: rate-limited requests and release search.
+# metadata_sources puts it behind the same search/fetch interface as the
+# other catalogues.
 # ---------------------------------------------------------------------------
 
 MUSICBRAINZ_BASE_URL = "https://musicbrainz.org/ws/2"
 # MusicBrainz's API policy requires a descriptive User-Agent identifying
 # the application and a contact point - requests without one are liable
 # to be blocked outright. See https://musicbrainz.org/doc/MusicBrainz_API
-MUSICBRAINZ_USER_AGENT = (
-    "DiscSplitter/0.1 (+https://github.com/StillDear/DiscSplitter)"
-)
+MUSICBRAINZ_USER_AGENT = appinfo.user_agent()
+
 
 class MusicBrainzBusy(RuntimeError):
     """MusicBrainz refused the request because it is rate limiting or overloaded (429/502/503/504)."""
@@ -69,16 +70,18 @@ def api_get(path: str, params: dict[str, str], timeout: Optional[float] = None) 
         except urllib.error.HTTPError as exc:
             if exc.code in (429, 502, 503, 504):
                 raise MusicBrainzBusy(f"MusicBrainz is busy ({exc.code}): {exc.reason}") from exc
-            raise RuntimeError(f"MusicBrainz returned an error ({exc.code}): {exc.reason}") from exc
+            raise Failure("http_error", f"MusicBrainz returned an error ({exc.code}): {exc.reason}",
+                          host="MusicBrainz", status=exc.code) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"Could not reach MusicBrainz: {exc.reason}") from exc
+            raise Failure("unreachable", f"Could not reach MusicBrainz: {exc.reason}", detail=str(exc.reason),
+                          host="MusicBrainz") from exc
         finally:
             _musicbrainz_last_request = time.monotonic()
 
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"MusicBrainz returned unexpected data: {exc}") from exc
+        raise Failure("bad_response", f"MusicBrainz returned unexpected data: {exc}", host="MusicBrainz") from exc
 
 
 @dataclass
@@ -153,8 +156,8 @@ def search_musicbrainz_releases(
     (and optionally year). Returns MusicBrainz's own ranked candidates -
     this is a search, not a lookup, so more than one release can come
     back (different editions, live vs studio versions, reissues). Nothing
-    is fetched or applied here; use fetch_musicbrainz_tracklist() on
-    whichever candidate the caller (user) picks.
+    is fetched or applied here; metadata_sources.fetch() reads whichever
+    candidate the user picks.
     """
     if not artist.strip() and not album_title.strip():
         raise ValueError("Enter an artist or album title to search MusicBrainz.")
@@ -196,53 +199,3 @@ def search_musicbrainz_releases_by_barcode(barcode: str, limit: int = 8) -> list
 
     data = api_get("release", {"query": f"barcode:{digits}", "limit": str(limit)})
     return _parse_musicbrainz_release_candidates(data)
-
-
-def fetch_musicbrainz_tracklist(release_id: str, chapter_count: Optional[int] = None,
-                                disc_number: Optional[int] = None) -> list[TracklistEntry]:
-    """
-    Fetch the full tracklist (with per-track lengths, where MusicBrainz
-    has them) for a specific release, as TracklistEntry objects ready for
-    match_tracklist_to_chapters(). Only one medium (disc) is used - one
-    Blu-ray playlist is a single continuous chapter set - chosen by
-    pick_medium() from the disc number and chapter count when given.
-
-    start_seconds is only filled in for a run of tracks whose lengths are
-    all known from the start - a length-less track partway through the
-    list means every start time after it would be a guess, so those are
-    left as None instead. match_tracklist_to_chapters() already falls
-    back to positional alignment whenever any entry lacks a start time,
-    so a partial gap here just means a partial fallback there.
-    """
-    data = api_get(f"release/{release_id}", {"inc": "recordings"})
-    media = data.get("media") or []
-    if not media:
-        return []
-
-    entries: list[TracklistEntry] = []
-    cumulative_start = 0.0
-    timing_still_reliable = True
-
-    counts = [len(m.get("tracks") or []) for m in media]
-    medium = media[pick_medium(counts, chapter_count, disc_number)]
-    for track in medium.get("tracks", []):
-        title = (track.get("title") or "").strip()
-        if not title:
-            continue
-        length_ms = track.get("length")
-        duration_seconds = (length_ms / 1000.0) if length_ms else None
-
-        entries.append(
-            TracklistEntry(
-                index=track.get("position", len(entries) + 1),
-                name=title,
-                start_seconds=cumulative_start if timing_still_reliable else None,
-                duration_seconds=duration_seconds,
-            )
-        )
-        if duration_seconds is not None and timing_still_reliable:
-            cumulative_start += duration_seconds
-        else:
-            timing_still_reliable = False
-
-    return entries

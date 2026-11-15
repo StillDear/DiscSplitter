@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import tools
-from .jobs import extracting
+from .jobs import Failure, extracting
 from .models import Chapter, Playlist, Track
 from .tools import TOOL_PATHS
 
@@ -93,9 +93,9 @@ def supported() -> bool:
 
 def require_support() -> None:
     if not supported():
-        raise RuntimeError(
-            "This ffmpeg cannot read DVDs (it was built without the dvdvideo reader). "
-            "Use a full ffmpeg build, such as the gyan.dev \"full\" build, and choose it in Settings.")
+        raise Failure("dvd_unsupported",
+                      "This ffmpeg cannot read DVDs (it was built without the dvdvideo reader). "
+                      "Use a full ffmpeg build, such as the gyan.dev \"full\" build, and choose it in Settings.")
 
 
 def input_args(path: Path, *, chapter: Optional[int] = None, last_chapter: Optional[int] = None,
@@ -176,7 +176,8 @@ def scan(disc: Path) -> list[Playlist]:
             titles.append(inspect(path))
         except RuntimeError as exc:
             if number == 1:
-                raise RuntimeError(f"Could not read the DVD (is it encrypted or incomplete?):\n{exc}") from exc
+                raise Failure("dvd_unreadable", f"Could not read the DVD (is it encrypted or incomplete?):\n{exc}",
+                              detail=str(exc)) from exc
             break
     return [t for t in titles if t.duration_seconds > 0 and (t.audio_tracks or t.video_track)]
 
@@ -247,6 +248,7 @@ def remux(path: Path, output: Path, *, tracks: Optional[list[Track]] = None,
         partial.unlink(missing_ok=True)
         detail = "\n".join(line for line in (result.stderr or "").splitlines()
                            if "Unable to open device file" not in line).strip()
-        raise RuntimeError(f"ffmpeg could not copy the DVD title:\n{detail[-800:]}")
+        raise Failure("tool_failed", f"ffmpeg could not copy the DVD title:\n{detail[-800:]}", detail=detail[-800:],
+                      tool="ffmpeg")
     partial.replace(output)
     return output

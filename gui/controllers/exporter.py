@@ -11,11 +11,11 @@ import shutil
 from PySide6.QtCore import QIODevice, QSaveFile, QUrl, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
-import extractor
-import settings
+from core import jobs, manifest as job_manifest, models, naming, pipeline, sources, space, tracklist, verify
+from .. import settings
 from .. import logic
 from ..export_flow import ExportFlow, Phase
-from .base import Controller
+from .base import Controller, local_path
 
 
 class ExportController(Controller):
@@ -62,7 +62,7 @@ class ExportController(Controller):
     @Slot()
     def reexportFlagged(self):
         """Export again only the songs that failed the check; the other files are kept as they are."""
-        if self.state['busy'] or not self.verify_results or self.flow.output is None:
+        if self.working or not self.verify_results or self.flow.output is None:
             return
         flagged = {r.path for r in self.verify_results if not r.ok}
         kept = {r.path for r in self.verify_results if r.ok}
@@ -71,8 +71,7 @@ class ExportController(Controller):
         self.refresh_resume(self.flow.output)
         if self.flow.manifest:
             return      # an unfinished job is resumed with Retry instead
-        names = {r['number']: r['title'] for r in self.disc.chapter_model.rows if r['title'].strip()}
-        self.prepare_export(self.flow.output, names, False, self.state['outputFormat'], overwrite_ok=flagged, skip_ok=kept)
+        self.prepare_export(self.flow.output, self.disc.titles(), False, self.state['outputFormat'], overwrite_ok=flagged, skip_ok=kept)
 
     # ------------------------------------------------------------ recent exports
     RECENT_KEEP = 8
@@ -98,19 +97,19 @@ class ExportController(Controller):
 
     @Slot()
     def requestDiscard(self):
-        if self.flow.manifest and not self.state['busy']:
+        if self.flow.manifest and not self.working:
             self.dialogRequested.emit('discard', self.tr('discardHint'))
 
     @Slot()
     def discard(self):
-        if self.flow.manifest and not self.state['busy']:
+        if self.flow.manifest and not self.working:
             output = Path(self.flow.manifest.output_folder)
             target = logic.safe_work_folder(output)
             self.task(lambda p: shutil.rmtree(target) if target.exists() else None, lambda r: self.refresh_resume())
 
     @Slot()
     def resume(self):
-        if not self.flow.manifest or self.state['busy'] or not self.flow.reset_stale():
+        if not self.flow.manifest or self.working or not self.flow.reset_stale():
             return
         manifest = self.flow.manifest
         output = Path(manifest.output_folder)
@@ -120,8 +119,10 @@ class ExportController(Controller):
             playlist_path = Path(manifest.source_playlist)
             image = Path(manifest.source_iso) if manifest.source_iso else None
             with self.app.preview_mounts.use(playlist_path, image) as path:
-                playlist = extractor.inspect_playlist(path)
-                size = extractor.source_size_bytes(path)
+                playlist = sources.inspect_playlist(path)
+                sources.apply_bitrates(playlist, sources.audio_bitrates(playlist, path))
+                playlist.measured = True
+                size = space.source_size_bytes(path)
             if image is not None:
                 playlist = replace(playlist, path=playlist_path, iso_image=image)
             audio = next((t for t in playlist.audio_tracks if t.track_id == manifest.audio_track_id), None)
@@ -130,25 +131,16 @@ class ExportController(Controller):
                 raise ValueError(self.tr('noResumeTracks'))
             return playlist, audio, size
         def done(result):
-            self.disc.playlist, self.disc.audio, self.disc.source_size = result
-            self.put(outputFormat=manifest.container)
-            self.disc.populate_tracks(audio_ids, subtitle_ids, keep_video=manifest.video_track_id is not None)
-            names = {int(k): v for k, v in manifest.track_names.items()}
-            self.disc.chapters = [extractor.Chapter(**{k: v for k, v in row.items() if k in {'index', 'start_seconds', 'end_seconds', 'name'}}) for row in manifest.chapters]
-            if not self.disc.chapters:
-                self.disc.chapters = [extractor.Chapter(i, 0) for i in range(1, self.disc.playlist.chapter_count+1)]
-            self.disc.source_chapters = None
-            self.put(chaptersEdited=False)
-            self.disc.rebuild_chapters(names, manifest.chapter_indices)
-            self.prepare_export(output, names, True, manifest.container)
+            self.disc.restore_job(*result, manifest)
+            self.prepare_export(output, self.disc.titles(), True, manifest.container)
         def failed(exc):
             self.flow.abort()
-            self.notify(str(exc))
+            self.report(exc)
         self.task(work, done, failed)
 
     @Slot()
     def startExport(self):
-        if self.state['busy'] or not self.flow.reset_stale():
+        if self.working or not self.flow.reset_stale():
             return
         if not self.disc.playlist or not self.disc.audio or not self.disc.playlist.chapter_count or not self.state['output']:
             self.notify(self.tr('noSelection'))
@@ -161,13 +153,12 @@ class ExportController(Controller):
         if not self.state['chapterSelected']:
             self.notify(self.tr('noSelectedChapters'))
             return
-        names = {r['number']: r['title'] for r in self.disc.chapter_model.rows if r['title'].strip()}
-        self.prepare_export(logic.album_output(self.state['source'], self.state['output']), names, False, self.state['outputFormat'])
+        self.prepare_export(logic.album_output(self.state['source'], self.state['output']), self.disc.titles(), False,
+                            self.state['outputFormat'])
 
     def prepare_export(self, output, names, resume, container, overwrite_ok=None, skip_ok=None):
-        indices = [r['number'] for r in self.disc.chapter_model.rows if r['included']]
-        audio_ids = [t.track_id for t, row in zip(self.disc.playlist.audio_tracks, self.disc.audio_model.rows) if row['chosen']]
-        subtitle_ids = [t.track_id for t, row in zip(self.disc.playlist.subtitle_tracks, self.disc.subtitle_model.rows) if row['chosen']]
+        indices = self.disc.included_numbers()
+        audio_ids, subtitle_ids = self.disc.selected_ids('audio'), self.disc.selected_ids('subtitle')
         keep_video = self.state['keepVideo']
         if container == 'flac':
             subtitle_ids = []
@@ -201,7 +192,7 @@ class ExportController(Controller):
 
     def filename_template(self):
         template = self.cfg.get('filename_template')
-        return template if template in extractor.FILENAME_TEMPLATES else 'title'
+        return template if template in naming.FILENAME_TEMPLATES else 'title'
 
     @Slot()
     def check_collisions(self):
@@ -245,12 +236,12 @@ class ExportController(Controller):
 
     @Slot()
     def fresh(self):
-        if not self.flow.manifest or self.state['busy']:
+        if not self.flow.manifest or self.working:
             return
         target = logic.safe_work_folder(Path(self.flow.manifest.output_folder))
         # Still confirming: the old checkpoint goes, then the normal export flow starts over.
         self.task(lambda p: shutil.rmtree(target) if target.exists() else None, lambda r: self.startExport(),
-                  lambda exc: self.flow.abort() or self.notify(str(exc)))
+                  lambda exc: self.flow.abort() or self.report(exc))
 
     # Logs live with the app's own data, never in the music library.
     LOG_DIR = settings.SETTINGS_PATH.parent / 'logs'
@@ -274,10 +265,10 @@ class ExportController(Controller):
         writes = {p.chapter.index for p in pending['plan'].items
                   if not (p.path in skip or (p.exists and p.path not in overwrite))}
         chapters = [c for c in self.disc.chapters if c.index in writes and c.index in set(pending['indices'])]
-        needed = extractor.estimate_export_bytes(self.disc.playlist, chapters, audio_track_ids=pending['audio_ids'],
+        needed = space.estimate_export_bytes(self.disc.playlist, chapters, audio_track_ids=pending['audio_ids'],
                                                  keep_video=pending['keep_video'], container=pending['container'],
                                                  source_size=self.disc.source_size)
-        free = extractor.free_space_bytes(output)
+        free = space.free_space_bytes(output)
         if needed is None or free is None or needed <= free:
             return None
         return needed, free
@@ -289,7 +280,7 @@ class ExportController(Controller):
             self.launch_export(*pending['space_args'], space_checked=True)
 
     def launch_export(self, overwrite, skip=frozenset(), space_checked=False):
-        if self.state['busy']:
+        if self.working:
             return
         pending = self.flow.pending
         if not space_checked and pending is not None and self.disc.playlist is not None:
@@ -309,7 +300,8 @@ class ExportController(Controller):
         output = plan['output']
         self.log_path = self.new_log_path(output)
         self.log_lines.clear()
-        self.put(page='export', pipeline=True, destination=str(output), logs='', stage='extracting', current=0, completed=0,
+        self.app.put(page='export', pipeline=True)
+        self.put(destination=str(output), logs='', stage='extracting', current=0, completed=0,
                  failed=0, remaining=len(plan['indices']), result=self.flow.result)
         for i, row in enumerate(self.disc.chapter_model.rows):
             item = next((p for p in plan['plan'].items if p.chapter.index == row['number']), None)
@@ -325,7 +317,7 @@ class ExportController(Controller):
         def work(progress):
             keeper.close()   # release an ISO kept mounted for previews before the export mounts it
             output.mkdir(parents=True, exist_ok=True)
-            results = extractor.run_full_pipeline(playlist, audio, plan['names'],
+            results = pipeline.run_full_pipeline(playlist, audio, plan['names'],
                 work_folder=output / '_work', output_folder=output, container=plan['container'],
                 progress_cb=progress, overwrite=overwrite, cancel_event=cancel,
                 resume=plan['resume'], log_path=log_path, metadata=metadata,
@@ -342,12 +334,12 @@ class ExportController(Controller):
         audio_tracks = [t for t in playlist.audio_tracks if t.track_id in plan['audio_ids']]
         keep_video = plan['keep_video'] and plan['container'] != 'flac' and playlist.video_track is not None
         items = [p for p in plan['plan'].items if p.chapter.index in chapters]
-        progress(extractor.ProgressEvent(f'Checking {len(items)} file(s)', stage='verifying'))
+        progress(jobs.ProgressEvent(f'Checking {len(items)} file(s)', stage='verifying'))
         results = []
         for item in items:
             chapter = chapters[item.chapter.index]
-            title = plan['names'].get(chapter.index, '').strip() or f'Track {chapter.index:02d}'
-            result = extractor.verify_output(item.path, chapter, container=plan['container'], audio_tracks=audio_tracks,
+            title = plan['names'].get(chapter.index, '').strip() or models.default_title(chapter.index)
+            result = verify.verify_output(item.path, chapter, container=plan['container'], audio_tracks=audio_tracks,
                                              subtitle_count=len(plan['subtitle_ids']) if plan['container'] != 'flac' else 0,
                                              keep_video=keep_video, title=title)
             results.append(result)
@@ -388,11 +380,11 @@ class ExportController(Controller):
         self.put(**update)
 
     def finish_export(self, exc, results, verified=None):
-        cancelled = isinstance(exc, extractor.JobCancelled)
+        cancelled = isinstance(exc, jobs.JobCancelled)
         result = self.flow.finish(failed=exc is not None, cancelled=cancelled)
         if result is None:
             return
-        manifest = extractor.read_manifest(self.flow.output / '_work')
+        manifest = job_manifest.read_manifest(self.flow.output / '_work')
         complete = {Path(p).name for p in manifest.completed_outputs} if manifest else {p.name for p in results}
         for i, row in enumerate(self.disc.chapter_model.rows):
             if not row['included']:
@@ -402,9 +394,10 @@ class ExportController(Controller):
             self.disc.chapter_model.change(i, status=status)
         titles = {r['number']: r['title'] for r in self.disc.chapter_model.rows
                   if r['included'] and r['status'] == 'done' and r['title'].strip()}
-        self.finished_tracklist = extractor.export_chapter_tracklist(titles) if titles else ''
+        self.finished_tracklist = tracklist.export_chapter_tracklist(titles) if titles else ''
         self.remember_export(sum(r['status'] == 'done' for r in self.disc.chapter_model.rows))
-        self.put(page='done', pipeline=False, result=result,
+        self.app.put(page='done', pipeline=False)
+        self.put(result=result,
                  tracklistAvailable=bool(self.finished_tracklist),
                  completed=sum(r['status'] == 'done' for r in self.disc.chapter_model.rows),
                  failed=sum(r['status'] == 'failed' for r in self.disc.chapter_model.rows),
@@ -412,7 +405,7 @@ class ExportController(Controller):
         self.apply_verification(verified or [])
         self.refresh_resume(self.flow.output)
         if exc and not cancelled:
-            self.notify(str(exc))
+            self.report(exc)
 
     @Slot(result=bool)
     def copyFinishedTracklist(self):
@@ -425,7 +418,7 @@ class ExportController(Controller):
     def saveFinishedTracklist(self, url):
         if not self.finished_tracklist:
             return
-        path = QUrl(url).toLocalFile() if url.startswith('file:') else url
+        path = local_path(url)
         data = self.finished_tracklist.encode('utf-8')
         file = QSaveFile(path)
         if not file.open(QIODevice.WriteOnly) or file.write(data) != len(data) or not file.commit():

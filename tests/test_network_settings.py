@@ -3,10 +3,9 @@ from pathlib import Path
 
 import pytest
 
-import extractor
-import metadata_sources as ms
-import settings
-import tagging
+from core import metadata_sources as ms
+from gui import settings
+from core import tagging
 from gui import logic
 import core.musicbrainz
 
@@ -39,7 +38,7 @@ def proxies_of_installed_opener():
 def test_configure_proxy_modes_and_timeout():
     ms.configure('custom', 'http://127.0.0.1:7890', 30)
     assert proxies_of_installed_opener() == {'http': 'http://127.0.0.1:7890', 'https': 'http://127.0.0.1:7890'}
-    assert extractor.MUSICBRAINZ_TIMEOUT == 30.0
+    assert core.musicbrainz.MUSICBRAINZ_TIMEOUT == 30.0
     ms.configure('none')
     assert proxies_of_installed_opener() == {}
 
@@ -88,7 +87,7 @@ def test_check_reports_states(monkeypatch):
 def test_cover_mode(tmp_path, mode, embedded, folder):
     cover = tmp_path / 'c.jpg'; cover.write_bytes(b'\xff\xd8\xff')
     meta = tagging.empty_metadata(); meta['cover'] = str(cover); meta['cover_mode'] = mode
-    assert ('-attach' in tagging.chapter_args(meta, 1, 1, 'x')) is embedded
+    assert (tagging.embedded_cover(meta) is not None) is embedded
     assert (tagging.write_folder_cover(meta, tmp_path / 'out') is not None) is folder
 
 

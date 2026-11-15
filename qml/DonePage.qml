@@ -57,7 +57,7 @@ RowLayout {
                     Copy { text: win.tr("checkpointHint"); font.pixelSize: Theme.px(12); color: Theme.sub; Layout.fillWidth: true; lineHeight: 1.3 }
                     RowLayout {
                         spacing: 8
-                        ActionButton { text: win.tr("retry"); primary: true; visible: win.exportView.resume; enabled: !win.appView.busy; onClicked: backend.exporter.resume() }
+                        ActionButton { text: win.tr("retry"); primary: true; visible: win.exportView.resume; enabled: !win.appView.working; onClicked: backend.exporter.resume() }
                         ActionButton { text: win.tr("openLog"); onClicked: backend.exporter.openLog() }
                     }
                 }
@@ -73,7 +73,7 @@ RowLayout {
                     Copy { text: win.tr("verifyIssuesHint"); font.pixelSize: Theme.px(12); color: Theme.sub; Layout.fillWidth: true; lineHeight: 1.3 }
                     RowLayout {
                         spacing: 8
-                        ActionButton { text: win.tr("reexportFlagged"); primary: true; enabled: !win.appView.busy && !win.exportView.resume; onClicked: backend.exporter.reexportFlagged() }
+                        ActionButton { text: win.tr("reexportFlagged"); primary: true; enabled: !win.appView.working && !win.exportView.resume; onClicked: backend.exporter.reexportFlagged() }
                         ActionButton { text: win.tr("openLog"); onClicked: backend.exporter.openLog() }
                     }
                 }
@@ -93,8 +93,8 @@ RowLayout {
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 8
                 ActionButton { text: win.tr("openOutput"); large: true; font.bold: true; Layout.fillWidth: true; onClicked: backend.exporter.openOutput() }
-                ActionButton { text: win.tr("rerun"); large: true; Layout.fillWidth: true; enabled: !win.appView.busy; onClicked: backend.navigate("main") }
-                ActionButton { text: win.tr("nextDisc"); large: true; Layout.fillWidth: true; enabled: !win.appView.busy; onClicked: backend.navigate("start") }
+                ActionButton { text: win.tr("rerun"); large: true; Layout.fillWidth: true; enabled: !win.appView.working; onClicked: backend.navigate("main") }
+                ActionButton { text: win.tr("nextDisc"); large: true; Layout.fillWidth: true; enabled: !win.appView.working; onClicked: backend.navigate("start") }
             }
         }
     }
@@ -108,7 +108,7 @@ RowLayout {
                 Copy { text: win.tr("outputFile"); font.pixelSize: Theme.px(20); font.bold: true; Layout.fillWidth: true; wrapMode: Text.NoWrap }
                 ActionButton {
                     text: win.tr(donePage.copiedTracklist ? "tracklistCopied" : "copyTracklist")
-                    enabled: win.exportView.tracklistAvailable && !win.appView.busy
+                    enabled: win.exportView.tracklistAvailable && !win.appView.working
                     onClicked: {
                         if (backend.exporter.copyFinishedTracklist()) {
                             donePage.copiedTracklist = true
@@ -118,7 +118,7 @@ RowLayout {
                 }
                 ActionButton {
                     text: win.tr("saveTracklist")
-                    enabled: win.exportView.tracklistAvailable && !win.appView.busy
+                    enabled: win.exportView.tracklistAvailable && !win.appView.working
                     onClicked: saveTracklist.open()
                 }
                 Badge { tone: "good"; text: win.exportView.completed + " " + win.tr("done") }

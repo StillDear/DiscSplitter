@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import tagging
-
+from . import tagging
 from .models import Chapter
 
 
@@ -86,7 +85,7 @@ def plan_output_files(
     stems: list[str] = []
     name_counts: dict[str, int] = {}
     for position, ch in enumerate(chapters, start=1):
-        base = sanitize_filename(ch.name or f"Track {ch.index:02d}")
+        base = sanitize_filename(ch.title)
         if filename_template and filename_template != "title":
             stem = sanitize_filename(render_filename(filename_template, position, base,
                                                      tagging.artist_for(metadata, ch.index)))

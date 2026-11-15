@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Optional
 
-import setlist
+from . import setlist
+from .jobs import Failure
 
 # A plain browser identity: some sites refuse unknown clients.
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -197,9 +198,11 @@ def fetch(url: str, timeout: float = 15.0) -> str:
             data = response.read(MAX_BYTES)
             charset = response.headers.get_content_charset()
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"{parts.netloc} returned an error ({exc.code})") from exc
+        raise Failure("http_error", f"{parts.netloc} returned an error ({exc.code})", host=parts.netloc,
+                      status=exc.code) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Could not reach {parts.netloc}: {exc.reason}") from exc
+        raise Failure("unreachable", f"Could not reach {parts.netloc}: {exc.reason}", detail=str(exc.reason),
+                      host=parts.netloc) from exc
     return _decode(data, charset)
 
 

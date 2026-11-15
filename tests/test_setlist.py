@@ -1,6 +1,6 @@
-import extractor
-import setlist
-from setlist import SONG, EXTRA, SKIP, HEADER, DISC, NOTE, OFF, MERGED
+import core.models
+from core import setlist
+from core.setlist import SONG, EXTRA, SKIP, HEADER, DISC, NOTE, OFF, MERGED
 
 
 def kinds(parsed):
@@ -10,7 +10,7 @@ def kinds(parsed):
 def chapters(lengths):
     out, t = [], 0.0
     for i, n in enumerate(lengths, 1):
-        out.append(extractor.Chapter(i, t, t + n))
+        out.append(core.models.Chapter(i, t, t + n))
         t += n
     return out
 

@@ -115,14 +115,14 @@ ApplicationWindow {
             Layout.fillWidth: true; Layout.preferredHeight: 44; spacing: 8
             ActionButton {
                 visible: (win.appView.page === "review" || win.appView.page === "settings" || win.appView.page === "metadata") && !win.appView.pipeline
-                ghost: true; text: "  " + win.tr("back"); enabled: !win.appView.busy || win.appView.page === "settings"
+                ghost: true; text: "  " + win.tr("back"); enabled: !win.appView.working || win.appView.page === "settings"
                 leftPadding: 30; implicitWidth: contentItem.implicitWidth + 40
                 onClicked: backend.navigate(win.discView.album || win.discView.source ? "main" : "start")
                 Icon { kind: "back"; ink: Theme.text; width: 14; height: 14; anchors.verticalCenter: parent.verticalCenter; x: 10 }
             }
             Item { Layout.fillWidth: true }
-            BusyIndicator { running: win.appView.busy && !win.appView.pipeline; visible: running; Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
-            Copy { visible: win.appView.busy && !win.appView.pipeline; text: win.tr(win.appView.status); color: Theme.muted; wrapMode: Text.NoWrap }
+            BusyIndicator { running: win.appView.working && !win.appView.pipeline; visible: running; Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
+            Copy { visible: win.appView.working && !win.appView.pipeline; text: win.tr(win.appView.status); color: Theme.muted; wrapMode: Text.NoWrap }
             // Language, settings and help: on the workspace, and on the start page (before any disc
             // is open it is the only way to the settings, e.g. to point at a missing tool).
             Segmented {
@@ -132,7 +132,7 @@ ApplicationWindow {
                 current: backend.config.language
                 onPicked: function(key) { backend.setPreference("language", key) }
             }
-            IconButton { visible: win.appView.page === "start"; iconKind: "gear"; enabled: !win.appView.busy; onClicked: backend.navigate("settings"); ToolTip.visible: hovered; ToolTip.text: win.tr("settings"); Accessible.name: win.tr("settings") }
+            IconButton { visible: win.appView.page === "start"; iconKind: "gear"; enabled: !win.appView.working; onClicked: backend.navigate("settings"); ToolTip.visible: hovered; ToolTip.text: win.tr("settings"); Accessible.name: win.tr("settings") }
             IconButton { id: helpButton; visible: win.appView.page === "start"; iconKind: "help"; onClicked: win.openHelp(helpButton); ToolTip.visible: hovered; ToolTip.text: win.tr("help"); Accessible.name: win.tr("help") }
         }
 
@@ -261,7 +261,7 @@ ApplicationWindow {
                 Layout.fillWidth: true; spacing: 8
                 ActionButton { text: win.dialogKind === "tools" ? win.tr("later") : win.tr("cancel"); onClicked: modal.close() }
                 Item { Layout.fillWidth: true }
-                ActionButton { visible: win.dialogKind === "tools"; text: win.tr("checkTools"); enabled: !win.appView.busy; primary: true; onClicked: { modal.close(); backend.checkTools() } }
+                ActionButton { visible: win.dialogKind === "tools"; text: win.tr("checkTools"); enabled: !win.appView.working; primary: true; onClicked: { modal.close(); backend.checkTools() } }
                 ActionButton { visible: win.dialogKind === "collision" || win.dialogKind === "diskSpace"; text: win.tr("anotherFolder"); onClicked: { modal.close(); win.openFolder("output") } }
                 ActionButton { visible: win.dialogKind === "diskSpace"; text: win.tr("exportAnyway"); danger: true; onClicked: { win.dialogKind = ""; modal.close(); backend.exporter.exportDespiteSpace() } }
                 ActionButton { visible: win.dialogKind === "collision"; text: win.tr("skipExisting"); onClicked: { win.dialogKind = ""; modal.close(); backend.exporter.skipExisting() } }

@@ -36,7 +36,7 @@ class JobManifest:
     chapters: list[dict] = field(default_factory=list)             # [{index, start_seconds, end_seconds, name}]
     completed_outputs: list[str] = field(default_factory=list)     # output paths already written, in order
     source_iso: Optional[str] = None
-    metadata: dict = field(default_factory=dict)   # tags for the split files (see tagging.py)
+    metadata: dict = field(default_factory=dict)   # tags for the split files (see core/tagging.py)
     audio_track_ids: Optional[list[int]] = None   # None means a legacy single-track job
     subtitle_track_ids: list[int] = field(default_factory=list)
     chapter_indices: Optional[list[int]] = None   # None means all original chapters

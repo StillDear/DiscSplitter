@@ -11,16 +11,16 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 import tempfile
+import threading
+import time
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
-import extractor
-import metadata_sources
-import preview
-import settings
+from core import appinfo, jobs, metadata_sources, naming, preview, tools
+from . import settings
 from . import logic
-from .controllers.base import View
+from .controllers.base import View, local_path
 from .controllers.disc import DiscController
 from .controllers.exporter import ExportController
 from .controllers.metadata import MetadataController
@@ -33,7 +33,7 @@ from .models import Rows
 class WorkerSignals(QObject):
     done = Signal(int, object)
     failed = Signal(int, object)
-    progress = Signal(object)    # object, not str: Qt would turn an extractor.ProgressEvent into a plain string
+    progress = Signal(object)    # object, not str: Qt would turn an jobs.ProgressEvent into a plain string
 
 
 class Worker(QRunnable):
@@ -58,7 +58,7 @@ class Backend(View):
 
     def __init__(self, smoke=False):
         cfg = settings.load()
-        super().__init__(None, page='start', busy=False, pipeline=False, status='ready', toolMissing=False,
+        super().__init__(None, page='start', busy=False, working=False, pipeline=False, status='ready', toolMissing=False,
                          systemAccent='', systemScale=100, startScale=str(cfg.get('interface_scale', 'system')),
                          recentExports=[], netTest=[])
         self.smoke = smoke
@@ -74,8 +74,10 @@ class Backend(View):
         # Shared by previews, track details and exports: one mounted disc image, one scratch folder.
         self.preview_mounts = preview.MountKeeper()
         atexit.register(self.preview_mounts.close)
-        self.preview_dir = Path(tempfile.mkdtemp(prefix='dts-preview-'))
+        self.preview_dir = Path(tempfile.mkdtemp(prefix=self.PREVIEW_PREFIX))
         atexit.register(shutil.rmtree, self.preview_dir, True)
+        if not smoke:
+            threading.Thread(target=self.clear_stale_previews, args=(self.preview_dir,), daemon=True).start()
         self.tool_model = Rows(['tool', 'path', 'available'], self)
 
         self._disc = DiscController(self)
@@ -84,6 +86,9 @@ class Backend(View):
         self._metadata = MetadataController(self)
         self._exporter = ExportController(self)
         self.views = (self, self._disc, self._preview, self._names, self._metadata, self._exporter)
+        self._state = None              # the merged map behind `state`, rebuilt after any slice changes
+        for view in self.views:
+            view.viewChanged.connect(self._forget_state)
         self.view_of = {}               # state key -> the slice that holds it
         for view in self.views:
             for key in view.view:
@@ -97,6 +102,27 @@ class Backend(View):
         if not smoke:
             QTimer.singleShot(100, self.checkTools)
 
+    PREVIEW_PREFIX = 'discsplitter-preview-'
+    STALE_PREVIEW_SECONDS = 2 * 24 * 3600
+
+    @classmethod
+    def clear_stale_previews(cls, keep):
+        """Scratch folders a crashed run left behind (clips are large); a running copy's folder is recent."""
+        now = time.time()
+        for prefix in (cls.PREVIEW_PREFIX, 'dts-preview-'):
+            for folder in Path(tempfile.gettempdir()).glob(prefix + '*'):
+                try:
+                    if folder != keep and folder.is_dir() and now - folder.stat().st_mtime > cls.STALE_PREVIEW_SECONDS:
+                        shutil.rmtree(folder, ignore_errors=True)
+                except OSError:
+                    pass
+
+    def quit(self):
+        """Leave: background readers (waveform, preview renders) stop first, so no disc image stays in use."""
+        self.preview.stop_waveform(clear=False)
+        self.preview.preview_session.stop()
+        self.quitReady.emit()
+
     # The controllers, the same names in Python and QML: backend.disc.selectAudio(...), backend.exporter.view.logs
     disc = Property(QObject, lambda self: self._disc, constant=True)
     preview = Property(QObject, lambda self: self._preview, constant=True)
@@ -107,7 +133,12 @@ class Backend(View):
     @Property('QVariantMap', notify=changed)
     def state(self):
         """Every slice of the state in one read-only map, for Python callers. QML binds to the slices."""
-        return {key: value for view in self.views for key, value in view.view.items()}
+        if self._state is None:
+            self._state = {key: value for view in self.views for key, value in view.view.items()}
+        return self._state
+
+    def _forget_state(self):
+        self._state = None
 
     def put(self, **values):
         """Update the state, wherever each key lives; each slice announces only a real change."""
@@ -136,20 +167,28 @@ class Backend(View):
         self.configChanged.emit()
 
     def apply_tool_paths(self):
-        from core import tools
-        for tool in extractor.TOOL_PATHS:
-            extractor.set_tool_path(tool, tools.default_tool_path(tool, self.cfg.get(tool + '_path', tool)))
+        for tool in tools.TOOL_PATHS:
+            tools.set_tool_path(tool, tools.default_tool_path(tool, self.cfg.get(tool + '_path', tool)))
 
-    def task(self, fn, done, failed=None, label='ready', begin=None):
+    @property
+    def working(self):
+        """A job of either kind is under way (see task)."""
+        return self.state['working']
+
+    def task(self, fn, done, failed=None, label='ready', begin=None, blocking=True):
         """
-        Run fn on the worker pool; one job at a time (idle -> busy -> idle).
+        Run fn on the worker pool; one job at a time (idle -> working -> idle).
 
+        blocking: the job reads the disc or decides what is on screen (scan, read chapters, export),
+        so `busy` is set and nothing may be edited meanwhile. A job that only waits on the network
+        or reads a screenshot passes blocking=False: `working` alone is set, so no second job can
+        start, but titles, ticks and track choices stay editable while it runs.
         label: the title bar's status text while it runs, reset to "ready" when it ends.
         begin: state that says "this job is under way" (a spinner, a "running" badge). It is
         applied only if the job really starts, so a rejected job can never leave it stuck.
         Returns False when another job is running (nothing is changed then).
         """
-        if self.state['busy']:
+        if self.working:
             return False
         self.serial += 1
         worker = Worker(self.serial, fn)
@@ -158,31 +197,51 @@ class Backend(View):
         worker.signals.failed.connect(self.task_failed)
         worker.signals.progress.connect(self.exporter.progress)
         # Results are queued to this thread, so they cannot arrive before this put.
-        self.put(busy=True, status=label, **(begin or {}))
+        self.put(busy=blocking, working=True, status=label, **(begin or {}))
         self.pool.start(worker)
         return True
 
     @Slot(int, object)
     def task_done(self, number, result):
         _, done, _ = self.jobs.pop(number)
-        self.put(busy=False, status='ready')
+        self.put(busy=False, working=False, status='ready')
         done(result)
-        if self.close_pending and not self.state['busy']:
-            self.quitReady.emit()
+        if self.close_pending and not self.working:
+            self.quit()
 
     @Slot(int, object)
     def task_failed(self, number, exc):
         _, _, failed = self.jobs.pop(number)
-        self.put(busy=False, status='ready')
+        self.put(busy=False, working=False, status='ready')
         if failed:
             failed(exc)
         else:
-            self.notify(str(exc))
-        if self.close_pending and not self.state['busy']:
-            self.quitReady.emit()
+            self.report(exc)
+        if self.close_pending and not self.working:
+            self.quit()
 
     def notify(self, text, title='error'):
         self.dialogRequested.emit(title, text)
+
+    def error_text(self, exc):
+        """
+        An error in the user's words: a core Failure is said in the interface language (its code
+        picks the sentence), with the tool's own output kept underneath; anything else as it is.
+        """
+        if isinstance(exc, jobs.Failure):
+            template = self.texts.get('err_' + exc.code)
+            if template:
+                try:
+                    text = template.format(**exc.params)
+                except (KeyError, IndexError):
+                    text = ''
+                if text:
+                    return f'{text}\n\n{exc.detail}' if exc.detail else text
+        return str(exc)
+
+    def report(self, exc):
+        """Tell the user a job failed."""
+        self.notify(self.error_text(exc))
 
     @Slot(str)
     def navigate(self, page):
@@ -200,7 +259,7 @@ class Backend(View):
                    'meta_source': set(metadata_sources.SOURCES), 'itunes_country': logic.ITUNES_COUNTRIES,
                    'cover_size': set(metadata_sources.COVER_SIZES), 'cover_target': {'both', 'embed', 'folder'},
                    'meta_auto_search': {'true', 'false'},
-                   'filename_template': set(extractor.FILENAME_TEMPLATES),
+                   'filename_template': set(naming.FILENAME_TEMPLATES),
                    'collision_policy': {'ask', 'skip', 'overwrite'},
                    'chapter_language': {'first', 'eng', 'jpn', 'zho', 'kor'},
                    'duration_tolerance': {'10', '20', '40'}, 'waveform': {'true', 'false'},
@@ -298,49 +357,53 @@ class Backend(View):
         def done(results):
             self.put(netTest=[dict(source=s, label=names[s], state=state, ms=ms, detail=detail)
                               for s, state, ms, detail in results])
-        self.task(work, done, lambda exc: self.put(netTest=[]) or self.notify(str(exc)),
+        self.task(work, done, lambda exc: self.put(netTest=[]) or self.report(exc),
                   begin=dict(netTest=[dict(source=s, label=names[s], state='running', ms=0, detail='')
-                                      for s in metadata_sources.SOURCES]))
+                                      for s in metadata_sources.SOURCES]), blocking=False)
 
     @Slot()
     def requestClose(self):
-        if self.state['busy']:
+        if self.working:
             self.dialogRequested.emit('closeBusy', self.tr('closeBusy'))
         else:
-            self.quitReady.emit()
+            self.quit()
 
     @Slot()
     def closeWhenReady(self):
         self.close_pending = True
         self.exporter.cancel()
-        if not self.state['busy']:
-            self.quitReady.emit()
+        if not self.working:
+            self.quit()
 
     @Slot()
     def checkTools(self):
         def done(found):
-            self.tool_model.replace([dict(tool=t, path=extractor.TOOL_PATHS[t], available=ok) for t, ok in found.items()])
+            paths = tools.tool_paths()
+            self.tool_model.replace([dict(tool=t, path=paths.get(t, t), available=ok) for t, ok in found.items()])
             self.put(toolMissing=not all(found.values()))
             if not all(found.values()):
                 self.dialogRequested.emit('tools', self.tr('toolsHint'))
-        self.task(lambda p: extractor.check_tools(), done)
+        self.task(lambda p: tools.check_tools(), done)
 
     @Slot(str, str)
     def locateTool(self, tool, path):
-        if tool not in extractor.TOOL_PATHS:
+        if tool not in tools.tool_paths():
             return
-        if path.startswith('file:'):
-            path = QUrl(path).toLocalFile()
+        path = local_path(path)
         def work(p):
-            ok, message = extractor.verify_tool_at_path(path, tool)
+            ok, message = tools.verify_tool_at_path(path, tool)
             if not ok:
                 raise ValueError(message)
-            paths = {tool: path}
-            for sibling in extractor.TOOL_PATHS:
-                if sibling != tool:
-                    guessed = extractor.guess_sibling_tool_path(path, sibling)
-                    if guessed and extractor.verify_tool_at_path(guessed, sibling)[0]:
+            # The rest of the same install sits next to it. mkvpropedit has no setting of its own:
+            # it is found through mkvmerge, so picking it sets the tools beside it.
+            paths = {tool: path} if tool in tools.TOOL_PATHS else {}
+            for sibling in tools.tool_family(tool):
+                if sibling != tool and sibling in tools.TOOL_PATHS:
+                    guessed = tools.guess_sibling_tool_path(path, sibling)
+                    if guessed and tools.verify_tool_at_path(guessed, sibling)[0]:
                         paths[sibling] = guessed
+            if not paths:
+                raise ValueError(f"mkvmerge was not found next to {Path(path).name}.")
             return paths
         def done(paths):
             self.set_config(**{name + '_path': value for name, value in paths.items()})
@@ -350,14 +413,16 @@ class Backend(View):
 
     @Slot(str)
     def downloadTool(self, tool):
-        url = extractor.TOOL_DOWNLOAD_URLS.get(tool)
+        url = tools.TOOL_DOWNLOAD_URLS.get(tool)
         if url:
             QDesktopServices.openUrl(QUrl(url))
 
     @Slot(str)
     def help(self, topic):
-        if topic in {'tips', 'about'}:
-            self.notify(self.tr(topic+'Text'), topic)
+        if topic == 'about':
+            self.notify(f"{self.tr('aboutText')}\n\n{self.tr('versionLabel')} {appinfo.version()}\n{appinfo.REPOSITORY}", topic)
+        elif topic == 'tips':
+            self.notify(self.tr('tipsText'), topic)
         else:
             suffix = '/issues' if topic == 'report' else '#readme'
-            QDesktopServices.openUrl(QUrl('https://github.com/StillDear/DiscSplitter'+suffix))
+            QDesktopServices.openUrl(QUrl(appinfo.REPOSITORY + suffix))

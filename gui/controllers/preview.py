@@ -9,9 +9,9 @@ import threading
 
 from PySide6.QtCore import QObject, Property, QRunnable, QUrl, Signal, Slot
 
-import extractor
-import preview
-import settings
+from core import jobs, models, preview
+from .. import settings
+from ..background import SideJob
 from ..preview_session import PreviewSession, State as PreviewState
 from .base import Controller
 
@@ -31,7 +31,7 @@ class PreviewWorker(QRunnable):
     def run(self):
         try:
             self.signals.done.emit(self.number, str(self.fn()))
-        except extractor.JobCancelled:
+        except jobs.JobCancelled:
             pass
         except Exception as exc:
             self.signals.failed.emit(self.number, str(exc))
@@ -43,8 +43,6 @@ class PreviewController(Controller):
 
     waveChanged = Signal()
     previewWaveChanged = Signal()
-    waveReady = Signal(int, object)
-    waveProgressed = Signal(int, float)
 
     def __init__(self, app):
         super().__init__(app, previewRow=-1, previewAudio=-1, previewUrl='', previewLoading=False, previewError='',
@@ -53,10 +51,7 @@ class PreviewController(Controller):
         self._wave = []
         self.ripple = []        # level swing per outline step (see preview._ripple)
         self._preview_wave = []
-        self.wave_serial = 0
-        self.wave_cancel = None
-        self.waveReady.connect(self.wave_done)
-        self.waveProgressed.connect(self.wave_progress)
+        self.wave_job = SideJob(self, self.wave_done, self.wave_failed, self.wave_progress)
         self.preview_session = PreviewSession()     # off / loading / ready / error, and its renders
 
     # ------------------------------------------------------------ audio preview
@@ -104,13 +99,26 @@ class PreviewController(Controller):
         return (self.state['outputFormat'] == 'mkv' and self.state['keepVideo']
                 and self.disc.playlist is not None and self.disc.playlist.video_track is not None)
 
-    def prune_video_clips(self, keep):
-        """Video clips are large (about 1 GB per 5 minutes): keep only the newest few."""
-        clips = sorted(self.app.preview_dir.glob('*-v.mkv'), key=lambda p: p.stat().st_mtime, reverse=True)
-        for clip in clips[3:]:
-            if str(clip) != keep:
-                clip.unlink(missing_ok=True)
-                clip.with_suffix('.json').unlink(missing_ok=True)
+    # Clips kept in the scratch folder: video is about 1 GB per 5 minutes, lossless audio tens of MB per song.
+    KEEP_CLIPS = {'*-v.mkv': 3, '*.flac': 12}
+
+    def prune_clips(self, keep):
+        """Keep only the newest few clips of each kind (never the one playing or one still rendering)."""
+        busy = {keep, self.preview_session.wanted, *self.preview_session.renders}
+        for pattern, count in self.KEEP_CLIPS.items():
+            clips = []
+            for clip in self.app.preview_dir.glob(pattern):
+                try:
+                    clips.append((clip.stat().st_mtime, clip))
+                except OSError:
+                    pass
+            for _, clip in sorted(clips, reverse=True)[count:]:
+                if str(clip) not in busy and '.partial' not in clip.name:
+                    try:
+                        clip.unlink(missing_ok=True)
+                        clip.with_suffix('.json').unlink(missing_ok=True)
+                    except OSError:
+                        pass        # still open in the player: the next round takes it
 
     def clip_wave(self, target):
         try:
@@ -129,7 +137,7 @@ class PreviewController(Controller):
 
         def render():
             if cancel.is_set():
-                raise extractor.JobCancelled('Preview cancelled')
+                raise jobs.JobCancelled('Preview cancelled')
             with keeper.use(playlist.path, playlist.iso_image) as path:
                 if video is not None:
                     clip = preview.render_video(path, track, audio_index, video, job['start'], job['end'],
@@ -191,14 +199,17 @@ class PreviewController(Controller):
         return hashlib.sha1(text.encode('utf-8')).hexdigest()[:16]
 
     def stop_waveform(self, clear=True):
-        if self.wave_cancel is not None:
-            self.wave_cancel.set()
-            self.wave_cancel = None
-        self.wave_serial += 1
+        self.wave_job.cancel()
         if clear:
             self._wave, self.ripple = [], []
             self.waveChanged.emit()
             self.put(waveState='off', waveProgress=0)
+
+    def show_waveform(self, peaks, ripple):
+        self._wave, self.ripple = peaks, ripple
+        self.waveChanged.emit()
+        self.put(waveState='ready', waveProgress=100)
+        self.disc.refresh_insights()
 
     def start_waveform(self):
         """Outline of the whole programme for the timeline, read once in the background and cached."""
@@ -210,53 +221,46 @@ class PreviewController(Controller):
         cache = self.WAVE_CACHE / f'{self.wave_key(playlist, track)}.json'
         try:
             stored = json.loads(cache.read_text(encoding='utf-8'))
-            self._wave, self.ripple = stored['peaks'], stored.get('ripple') or []
-            self.waveChanged.emit()
-            self.put(waveState='ready', waveProgress=100)
-            self.disc.refresh_insights()
+            self.show_waveform(stored['peaks'], stored.get('ripple') or [])
             return
-        except (OSError, ValueError):
+        except (OSError, ValueError, KeyError, TypeError):
             pass
         total = playlist.duration_seconds or max((c.end_seconds or 0 for c in self.disc.chapters), default=0)
-        cancel = self.wave_cancel = threading.Event()
-        number = self.wave_serial
         keeper, index = self.app.preview_mounts, playlist.audio_tracks.index(track)
         self.put(waveState='computing', waveProgress=0)
-        def run():
-            try:
-                with keeper.use(playlist.path, playlist.iso_image) as path:
-                    ripple = []
-                    peaks = preview.disc_peaks(path, track, index, total,
-                                               lambda f: self.waveProgressed.emit(number, f), cancel, ripple)
-                cache.parent.mkdir(parents=True, exist_ok=True)
-                cache.write_text(json.dumps(dict(peaks=peaks, ripple=ripple)), encoding='utf-8')
-                result = ('ok', (peaks, ripple))
-            except extractor.JobCancelled:
-                return
-            except Exception as exc:
-                result = ('error', str(exc))
-            self.waveReady.emit(number, result)
-        threading.Thread(target=run, daemon=True).start()
 
-    @Slot(int, float)
-    def wave_progress(self, number, fraction):
+        def scan(cancel, progress):
+            with keeper.use(playlist.path, playlist.iso_image) as path:
+                ripple = []
+                peaks = preview.disc_peaks(path, track, index, total, progress, cancel, ripple)
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(dict(peaks=peaks, ripple=ripple)), encoding='utf-8')
+            self.trim_wave_cache(cache)
+            return peaks, ripple
+        self.wave_job.start(scan)
+
+    WAVE_CACHE_KEEP = 200       # outlines kept on disk (about 100-300 KB each); the oldest go first
+
+    @classmethod
+    def trim_wave_cache(cls, keep):
+        try:
+            files = sorted(cls.WAVE_CACHE.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+            for stale in files[cls.WAVE_CACHE_KEEP:]:
+                if stale != keep:
+                    stale.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def wave_progress(self, fraction):
         percent = int(fraction * 100)
-        if number == self.wave_serial and percent != self.state['waveProgress']:
+        if percent != self.state['waveProgress']:
             self.put(waveProgress=percent)
 
-    @Slot(int, object)
-    def wave_done(self, number, result):
-        if number != self.wave_serial:
-            return
-        status, value = result
-        self.wave_cancel = None
-        if status == 'ok':
-            self._wave, self.ripple = value
-            self.waveChanged.emit()
-            self.put(waveState='ready', waveProgress=100)
-            self.disc.refresh_insights()
-        else:
-            self.put(waveState='failed')
+    def wave_done(self, result):
+        self.show_waveform(*result)
+
+    def wave_failed(self, exc):
+        self.put(waveState='failed')
 
     @Slot(int, int)
     def previewChapter(self, row, audio_row=-1):
@@ -278,7 +282,7 @@ class PreviewController(Controller):
             session.listen = previous
             return
         target, track = job['target'], job['track']
-        title = self.disc.chapter_model.rows[row]['title'].strip() or f"Track {job['number']:02d}"
+        title = self.disc.chapter_model.rows[row]['title'].strip() or models.default_title(job['number'])
         ready = target.is_file()
         session.want(str(target), ready)
         self.set_preview_wave(self.clip_wave(target) if ready else [])
@@ -301,8 +305,7 @@ class PreviewController(Controller):
         if session.arrived(target):
             self.set_preview_wave(self.clip_wave(path))
             self.publish_preview(previewUrl=QUrl.fromLocalFile(path).toString())
-            if path.endswith('-v.mkv'):
-                self.prune_video_clips(path)
+        self.prune_clips(path)
         self.prefetch_next()
 
     @Slot(int, str)
@@ -328,5 +331,6 @@ class PreviewController(Controller):
         self.preview_session.stop()
         if was_active:
             self.publish_preview()
-        # Eject a kept ISO in the background (PowerShell takes about a second).
-        threading.Thread(target=self.app.preview_mounts.close, daemon=True).start()
+        # Eject a kept ISO in the background (PowerShell takes about a second); nothing to do without one.
+        if self.app.preview_mounts.mounted:
+            threading.Thread(target=self.app.preview_mounts.close, daemon=True).start()

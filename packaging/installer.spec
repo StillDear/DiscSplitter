@@ -1,15 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Folder build for the Windows installer (packaging/build_installer.py runs this).
-# The single-file portable exe is still built from DiscSplitter.spec in the project root.
+# The one PyInstaller recipe for both builds:
+#   folder build   packaging/build_installer.py runs this and packs the folder into the setup wizard
+#   single file    build_exe.bat sets DISCSPLITTER_ONEFILE=1 for a portable DiscSplitter.exe
 import os
 
 ROOT = os.path.dirname(SPECPATH)
+ONEFILE = os.environ.get('DISCSPLITTER_ONEFILE') == '1'
+ICON = os.path.join(ROOT, 'disc_splitter.ico')
 
 a = Analysis(
     [os.path.join(ROOT, 'app.py')],
     pathex=[ROOT],
     binaries=[],
-    datas=[(os.path.join(ROOT, 'qml'), 'qml'), (os.path.join(ROOT, 'disc_splitter.ico'), '.')],
+    datas=[(os.path.join(ROOT, 'qml'), 'qml'), (ICON, '.')],
     hiddenimports=['PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtQuickControls2', 'PySide6.QtWidgets',
                    'PySide6.QtMultimedia'],
     hookspath=[],
@@ -40,30 +43,22 @@ a.binaries = [b for b in a.binaries if used(b)]
 a.datas = [d for d in a.datas if used(d)]
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
+common = dict(
     name='DiscSplitter',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=[os.path.join(ROOT, 'disc_splitter.ico')],
+    icon=[ICON],
 )
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name='DiscSplitter',
-)
+
+if ONEFILE:
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], upx=True, upx_exclude=[], runtime_tmpdir=None, **common)
+else:
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, upx=False, **common)
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, upx_exclude=[], name='DiscSplitter')

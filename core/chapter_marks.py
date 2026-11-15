@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import dvd
 from . import tools
+from .jobs import Failure, tool_failed
 from .models import Chapter
 from .tools import TOOL_PATHS
 
@@ -57,7 +58,7 @@ def read_chapters(mkv_path: Path, preferred_language: str = "eng") -> list[Chapt
         # error message ("mkvextract failed:" and nothing after it).
         # Including both means the real reason always makes it to the user.
         detail = result.stderr.strip() or result.stdout.strip() or "(no output from mkvextract)"
-        raise RuntimeError(f"mkvextract failed:\n{detail}")
+        raise tool_failed("mkvextract", detail)
 
     xml_text = result.stdout
     # Defensive cleanup: strip a UTF-8 BOM (now correctly decoded thanks to
@@ -125,9 +126,8 @@ def read_chapters_from_source(
     result = tools.run(args, timeout=120)
     if result.returncode >= 2 or not tmp_path.is_file():
         detail = result.stderr.strip() or result.stdout.strip() or "(no output from mkvmerge)"
-        raise RuntimeError(
-            f"mkvmerge could not read chapter data from {source_path.name}:\n{detail}"
-        )
+        raise Failure("tool_failed", f"mkvmerge could not read chapter data from {source_path.name}:\n{detail}",
+                      detail=detail, tool="mkvmerge")
     try:
         return read_chapters(tmp_path, preferred_language=preferred_language)
     finally:

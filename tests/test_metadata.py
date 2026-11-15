@@ -5,9 +5,11 @@ from pathlib import Path
 
 import pytest
 
-import extractor
-import metadata_sources
-import tagging
+import core.manifest
+import core.models
+import core.split
+from core import metadata_sources
+from core import tagging
 import core.musicbrainz
 
 
@@ -15,7 +17,6 @@ def sample_meta(tmp_path=None):
     meta = tagging.empty_metadata()
     meta['album'].update(artist='Dire Straits', album='Brothers In Arms', date='1985', genre='Rock')
     meta['track_artists'] = {'2': 'Dire Straits feat. Sting'}
-    meta['audio'].update(title='LPCM 2.0', language='eng', default=True)
     return meta
 
 
@@ -29,44 +30,37 @@ def pairs(args):
     return out
 
 
-def test_chapter_args_album_track_and_audio():
-    args = pairs(tagging.chapter_args(sample_meta(), 1, 9, 'So Far Away'))
+def test_flac_tags_album_and_track():
+    args = pairs(tagging.flac_tag_args(sample_meta(), 1, 9, 'So Far Away'))
     assert args[('-metadata', 'title')] == 'So Far Away'
     assert args[('-metadata', 'track')] == '1/9'
     assert args[('-metadata', 'artist')] == 'Dire Straits'
     assert args[('-metadata', 'album_artist')] == 'Dire Straits'   # falls back to artist
     assert args[('-metadata', 'album')] == 'Brothers In Arms'
-    assert args[('-metadata:s:a:0', 'title')] == 'LPCM 2.0'
-    assert args[('-metadata:s:a:0', 'language')] == 'eng'
 
 
-def test_track_artist_override_and_default_flag():
-    meta = sample_meta()
-    meta['audio']['default'] = False
-    raw = tagging.chapter_args(meta, 2, 9, 'Money For Nothing')
+def test_track_artist_override():
+    raw = tagging.flac_tag_args(sample_meta(), 2, 9, 'Money For Nothing')
     assert pairs(raw)[('-metadata', 'artist')] == 'Dire Straits feat. Sting'
-    assert raw[raw.index('-disposition:a:0') + 1] == '-default'
 
 
 def test_empty_values_are_skipped_and_no_metadata_means_no_args():
-    assert tagging.chapter_args(None, 1, 2, 'x') == []
-    args = pairs(tagging.chapter_args(tagging.empty_metadata(), 3, 0, 'Song'))
+    assert tagging.flac_tag_args(None, 1, 2, 'x') == []
+    args = pairs(tagging.flac_tag_args(tagging.empty_metadata(), 3, 0, 'Song'))
     assert ('-metadata', 'album') not in args and ('-metadata', 'artist') not in args
     assert args[('-metadata', 'track')] == '3'
 
 
-def test_cover_attach_only_for_existing_jpeg_or_png(tmp_path):
+def test_cover_only_from_an_existing_jpeg_or_png(tmp_path):
     meta = sample_meta()
     meta['cover'] = str(tmp_path / 'missing.jpg')
-    assert '-attach' not in tagging.chapter_args(meta, 1, 1, 'x')
+    assert tagging.embedded_cover(meta) is None
     gif = tmp_path / 'cover.gif'; gif.write_bytes(b'GIF89a')
     meta['cover'] = str(gif)
-    assert '-attach' not in tagging.chapter_args(meta, 1, 1, 'x')
+    assert tagging.embedded_cover(meta) is None
     png = tmp_path / 'art.png'; png.write_bytes(b'\x89PNG\r\n\x1a\n')
     meta['cover'] = str(png)
-    args = tagging.chapter_args(meta, 1, 1, 'x')
-    assert args[args.index('-attach') + 1] == str(png)
-    assert 'mimetype=image/png' in args and 'filename=cover.png' in args
+    assert tagging.embedded_cover(meta) == png
     out = tmp_path / 'album'
     assert tagging.write_folder_cover(meta, out) == out / 'cover.png'
     assert (out / 'cover.png').read_bytes() == png.read_bytes()
@@ -101,7 +95,7 @@ def test_cover_crop_suggests_paired_borders_and_preserves_original(backend, qt_a
     cropped = Path(metadata['cover'])
     assert cover_crop.read_cover(str(cropped)).size().width() == 228
     assert path.read_bytes() == original_data
-    assert str(cropped) in tagging.chapter_args(metadata, 1, 1, 'Song')
+    assert tagging.embedded_cover(metadata) == cropped
 
     # Reapplying online metadata can download the same image to another path.
     download = tmp_path / 'download.png'
@@ -118,7 +112,7 @@ def test_cover_crop_suggests_paired_borders_and_preserves_original(backend, qt_a
     metadata = backend.metadata.export_metadata()
     assert metadata['cover'] == str(cropped)
     assert backend.metadata.coverCropInfo()['left'] == 46
-    assert str(cropped) in tagging.chapter_args(metadata, 1, 1, 'Song')
+    assert tagging.embedded_cover(metadata) == cropped
 
     output = tmp_path / 'out'
     output.mkdir()
@@ -133,15 +127,15 @@ def test_cover_crop_suggests_paired_borders_and_preserves_original(backend, qt_a
 def test_control_characters_are_stripped():
     meta = sample_meta()
     meta['album']['album'] = 'Bad\nName\x00'
-    assert pairs(tagging.chapter_args(meta, 1, 1, 'x'))[('-metadata', 'album')] == 'BadName'
+    assert pairs(tagging.flac_tag_args(meta, 1, 1, 'x'))[('-metadata', 'album')] == 'BadName'
 
 
 def test_manifest_keeps_metadata_and_reads_old_manifests():
-    manifest = extractor.JobManifest('p', 1, 'a', None, 'o', 'mkv', {}, {}, 'now', metadata=sample_meta())
-    again = extractor.JobManifest.from_json(manifest.to_json())
+    manifest = core.manifest.JobManifest('p', 1, 'a', None, 'o', 'mkv', {}, {}, 'now', metadata=sample_meta())
+    again = core.manifest.JobManifest.from_json(manifest.to_json())
     assert again.metadata['album']['album'] == 'Brothers In Arms'
     old = json.loads(manifest.to_json()); old.pop('metadata')
-    assert extractor.JobManifest.from_json(json.dumps(old)).metadata == {}
+    assert core.manifest.JobManifest.from_json(json.dumps(old)).metadata == {}
 
 
 # ------------------------------------------------------------ online sources (network mocked)
@@ -204,7 +198,7 @@ def test_cover_download_rejects_non_images(tmp_path, monkeypatch):
 # ------------------------------------------------------------ backend
 
 def test_backend_apply_fills_album_cover_and_track_artists(backend, qt_app, tmp_path, monkeypatch):
-    backend.disc.chapters = [extractor.Chapter(i, (i - 1) * 60, i * 60) for i in (1, 2)]
+    backend.disc.chapters = [core.models.Chapter(i, (i - 1) * 60, i * 60) for i in (1, 2)]
     backend.disc.rebuild_chapters({1: 'One', 2: 'Two'})
     backend.metadata.meta_candidates = [metadata_sources.Candidate('itunes', '7', 'Album', 'Band')]
     backend.put(metaChosen=0)
@@ -223,38 +217,16 @@ def test_backend_apply_fills_album_cover_and_track_artists(backend, qt_app, tmp_
 
 
 def test_backend_manual_edits(backend):
-    backend.disc.chapters = [extractor.Chapter(1, 0, 60)]
+    backend.disc.chapters = [core.models.Chapter(1, 0, 60)]
     backend.disc.rebuild_chapters({1: 'One'})
     backend.metadata.setMeta('album.album', 'Live')
-    backend.metadata.setMeta('audio.language', ' jpn ')
     backend.metadata.setMeta('nonsense.key', 'x')
     backend.metadata.setTrackArtist(0, 'Guest')
-    backend.metadata.setAudioDefault(False)
     meta = backend.metadata.export_metadata()
-    assert meta['album']['album'] == 'Live' and meta['audio']['language'] == 'jpn'
-    assert meta['audio']['default'] is False and meta['track_artists'] == {'1': 'Guest'}
+    assert meta['album']['album'] == 'Live' and meta['track_artists'] == {'1': 'Guest'}
 
 
 # ------------------------------------------------------------ real ffmpeg round trip
-
-@pytest.mark.skipif(not (shutil.which('ffmpeg') and shutil.which('ffprobe')), reason='ffmpeg not installed')
-def test_ffmpeg_writes_tags_and_cover(tmp_path):
-    run = lambda *a: subprocess.run(a, check=True, capture_output=True)
-    src = tmp_path / 'src.mkv'
-    run('ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '4', '-c:a', 'flac', str(src))
-    cover = tmp_path / 'cover.png'
-    run('ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=orange:s=64x64', '-frames:v', '1', str(cover))
-    meta = sample_meta(); meta['cover'] = str(cover)
-    chapters = [extractor.Chapter(1, 0, 2, name='One'), extractor.Chapter(2, 2, 4, name='Two')]
-    paths = extractor.split_chapters(src, chapters, tmp_path / 'out', metadata=meta)
-    probe = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json', str(paths[1])],
-                                      capture_output=True, text=True, encoding='utf-8').stdout)
-    tags = {k.lower(): v for k, v in probe['format']['tags'].items()}
-    assert (tags['title'], tags['track'], tags['artist'], tags['album']) == ('Two', '2/2', 'Dire Straits feat. Sting', 'Brothers In Arms')
-    audio = next(s for s in probe['streams'] if s['codec_type'] == 'audio')
-    assert {k.lower(): v for k, v in audio['tags'].items()}['language'] == 'eng'
-    assert any(s.get('tags', {}).get('filename') == 'cover.png' for s in probe['streams'])
-
 
 @pytest.mark.skipif(not (shutil.which('ffmpeg') and shutil.which('ffprobe')), reason='ffmpeg not installed')
 def test_flac_chapter_preserves_24_bit_pcm_and_embeds_cover(tmp_path):
@@ -269,8 +241,8 @@ def test_flac_chapter_preserves_24_bit_pcm_and_embeds_cover(tmp_path):
     run('ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=orange:s=64x64', '-frames:v', '1', str(cover))
     metadata = sample_meta()
     metadata['cover'] = str(cover)
-    result, = extractor.split_chapters(source, [extractor.Chapter(2, 1, 2, name='Two')],
-                                      tmp_path / 'out', container='flac', metadata=metadata)
+    result, = core.split.split_flac(source, [core.models.Chapter(2, 1, 2, name='Two')],
+                                  tmp_path / 'out', metadata=metadata)
     assert result.name == 'Two.flac'
     probe = json.loads(run('ffprobe', '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(result)))
     audio, picture = probe['streams']
@@ -287,12 +259,12 @@ def test_flac_chapter_preserves_24_bit_pcm_and_embeds_cover(tmp_path):
 
 
 def test_review_search_other_source_ranks_by_fit_and_feeds_review(backend, qt_app, monkeypatch):
-    backend.disc.chapters = [extractor.Chapter(i, (i - 1) * 60, i * 60) for i in (1, 2, 3)]
+    backend.disc.chapters = [core.models.Chapter(i, (i - 1) * 60, i * 60) for i in (1, 2, 3)]
     backend.disc.rebuild_chapters({})
     found = [metadata_sources.Candidate('itunes', 'a', 'Single', 'Band', track_count=1, thumb='https://x/a.jpg'),
              metadata_sources.Candidate('itunes', 'b', 'Live', 'Band', track_count=3, thumb='https://x/b.jpg')]
     monkeypatch.setattr(metadata_sources, 'search', lambda *a: found)
-    monkeypatch.setattr(metadata_sources, 'fetch', lambda s, i: metadata_sources.AlbumInfo(
+    monkeypatch.setattr(metadata_sources, 'fetch', lambda s, i, tracks_only=False: metadata_sources.AlbumInfo(
         'itunes', tracks=[metadata_sources.TrackInfo(t, seconds=60) for t in ('One', 'Two', 'Three')]))
     backend.names.setTitleSource('itunes')
     assert backend.state['titleSource'] == 'itunes'

@@ -49,6 +49,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
+[InstallDelete]
+; An upgrade over the app's first name (DiscTrackSplitter, same AppId) installs into the same folder:
+; take the old program file and shortcuts away so only DiscSplitter is left.
+Type: files; Name: "{app}\DiscTrackSplitter.exe"
+Type: files; Name: "{group}\DiscTrackSplitter.lnk"
+Type: files; Name: "{autodesktop}\DiscTrackSplitter.lnk"
+
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 

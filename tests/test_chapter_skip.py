@@ -1,5 +1,5 @@
-import extractor
-import setlist
+import core.models
+from core import setlist
 
 NL = "\n"
 
@@ -7,7 +7,7 @@ NL = "\n"
 def chapters(lengths):
     out, t = [], 0.0
     for i, n in enumerate(lengths, 1):
-        out.append(extractor.Chapter(i, t, t + n))
+        out.append(core.models.Chapter(i, t, t + n))
         t += n
     return out
 
@@ -72,7 +72,7 @@ def test_chapter_kinds_tell_music_interlude_and_talk_apart():
     for n, (seconds, level, swing) in enumerate(spans, start=1):
         peaks += [level] * (seconds * 2)
         ripple += [swing] * (seconds * 2)
-        chapters_.append(extractor.Chapter(n, start, start + seconds))
+        chapters_.append(core.models.Chapter(n, start, start + seconds))
         start += seconds
     kinds = setlist.chapter_kinds(chapters_, peaks, 2, ripple)
     assert kinds == {1: 'music', 2: 'interlude', 3: 'talk', 4: 'interlude', 5: 'unsure'}

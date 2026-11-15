@@ -7,13 +7,11 @@ from uuid import uuid4
 
 from PySide6.QtCore import QTimer, QUrl, Slot
 
-import extractor
-import metadata_sources
-import settings
-import tagging
+from core import metadata_sources, musicbrainz, tagging
+from .. import settings
 from .. import cover_crop, logic
 from ..models import Rows
-from .base import Controller
+from .base import Controller, local_path
 
 
 class MetadataController(Controller):
@@ -27,8 +25,6 @@ class MetadataController(Controller):
         self.original_cover = ''
         self.cover_crop_margins = {}
         self.meta_owner = None          # source path the metadata belongs to
-        self.meta_audio_custom = False  # user edited the audio track name/language
-        self.meta_audio_default_custom = False
         self.meta_candidates = []
         self.auto_meta_pending = False
 
@@ -43,15 +39,13 @@ class MetadataController(Controller):
         self.cover_crop_margins = {}
         self.meta['album'].update(artist=artist or '', album=album or '', album_artist=artist or '',
                                   date=str(year) if year else '')
-        self.meta_owner, self.meta_audio_custom = owner, False
-        self.meta_audio_default_custom = False
+        self.meta_owner = owner
         self.auto_meta_pending = bool(self.cfg.get('meta_auto_search')) and bool(artist or album) and not self.smoke
         self.meta_candidates = []
         self.meta_model.replace([])
         for i in range(len(self.disc.chapter_model.rows)):
             self.disc.chapter_model.change(i, artist='')
         self.put(metaStatus='idle', metaError='', metaChosen=-1)
-        self.sync_audio_metadata()
         self.publish_metadata()
 
     def for_source(self, owner, artist='', album='', year=None):
@@ -75,18 +69,6 @@ class MetadataController(Controller):
         """Per-song artists by chapter index (after the chapters were edited); blank ones are dropped."""
         self.meta['track_artists'] = {str(index): artist for index, artist in artists.items() if artist.strip()}
 
-    def sync_audio_metadata(self):
-        """Use source audio metadata until the user edits the single-track export settings."""
-        if self.disc.audio is None:
-            return
-        if not self.meta_audio_custom:
-            layout = self.disc.audio.channel_layout
-            self.meta['audio'].update(title=self.disc.audio.title or f'{self.disc.audio.codec} {layout}'.strip(),
-                                      language=self.disc.audio.language or '')
-        if not self.meta_audio_default_custom:
-            self.meta['audio']['default'] = self.disc.audio.default_track is not False
-        self.publish_metadata()
-
     def export_metadata(self):
         meta = copy.deepcopy(self.meta)
         meta['track_artists'] = {k: v for k, v in meta['track_artists'].items() if v.strip()}
@@ -97,21 +79,11 @@ class MetadataController(Controller):
 
     @Slot(str, str)
     def setMeta(self, key, value):
-        """key is "album.<field>", "audio.title" or "audio.language"."""
+        """key is "album.<field>"."""
         group, _, name = key.partition('.')
-        if group == 'album' and name in tagging.ALBUM_FIELDS:
-            self.meta['album'][name] = value
-        elif group == 'audio' and name in ('title', 'language'):
-            self.meta['audio'][name] = value.strip() if name == 'language' else value
-            self.meta_audio_custom = True
-        else:
+        if group != 'album' or name not in tagging.ALBUM_FIELDS:
             return
-        self.publish_metadata()
-
-    @Slot(bool)
-    def setAudioDefault(self, value):
-        self.meta['audio']['default'] = bool(value)
-        self.meta_audio_default_custom = True
+        self.meta['album'][name] = value
         self.publish_metadata()
 
     @Slot(int, str)
@@ -125,7 +97,7 @@ class MetadataController(Controller):
 
     @Slot(str)
     def chooseCover(self, url):
-        path = Path(QUrl(url).toLocalFile() if url.startswith('file:') else url)
+        path = Path(local_path(url))
         if path.suffix.lower() not in tagging.COVER_TYPES or not path.is_file():
             self.notify(self.tr('coverInvalid'))
             return
@@ -209,13 +181,13 @@ class MetadataController(Controller):
         def failed(exc):
             self.put(metaStatus='error', metaError=self.source_error(exc))
         self.task(lambda p: metadata_sources.search(source, artist, album, barcode), done, failed,
-                  begin=dict(metaStatus='loading', metaError=''))
+                  begin=dict(metaStatus='loading', metaError=''), blocking=False)
 
     def source_error(self, exc):
-        text = str(exc)
-        if text.startswith('REGION_BLOCKED:'):
-            return self.tr('regionBlocked')
-        return text
+        """A catalogue's failure in the user's words."""
+        if isinstance(exc, musicbrainz.MusicBrainzBusy):
+            return self.tr('mbBusy')
+        return self.app.error_text(exc)
 
     @Slot(int)
     def metaChoose(self, row):
@@ -228,7 +200,7 @@ class MetadataController(Controller):
     def metaApply(self, album, cover, artists, titles):
         """Fetch the chosen release and apply the parts the user ticked."""
         row = self.state['metaChosen']
-        if self.state['busy'] or not 0 <= row < len(self.meta_candidates):
+        if self.working or not 0 <= row < len(self.meta_candidates):
             return
         candidate = self.meta_candidates[row]
         def work(progress):
@@ -239,7 +211,7 @@ class MetadataController(Controller):
                     cover_file = metadata_sources.download_cover(info.cover_url, self.COVER_CACHE,
                                                                  f'{candidate.source}:{candidate.id}')
                 except RuntimeError as exc:
-                    cover_error = str(exc)
+                    cover_error = self.app.error_text(exc)
             return info, cover_file, cover_error
         def done(result):
             info, cover_file, cover_error = result
@@ -250,21 +222,22 @@ class MetadataController(Controller):
                         self.meta['album'][name] = value
             if cover_file:
                 self.use_cover(cover_file)
+            # A multi-disc release: only the disc this playlist holds.
+            tracks = info.disc_tracks(self.app.names.naming_count(), self.app.names.disc_number)
             if artists:
                 album_artist = self.meta['album']['album_artist'] or self.meta['album']['artist']
-                for i, track in enumerate(info.tracks[:len(self.disc.chapter_model.rows)]):
+                for i, track in enumerate(tracks[:len(self.disc.chapter_model.rows)]):
                     value = track.artist if track.artist and track.artist != album_artist else ''
                     self.meta['track_artists'][str(self.disc.chapter_model.rows[i]['number'])] = value
                     self.disc.chapter_model.change(i, artist=value)
             self.publish_metadata()
             self.put(metaStatus='applied', metaError=cover_error)
-            if titles and info.tracks:
-                self.put(mbRelease=f'{info.artist} \u2014 {info.album}'.strip(' \u2014'), reviewSource='online')
-                self.app.names.review_entries([extractor.TracklistEntry(t.title, index=i + 1, duration_seconds=t.seconds)
-                                     for i, t in enumerate(info.tracks)])
+            if titles and tracks:
+                self.app.names.review_online(f'{info.artist} \u2014 {info.album}'.strip(' \u2014'),
+                                             metadata_sources.tracklist_entries(tracks))
         def failed(exc):
             self.put(metaStatus='error', metaError=self.source_error(exc))
-        self.task(work, done, failed, begin=dict(metaStatus='loading', metaError=''))
+        self.task(work, done, failed, begin=dict(metaStatus='loading', metaError=''), blocking=False)
 
     def refresh_cover_cache(self):
         files = [p for p in self.COVER_CACHE.glob('*') if p.is_file()] if self.COVER_CACHE.is_dir() else []

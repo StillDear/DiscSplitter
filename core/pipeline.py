@@ -18,11 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-import tagging
-
-from . import bluray_iso, chapter_marks, dvd, split, tools
+from . import bluray_iso, chapter_marks, dvd, split, tagging, tools
 from .chapter_marks import apply_chapter_layout
-from .jobs import JobCancelled, ProgressEvent, cleaning_up, job_cancelled, job_failed
+from .jobs import Failure, JobCancelled, ProgressEvent, cleaning_up, job_cancelled, job_failed
 from .manifest import JobManifest, read_manifest, write_manifest
 from .models import Chapter, Playlist, Track
 from .naming import FILENAME_TEMPLATES
@@ -113,7 +111,7 @@ def run_full_pipeline(
         metadata = manifest.metadata or metadata
         keep_video = manifest.video_track_id is not None
         if keep_video and (video_track is None or video_track.track_id != manifest.video_track_id):
-            raise ValueError("The saved video track is unavailable in this source.")
+            raise Failure("tracks_unavailable", "The saved video track is unavailable in this source.")
     keep_video = keep_video and video_track is not None
 
     audio_track_ids = [audio_track.track_id] if audio_track_ids is None else audio_track_ids
@@ -126,16 +124,13 @@ def run_full_pipeline(
     audio_tracks = [t for t in playlist.audio_tracks if t.track_id in audio_track_ids]
     subtitle_tracks = [t for t in playlist.subtitle_tracks if t.track_id in subtitle_track_ids]
     if not audio_tracks or {t.track_id for t in audio_tracks} != set(audio_track_ids):
-        raise ValueError("The selected audio tracks are unavailable in this source.")
+        raise Failure("tracks_unavailable", "The selected audio tracks are unavailable in this source.")
     if {t.track_id for t in subtitle_tracks} != set(subtitle_track_ids):
-        raise ValueError("The selected subtitle tracks are unavailable in this source.")
+        raise Failure("tracks_unavailable", "The selected subtitle tracks are unavailable in this source.")
     if chapter_indices is not None:
         chapter_indices = sorted(set(chapter_indices))
         if not chapter_indices or chapter_indices[0] < 1:
             raise ValueError("Select at least one valid chapter.")
-    if len(audio_tracks) > 1 and metadata:
-        metadata = {key: value for key, value in metadata.items() if key != "audio"}
-
     if manifest is None:
         primary_audio = next((t for t in audio_tracks if t.track_id == audio_track.track_id), audio_tracks[0])
         manifest = JobManifest(
@@ -169,8 +164,7 @@ def run_full_pipeline(
 
     try:
         with _cut_source(playlist, manifest, work_folder, direct=direct, resume=resume, log=log, save=save,
-                         cancel_event=cancel_event, audio_track=audio_track, audio_tracks=audio_tracks,
-                         subtitle_tracks=subtitle_tracks, keep_video=keep_video) as source:
+                         cancel_event=cancel_event, audio_track=audio_tracks[0]) as source:
             chapters = _chapters_to_cut(source, direct, manifest, chapter_indices, track_names)
             save("splitting")
             done = _already_done(manifest, work_folder, resume, skip_existing, log)
@@ -182,20 +176,19 @@ def run_full_pipeline(
 
             common = dict(progress_cb=log, overwrite=overwrite, cancel_event=cancel_event, skip_paths=done,
                           on_output_written=on_output_written, metadata=metadata,
-                          source_chapter_count=len(chapters), number_filenames=manifest.number_filenames,
-                          renumber_tracks=manifest.renumber_tracks, filename_template=manifest.filename_template)
+                          number_filenames=manifest.number_filenames, filename_template=manifest.filename_template)
             selected = [ch for ch in chapters if chapter_indices is None or ch.index in chapter_indices]
             if direct:
                 # Video files carry only their song titles: no album tags, cover or folder.jpg.
                 results = split.split_mkv_direct(
                     source, selected, output_folder, audio_tracks=audio_tracks, subtitle_tracks=subtitle_tracks,
-                    video_track=video_track if keep_video else None, embed_metadata=False, **common)
+                    video_track=video_track if keep_video else None, **common)
             else:
                 # A resumed job keeps the tags it started with.
                 tagging.write_folder_cover(metadata, output_folder)
-                results = split.split_chapters(
-                    source, selected, output_folder, container=container, audio_tracks=audio_tracks,
-                    subtitle_tracks=subtitle_tracks, keep_video=keep_video, **common)
+                results = split.split_flac(
+                    source, selected, output_folder, source_chapter_count=len(chapters),
+                    renumber_tracks=manifest.renumber_tracks, **common)
         save("complete")
     except JobCancelled:
         save("cancelled")
@@ -215,8 +208,7 @@ def run_full_pipeline(
 @contextlib.contextmanager
 def _cut_source(playlist: Playlist, manifest: JobManifest, work_folder: Path, *, direct: bool, resume: bool,
                 log: Callable[[str], None], save: Callable[[str], None], cancel_event: Optional[threading.Event],
-                audio_track: Track, audio_tracks: list[Track], subtitle_tracks: list[Track],
-                keep_video: bool) -> Iterator[Path]:
+                audio_track: Track) -> Iterator[Path]:
     """
     The file the songs are cut from, made first when the route needs one, and kept open (a mounted
     disc image) while it is cut. manifest.audio_extracted records that the intermediate copy is
@@ -240,8 +232,7 @@ def _cut_source(playlist: Playlist, manifest: JobManifest, work_folder: Path, *,
         else:
             with bluray_iso.playlist_file(playlist.path, playlist.iso_image) as path:
                 split.extract_audio_mkv(dataclasses.replace(playlist, path=path), copy, audio_track,
-                                        progress_cb=log, cancel_event=cancel_event, audio_tracks=audio_tracks,
-                                        subtitle_tracks=subtitle_tracks, keep_video=keep_video)
+                                        progress_cb=log, cancel_event=cancel_event)
         manifest.audio_extracted = True
         write_manifest(work_folder, manifest)
     yield copy
@@ -253,11 +244,12 @@ def _chapters_to_cut(source: Path, direct: bool, manifest: JobManifest, chapter_
     chapters = (chapter_marks.read_chapters_from_source(source) if direct
                 else chapter_marks.read_chapters(source))
     if not chapters:
-        raise ValueError("No chapters found - this playlist has no chapter markers, so it can't be split into songs.")
+        raise Failure("no_chapters", "No chapters found - this playlist has no chapter markers, so it can't be split "
+                                     "into songs.")
     if manifest.chapter_layout:
         chapters = apply_chapter_layout(chapters, manifest.chapter_layout)
     if chapter_indices is not None and not set(chapter_indices).issubset(ch.index for ch in chapters):
-        raise ValueError("The selected chapters are unavailable in this source.")
+        raise Failure("tracks_unavailable", "The selected chapters are unavailable in this source.")
     for ch in chapters:
         if ch.index in track_names:
             ch.name = track_names[ch.index]

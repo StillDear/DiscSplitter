@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import QUrl
 
 from core import bluray_iso
-import extractor
+import core.models
 from test_backend import wait_idle
 import core.chapter_marks
 import core.sources
@@ -54,18 +54,17 @@ def test_iso_import_and_resume_survive_drive_changes(backend, qt_app, tmp_path, 
         mounts.append(playlist)
         yield root
 
-    audio = extractor.Track(1, 'audio', 'LPCM')
-    chapters = [extractor.Chapter(1, 0, 30)]
+    audio = core.models.Track(1, 'audio', 'LPCM')
+    chapters = [core.models.Chapter(1, 0, 30)]
     monkeypatch.setattr(bluray_iso, 'mounted', mounted)
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path: extractor.Playlist(path, [audio], 1, 30))
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path: core.models.Playlist(path, [audio], 1, 30))
     read_paths = []
     monkeypatch.setattr(core.chapter_marks, 'read_chapters_from_source', lambda path, **kw: read_paths.append(path) or chapters)
     monkeypatch.setattr(core.tools, 'tool_versions', lambda: {})
     extracted = []
 
     def split(source, *_args, **kwargs):
-        # MKV exports cut straight from the mounted playlist (no intermediate file), without album tags.
-        assert kwargs['embed_metadata'] is False
+        # MKV exports cut straight from the mounted playlist (no intermediate file).
         extracted.append(source)
         if len(extracted) == 1:
             raise RuntimeError('Simulated interruption')

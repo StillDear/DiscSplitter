@@ -13,7 +13,8 @@ REM NOTE: this bundles the Python app itself, but NOT mkvmerge/mkvextract/
 REM ffmpeg/ffprobe - those still need to be installed separately and
 REM reachable on PATH (or located in the app's Settings > External tools).
 
-python -m PyInstaller --noconfirm DiscSplitter.spec
+set DISCSPLITTER_ONEFILE=1
+python -m PyInstaller --noconfirm packaging\installer.spec
 
 if %ERRORLEVEL% NEQ 0 (
     echo.

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -33,6 +32,8 @@ class TracklistEntry:
 
 
 EXPORTED_TRACKLIST_FORMAT = "DiscSplitter.chapter-titles.v1"
+# Files saved while the app was still called DiscTrackSplitter are the same format.
+_EXPORTED_TRACKLIST_FORMATS = (EXPORTED_TRACKLIST_FORMAT, "DiscTrackSplitter.chapter-titles.v1")
 
 
 def parse_exported_tracklist(text: str) -> Optional[list[TracklistEntry]]:
@@ -43,10 +44,10 @@ def parse_exported_tracklist(text: str) -> Optional[list[TracklistEntry]]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        if EXPORTED_TRACKLIST_FORMAT in text:
+        if any(name in text for name in _EXPORTED_TRACKLIST_FORMATS):
             raise ValueError("Invalid chapter mapping") from exc
         return None
-    if data.get("format") != EXPORTED_TRACKLIST_FORMAT:
+    if not isinstance(data, dict) or data.get("format") not in _EXPORTED_TRACKLIST_FORMATS:
         return None
     chapters = data.get("chapters")
     if not isinstance(chapters, list) or not chapters:
@@ -73,39 +74,30 @@ def export_chapter_tracklist(titles: dict[int, str]) -> str:
 
 def find_sidecar_tracklist_files(disc_folder: Path) -> list[Path]:
     """
-    Look for disc-local files that might carry track names: a plain text
-    or NFO tracklist dropped next to the disc, a CUE sheet, a previously
-    saved project mapping (*.tracklist.json), or (best-effort) BDMV disc
-    metadata. Only the top level of disc_folder is searched for the
-    common formats - not recursively - since a deep search of the whole
-    BDMV structure would surface a lot of files that have nothing to do
-    with track names.
-
-    Never applied automatically - this only finds candidates. Parsing
-    happens via load_sidecar_tracklist(), and the result still has to go
-    through match_tracklist_to_chapters() and user confirmation before it
-    touches any naming field.
+    Files next to the disc that may carry track names: a text or NFO set list,
+    a CUE sheet, a saved chapter mapping (*.tracklist.json). Only the top level
+    of disc_folder is searched. Nothing is applied automatically: these are
+    candidates the user can import and review.
     """
     candidates: list[Path] = []
     for pattern in ("*.nfo", "*.cue", "*.txt", "*.tracklist.json"):
         candidates.extend(sorted(disc_folder.glob(pattern)))
-
-    meta_dl = disc_folder / "BDMV" / "META" / "DL"
-    if meta_dl.is_dir():
-        candidates.extend(sorted(meta_dl.glob("*.xml")))
-
     return candidates
 
 
-def parse_plain_text_tracklist(text: str) -> list[TracklistEntry]:
-    """One track name per line - the common shape for a .txt/.nfo tracklist or a pasted list."""
-    entries: list[TracklistEntry] = []
-    for i, line in enumerate(text.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        entries.append(TracklistEntry(index=i, name=strip_leading_number(line)))
-    return entries
+_STRUCTURED_SUFFIXES = {".cue", ".json"}
+
+
+def is_setlist_text(path: Path) -> bool:
+    """Whether a file is free text (.txt, .nfo, anything unrecognised): read with the set-list parser."""
+    return path.suffix.lower() not in _STRUCTURED_SUFFIXES
+
+
+def read_tracklist_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError as exc:
+        raise ValueError(f"Could not read {path.name}: {exc}") from exc
 
 
 _CUE_TRACK_RE = re.compile(r'^\s*TRACK\s+(\d+)\s+AUDIO', re.IGNORECASE)
@@ -208,68 +200,21 @@ def parse_json_tracklist(text: str) -> list[TracklistEntry]:
     return entries
 
 
-def parse_disc_meta_tracklist(text: str) -> list[TracklistEntry]:
-    """
-    Best-effort parse of a BDMV/META/DL/*.xml disc metadata file. These
-    aren't a standardised song-tracklist format - they're disc/menu
-    metadata (title, thumbnails; a chapter/mark title list only shows up
-    depending on the authoring tool) - so this only looks for a handful
-    of common tag shapes (<chapter>/<track>/<item> with a <title> or
-    <name> child) and returns an empty list if none match, rather than
-    guessing at a schema that may not apply. A result from here goes
-    through the same match/review step as every other source either way.
-    """
-    try:
-        root = ET.fromstring(text.lstrip("\ufeff"))
-    except ET.ParseError:
-        return []
-
-    entries: list[TracklistEntry] = []
-    for tag in ("chapter", "Chapter", "track", "Track", "item", "Item"):
-        for i, el in enumerate(root.iter(tag), start=1):
-            title_el = (
-                el.find("title") or el.find("Title") or el.find("name") or el.find("Name")
-            )
-            name = (title_el.text or "").strip() if title_el is not None else ""
-            if name:
-                entries.append(TracklistEntry(index=i, name=name))
-        if entries:
-            break
-
-    return entries
-
-
 def load_sidecar_tracklist(path: Path) -> list[TracklistEntry]:
     """
-    Parse a sidecar tracklist file based on its extension. Raises
-    ValueError with a clear, file-specific message on anything
-    unparseable or empty - this is user-supplied data (someone's own
-    .nfo/.cue/.txt/.json file), so a bad or unexpected file is expected
-    occasionally and should read as a normal, specific error rather than
-    a raw parser traceback.
+    Parse a structured tracklist file (a CUE sheet or a JSON list). Free text
+    goes through the set-list parser instead (see is_setlist_text). Raises
+    ValueError with a clear, file-specific message on anything unparseable or
+    empty: this is the user's own file, so a bad one should read as a normal
+    error rather than a parser traceback.
     """
+    text = read_tracklist_text(path)
     try:
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-    except OSError as exc:
-        raise ValueError(f"Could not read {path.name}: {exc}") from exc
-
-    suffix = path.suffix.lower()
-    try:
-        if suffix == ".cue":
-            entries = parse_cue_tracklist(text)
-        elif suffix == ".json" or path.name.lower().endswith(".tracklist.json"):
-            entries = parse_json_tracklist(text)
-        elif suffix == ".xml":
-            entries = parse_disc_meta_tracklist(text)
-        else:
-            # .nfo, .txt, and anything unrecognised - treat as plain text.
-            entries = parse_plain_text_tracklist(text)
+        entries = parse_cue_tracklist(text) if path.suffix.lower() == ".cue" else parse_json_tracklist(text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"Could not parse {path.name} as JSON: {exc}") from exc
-
     if not entries:
         raise ValueError(f"{path.name} didn't contain anything recognisable as track names.")
-
     return entries
 
 
@@ -325,7 +270,7 @@ def _align_by_duration(
     because a later one happens to be a few seconds closer.
     """
     n, m = len(chapters), len(entries)
-    length = [ch.end_seconds - ch.start_seconds if ch.end_seconds is not None else None for ch in chapters]
+    length = [ch.duration for ch in chapters]
 
     def pair(i: int, j: int) -> Optional[float]:
         d = entries[j].duration_seconds
@@ -430,7 +375,7 @@ def match_tracklist_to_chapters(
         matched_count = sum(match.entry_index is not None for match in matches)
         return TracklistMatchResult(matches, matched_count, len(chapters),
                                     f"{matched_count} of {len(chapters)} chapter(s) matched")
-    has_timing = bool(entries) and all(e.start_seconds is not None for e in entries)
+    has_timing = mode != "order" and bool(entries) and all(e.start_seconds is not None for e in entries)
     if not has_timing and mode != "order" and can_align_by_duration(chapters, entries):
         return _align_by_duration(chapters, entries, duration_tolerance_seconds,
                                   window=max(45.0, duration_tolerance_seconds + 25.0))
@@ -451,8 +396,7 @@ def match_tracklist_to_chapters(
                 used.add(best_i)
                 confidence, detail = "matched", ""
                 if entry.duration_seconds is not None and ch.end_seconds is not None:
-                    actual_duration = ch.end_seconds - ch.start_seconds
-                    duration_diff = abs(actual_duration - entry.duration_seconds)
+                    duration_diff = abs(ch.duration - entry.duration_seconds)
                     if duration_diff > duration_tolerance_seconds:
                         confidence = "duration_mismatch"
                         detail = f"Track {ch.index} differs by {duration_diff:.0f} seconds"
@@ -467,7 +411,7 @@ def match_tracklist_to_chapters(
             if i < len(entries) and entries[i].name:
                 confidence, detail = "matched", ""
                 if entries[i].duration_seconds and ch.end_seconds is not None:
-                    diff = abs((ch.end_seconds - ch.start_seconds) - entries[i].duration_seconds)
+                    diff = abs(ch.duration - entries[i].duration_seconds)
                     if diff > duration_tolerance_seconds:
                         confidence, detail = "duration_mismatch", f"Track {ch.index} differs by {diff:.0f} seconds"
                 matches.append(ChapterMatch(chapter_index=ch.index, name=entries[i].name, confidence=confidence,

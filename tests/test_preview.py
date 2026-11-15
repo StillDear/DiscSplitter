@@ -2,8 +2,8 @@ import struct
 import time
 from pathlib import Path
 
-import extractor as x
-import preview
+import core.models
+from core import preview
 import core.sources
 import core.tools
 
@@ -37,11 +37,11 @@ def test_blu_ray_clip_seeks_inside_the_m2ts_and_maps_the_pid(tmp_path, monkeypat
     (stream_dir / '00001.m2ts').write_bytes(b'')
     write_mpls(playlist_dir / '00001.mpls', [('00001', 4200 * 45000, 4500 * 45000)])
     monkeypatch.setattr(preview, '_start_time', lambda path: 4199.5)   # clock starts just before the in-point
-    track = x.Track(1, 'audio', 'PCM', stream_id=0x1100)
+    track = core.models.Track(1, 'audio', 'PCM', stream_id=0x1100)
     args, length = preview.clip_input(playlist_dir / '00001.mpls', track, 0, 250, 120)
     assert args[:2] == ['-ss', '250.500'] and args[-2:] == ['-map', '0:i:0x1100']
     assert length == 50          # stays inside the clip
-    mkv_args, _ = preview.clip_input(tmp_path / 'concert.mkv', x.Track(3, 'audio', 'FLAC'), 1, 60, 30)
+    mkv_args, _ = preview.clip_input(tmp_path / 'concert.mkv', core.models.Track(3, 'audio', 'FLAC'), 1, 60, 30)
     assert mkv_args[-2:] == ['-map', '0:3']
 
 
@@ -112,8 +112,7 @@ def test_playlist_length_comes_from_play_items_when_mkvmerge_has_none(tmp_path, 
     write_mpls(mpls, [('00001', 189000000, 559855485), ('00002', 189000000, 189360360)])
     output = json.dumps({'tracks': [], 'chapters': [{'num_entries': 43}], 'container': {'properties': {}}})
     monkeypatch.setattr(core.tools, 'run', lambda *a, **kw: subprocess.CompletedProcess(a, 0, output, ''))
-    monkeypatch.setattr(core.sources, '_enrich_bitrates_ffprobe', lambda pl: None)
-    playlist = x.inspect_playlist(mpls)
+    playlist = core.sources.inspect_playlist(mpls)
     assert round(playlist.duration_seconds, 2) == 8249.24
     assert logic.format_length(playlist.duration_seconds) == '2:17:29'
     assert logic.format_length(30.03) == '00:30'
@@ -207,5 +206,5 @@ def test_clip_peaks_and_disc_peaks_measure_loudness(tmp_path, monkeypatch):
     quiet_then_loud = array.array('h', [100] * 400 + [32767] * 400)    # 1 s quiet, 1 s loud at 400 Hz
     monkeypatch.setattr(preview.subprocess, 'Popen', lambda *a, **k: FakeProcess(quiet_then_loud.tobytes()))
     seen = []
-    disc = preview.disc_peaks(Path('concert.mkv'), x.Track(1, 'audio', 'PCM'), 0, 2, seen.append)
+    disc = preview.disc_peaks(Path('concert.mkv'), core.models.Track(1, 'audio', 'PCM'), 0, 2, seen.append)
     assert disc == [0.003, 0.003, 1.0, 1.0] and seen

@@ -5,6 +5,9 @@ import os
 from pathlib import Path
 import subprocess
 
+from .jobs import Failure
+from .tools import NO_WINDOW
+
 
 _MOUNT = r"""
 $image = $env:DTS_ISO_IMAGE
@@ -49,13 +52,15 @@ def _powershell(script: str, image: Path) -> str:
             [str(exe), '-NoProfile', '-NonInteractive', '-Command', command],
             env={**os.environ, 'DTS_ISO_IMAGE': str(image)}, stdin=subprocess.DEVNULL,
             capture_output=True, encoding='utf-8', errors='replace', timeout=60,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f'Windows could not access the Blu-ray ISO: {image}\n{exc}') from exc
+        raise Failure('iso_failed', f'Windows could not access the Blu-ray ISO: {image}\n{exc}', detail=str(exc),
+                      path=str(image)) from exc
     if result.returncode:
         detail = result.stdout.strip() or result.stderr.strip()
-        raise RuntimeError(f'Windows could not access the Blu-ray ISO: {image}\n{detail}')
+        raise Failure('iso_failed', f'Windows could not access the Blu-ray ISO: {image}\n{detail}', detail=detail,
+                      path=str(image))
     return result.stdout
 
 
@@ -72,7 +77,8 @@ def mounted(image: Path):
             _, letter, owned = line.strip().split(':')
             break
     else:
-        raise RuntimeError(f'Windows did not return a drive letter for the Blu-ray ISO: {image}')
+        raise Failure('iso_failed', f'Windows did not return a drive letter for the Blu-ray ISO: {image}',
+                      path=str(image))
     try:
         yield Path(f'{letter}:\\')
     finally:

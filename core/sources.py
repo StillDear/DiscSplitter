@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import struct
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -12,6 +13,7 @@ from typing import Optional
 from . import bluray_iso
 from . import dvd
 from . import tools
+from .jobs import Failure
 from .models import Playlist, Track
 from .tools import TOOL_PATHS
 
@@ -66,7 +68,7 @@ def scan_source(source: Path) -> list[Playlist]:
     candidates = find_sources(source)
     if source.is_dir() and ((source / "BDMV").is_dir() or not candidates):
         return scan_disc_folder(source)
-    return [inspect_playlist(p) for p in candidates]
+    return _inspect_all(candidates)
 
 
 _GENERIC_NAMES = {"video_ts", "dvdimage", "image", "disc", "disk", "dvd", "bdmv", "bd"}
@@ -84,7 +86,9 @@ def source_name_path(source: Path) -> Path:
 def inspect_playlist(playlist_path: Path) -> Playlist:
     """
     Run `mkvmerge -J` on a playlist and parse the resulting JSON for
-    tracks and chapter count.
+    tracks and chapter count. Audio bitrates are not part of it (mkvmerge
+    does not report them): audio_bitrates() measures them with ffprobe for
+    the one playlist that gets used, not for every playlist of a scan.
 
     JSON (rather than the human-readable `mkvmerge -i` text output) is
     used deliberately: the text format isn't a stable interface - its
@@ -101,9 +105,8 @@ def inspect_playlist(playlist_path: Path) -> Playlist:
     # stdout won't have useful track/chapter info, so surface the real
     # error instead of silently reporting "no Atmos track".
     if result.returncode >= 2:
-        raise RuntimeError(
-            f"mkvmerge could not read {playlist_path.name}:\n{result.stderr or result.stdout}"
-        )
+        raise Failure("tool_failed", f"mkvmerge could not read {playlist_path.name}:\n{result.stderr or result.stdout}",
+                      detail=result.stderr or result.stdout, tool="mkvmerge")
 
     try:
         data = json.loads(result.stdout)
@@ -155,8 +158,6 @@ def inspect_playlist(playlist_path: Path) -> Playlist:
         except (OSError, ValueError, struct.error):
             pass
 
-    _enrich_bitrates_ffprobe(pl)
-
     return pl
 
 
@@ -207,41 +208,43 @@ def locate_play_item(items: list[PlayItem], seconds: float) -> tuple[PlayItem, f
     return items[-1], items[-1].length   # past the end: clamp
 
 
-def _enrich_bitrates_ffprobe(playlist: Playlist) -> None:
+def audio_bitrates(playlist: Playlist, path: Optional[Path] = None) -> dict[int, float]:
     """
-    Best-effort fill-in of Track.bitrate_kbps via ffprobe, since mkvmerge
-    -J doesn't report bitrate at all. Failure here (missing ffprobe,
-    unreadable file, unexpected output) is never fatal to a scan - it
-    just means the picker shows a track without a bitrate figure, which
-    is far better than blocking or guessing a wrong number.
+    Best-effort bitrates (kbps by track ID) of a playlist's audio tracks via
+    ffprobe, since mkvmerge -J doesn't report bitrate at all. `path` is where
+    the playlist can be read now (a mounted disc image); default: its own path.
+    Failure here (missing ffprobe, unreadable file, unexpected output) is never
+    fatal - it just means a track is shown without a bitrate figure, which is
+    far better than blocking or guessing a wrong number.
 
     Matched by position: ffprobe and mkvmerge both enumerate a Blu-ray
     playlist's streams in on-disc order, so the Nth audio stream ffprobe
     reports is assumed to be the Nth audio track mkvmerge reported. If
     the counts don't match (a sign the assumption broke for this file),
-    nothing is filled in rather than risk mislabelling a track.
+    nothing is returned rather than risk mislabelling a track.
     """
     audio_tracks = playlist.audio_tracks
-    if not audio_tracks:
-        return
+    if not audio_tracks or dvd.is_title(playlist.path):     # a DVD title's rates come with its scan
+        return {}
 
     try:
         result = tools.run(
             [
                 TOOL_PATHS["ffprobe"], "-v", "quiet", "-print_format", "json",
-                "-show_streams", "-select_streams", "a", str(playlist.path),
+                "-show_streams", "-select_streams", "a", str(path or playlist.path),
             ],
             timeout=60,
         )
         if result.returncode != 0:
-            return
+            return {}
         streams = json.loads(result.stdout).get("streams", [])
     except (RuntimeError, json.JSONDecodeError, OSError):
-        return
+        return {}
 
     if len(streams) != len(audio_tracks):
-        return  # ordering assumption unverifiable - don't guess
+        return {}  # ordering assumption unverifiable - don't guess
 
+    rates: dict[int, float] = {}
     for track, stream in zip(audio_tracks, streams):
         bit_rate = stream.get("bit_rate")
         if bit_rate is None:
@@ -250,42 +253,84 @@ def _enrich_bitrates_ffprobe(playlist: Playlist) -> None:
             # BPS-style tags rather than the top-level field.
             tags = stream.get("tags") or {}
             bit_rate = tags.get("BPS") or tags.get("BPS-eng")
-        if bit_rate is None and track.sample_rate and track.bits_per_sample and track.channels:
-            # PCM/LPCM is uncompressed, so its bitrate is exactly
-            # derivable rather than best-effort - compute it directly
-            # instead of relying on ffprobe reporting it.
-            codec_lower = track.codec.lower()
-            if "pcm" in codec_lower:
-                bit_rate = track.sample_rate * track.bits_per_sample * track.channels
+        if bit_rate is None and track.is_pcm and track.sample_rate and track.bits_per_sample and track.channels:
+            # PCM/LPCM is uncompressed, so its bitrate follows exactly from its format.
+            bit_rate = track.sample_rate * track.bits_per_sample * track.channels
         try:
             if bit_rate is not None:
-                track.bitrate_kbps = float(bit_rate) / 1000
+                rates[track.track_id] = float(bit_rate) / 1000
         except (TypeError, ValueError):
             pass
+    return rates
+
+
+def apply_bitrates(playlist: Playlist, rates: dict[int, float]) -> None:
+    for track in playlist.audio_tracks:
+        if track.track_id in rates:
+            track.bitrate_kbps = rates[track.track_id]
+
+
+SCAN_WORKERS = 4        # playlists read at once: a disc can hold hundreds, each one mkvmerge call
+
+
+def _inspect_all(paths: list[Path]) -> list[Playlist]:
+    """Inspect several playlists side by side, in the order given (the first error is raised)."""
+    if len(paths) < 2:
+        return [inspect_playlist(p) for p in paths]
+    with ThreadPoolExecutor(max_workers=min(SCAN_WORKERS, len(paths))) as pool:
+        return list(pool.map(inspect_playlist, paths))
 
 
 def scan_disc_folder(disc_folder: Path) -> list[Playlist]:
     """Inspect every playlist in a disc folder, return list of Playlist."""
-    return [inspect_playlist(p) for p in find_playlists(disc_folder)]
+    return _inspect_all(find_playlists(disc_folder))
 
 
 # ---------------------------------------------------------------------------
 # Playlist scoring
 # ---------------------------------------------------------------------------
 
+class Reason(str):
+    """
+    One thing that counted for or against a playlist. It *is* its English wording (prints and
+    joins like any str); `code` and `value` say what it means, so a UI translates and ranks
+    reasons without ever parsing that wording.
+    """
+    code: str
+    value: str
+
+    def __new__(cls, code: str, value: object = ""):
+        reason = super().__new__(cls, REASON_TEXT[code].format(value))
+        reason.code, reason.value = code, str(value)
+        return reason
+
+    def __reduce__(self):   # keep the meaning when copied or pickled
+        return (Reason, (self.code, self.value))
+
+
+REASON_TEXT = {
+    "atmos": "Has a Dolby Atmos/TrueHD track (ID {})",
+    "lossless": "No Atmos, but best available track is lossless ({})",
+    "lossy": "No Atmos or lossless track - best available is {}",
+    "no_audio": "No audio track at all - cannot be the right playlist",
+    "chapters": "{} chapters",
+    "no_chapters": "No chapters - can't be split into songs even if selected",
+    "video": "Includes a video track ({})",
+    "no_video": "No video track - audio-only playlist",
+    "minutes": "Runs {} minutes",
+    "duplicate": "Same duration/chapters/tracks as {} - likely a duplicate or alternate angle",
+}
+
+
 @dataclass
 class PlaylistScore:
     playlist: Playlist
     score: float
-    reasons: list[str] = field(default_factory=list)
+    reasons: list[Reason] = field(default_factory=list)
     duplicate_of: Optional[Path] = None  # set if this looks like a duplicate/alternate angle of a higher-scored playlist
 
 
-def score_playlists(
-    playlists: list[Playlist],
-    expected_chapter_count: Optional[int] = None,
-    expected_duration_seconds: Optional[float] = None,
-) -> list[PlaylistScore]:
+def score_playlists(playlists: list[Playlist]) -> list[PlaylistScore]:
     """
     Score every scanned playlist as a candidate for "the" concert
     feature, replacing the old heuristic of silently picking whichever
@@ -295,51 +340,40 @@ def score_playlists(
     PlaylistScore objects sorted highest-score first, each carrying the
     reasons behind its score so the UI can show its work and the user can
     confirm (or override) the pick, instead of a single silent choice.
-
-    expected_chapter_count / expected_duration_seconds: optional values
-    from an external source (e.g. a user-imported tracklist). When given,
-    playlists matching them closely get a bonus. Both are unused for now -
-    they exist so a future tracklist-import feature can feed into playlist
-    selection without changing this function's shape.
     """
     scored: list[PlaylistScore] = []
 
     for pl in playlists:
         score = 0.0
-        reasons: list[str] = []
+        reasons: list[Reason] = []
 
         if pl.has_atmos:
             score += 100
             atmos = pl.atmos_track
-            reasons.append(f"Has a Dolby Atmos/TrueHD track (ID {atmos.track_id})")
+            reasons.append(Reason("atmos", atmos.track_id))
         else:
             best = pl.best_default_audio_track()
             if best is not None:
-                codec_lower = best.codec.lower()
-                is_lossless = any(
-                    h in codec_lower
-                    for h in ("truehd", "dts-hd master", "flac", "pcm", "lpcm", "alac")
-                )
-                if is_lossless:
+                if best.is_lossless:
                     score += 70
-                    reasons.append(f"No Atmos, but best available track is lossless ({best.codec})")
+                    reasons.append(Reason("lossless", best.codec))
                 else:
                     score += 30
-                    reasons.append(f"No Atmos or lossless track - best available is {best.codec}")
+                    reasons.append(Reason("lossy", best.codec))
             else:
-                reasons.append("No audio track at all - cannot be the right playlist")
+                reasons.append(Reason("no_audio"))
 
         if pl.chapter_count > 0:
             score += min(pl.chapter_count * 2, 40)
-            reasons.append(f"{pl.chapter_count} chapters")
+            reasons.append(Reason("chapters", pl.chapter_count))
         else:
-            reasons.append("No chapters - can't be split into songs even if selected")
+            reasons.append(Reason("no_chapters"))
 
         if pl.video_track is not None:
             score += 10
-            reasons.append(f"Includes a video track ({pl.video_track.codec})")
+            reasons.append(Reason("video", pl.video_track.codec))
         else:
-            reasons.append("No video track - audio-only playlist")
+            reasons.append(Reason("no_video"))
 
         if pl.duration_seconds > 0:
             minutes = pl.duration_seconds / 60
@@ -349,24 +383,16 @@ def score_playlists(
             # for its own sake, so this is capped and lightly weighted
             # rather than dominating the score.
             score += min(minutes, 180) * 0.15
-            reasons.append(f"Runs {minutes:.0f} minutes")
+            reasons.append(Reason("minutes", f"{minutes:.0f}"))
 
         # Playlist number is a weak signal - naming conventions vary by
         # studio/authoring tool - so it only nudges close ties, never
         # dominates the score on its own.
-        try:
-            score -= int(pl.path.stem) * 0.01
-        except ValueError:
-            pass
-
-        if expected_chapter_count is not None and pl.chapter_count == expected_chapter_count:
-            score += 15
-            reasons.append(f"Chapter count matches the expected tracklist ({expected_chapter_count})")
-
-        if expected_duration_seconds is not None and pl.duration_seconds > 0:
-            if abs(pl.duration_seconds - expected_duration_seconds) < 30:
-                score += 15
-                reasons.append("Duration matches the expected tracklist closely")
+        if pl.path.suffix.lower() == ".mpls":
+            try:
+                score -= int(pl.path.stem) * 0.01
+            except ValueError:
+                pass
 
         scored.append(PlaylistScore(playlist=pl, score=score, reasons=reasons))
 
@@ -402,7 +428,4 @@ def _flag_duplicate_angles(scored: list[PlaylistScore]) -> None:
         for dup in group[1:]:
             dup.duplicate_of = primary.playlist.path
             dup.score -= 50
-            dup.reasons.append(
-                f"Same duration/chapters/tracks as {primary.playlist.path.name} "
-                f"- likely a duplicate or alternate angle"
-            )
+            dup.reasons.append(Reason("duplicate", primary.playlist.path.name))

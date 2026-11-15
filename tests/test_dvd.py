@@ -6,8 +6,11 @@ import pytest
 from PySide6.QtCore import QUrl
 
 from core import dvd
-import extractor
-import preview
+import core.models
+import core.naming
+import core.pipeline
+import core.sources
+from core import preview
 from test_backend import wait_idle
 import core.chapter_marks
 import core.split
@@ -78,7 +81,7 @@ def test_disc_folder_and_iso_detection(tmp_path):
 
 def test_scan_lists_every_title_with_its_streams(tmp_path, fake_ffmpeg):
     disc = make_dvd(tmp_path / 'Concert')
-    titles = extractor.scan_source(disc)
+    titles = core.sources.scan_source(disc)
     assert [p.path.name for p in titles] == ['Title 01.dvdtitle', 'Title 02.dvdtitle']
     first = titles[0]
     assert first.chapter_count == 3 and first.duration_seconds == pytest.approx(600.5)
@@ -87,7 +90,7 @@ def test_scan_lists_every_title_with_its_streams(tmp_path, fake_ffmpeg):
     lpcm = first.audio_tracks[0]
     assert (lpcm.bits_per_sample, lpcm.bitrate_kbps, lpcm.language) == (16, 1536.0, 'jpn')
     assert first.best_default_audio_track() is lpcm
-    chapters = extractor.read_chapters_from_source(first.path)
+    chapters = core.chapter_marks.read_chapters_from_source(first.path)
     assert [(c.index, c.start_seconds) for c in chapters] == [(1, 0.0), (2, 177.63), (3, 459.13)]
     assert '-preindex' in fake_ffmpeg[-1]        # chapter times come from the real stream
 
@@ -116,11 +119,11 @@ def test_mkv_export_cuts_a_copy_of_the_title(tmp_path, fake_ffmpeg, monkeypatch)
     title = dvd.inspect(path)
     seen = {}
     monkeypatch.setattr(core.chapter_marks, 'read_chapters_from_source',
-                        lambda p, **kw: seen.setdefault('chapters_from', p) and [extractor.Chapter(1, 0, 10)])
+                        lambda p, **kw: seen.setdefault('chapters_from', p) and [core.models.Chapter(1, 0, 10)])
     monkeypatch.setattr(core.split, 'split_mkv_direct', lambda source, *a, **kw: seen.setdefault('split', source) and [])
     monkeypatch.setattr(core.tools, 'tool_versions', lambda: {})
     work = tmp_path / 'out' / '_work'
-    extractor.run_full_pipeline(title, title.audio_tracks[0], {}, work, tmp_path / 'out', container='mkv',
+    core.pipeline.run_full_pipeline(title, title.audio_tracks[0], {}, work, tmp_path / 'out', container='mkv',
                                 audio_track_ids=[1])
     assert seen['split'] == seen['chapters_from'] == work / '_dvd_title.mkv'
 
@@ -135,6 +138,6 @@ def test_backend_imports_a_dvd_folder(backend, qt_app, tmp_path, fake_ffmpeg):
 
 
 def test_album_names_drop_leading_format_tags():
-    assert extractor.derive_album_folder_name(Path('[DVD-ISO] Kana - Tour')) == 'Kana - Tour'
-    assert extractor.derive_album_folder_name(Path('[2020] Kana - Tour')) == '[2020] Kana - Tour'
-    assert extractor.source_name_path(Path('D:/Rips/Kana - Tour/DVDIMAGE.ISO')) == Path('D:/Rips/Kana - Tour')
+    assert core.naming.derive_album_folder_name(Path('[DVD-ISO] Kana - Tour')) == 'Kana - Tour'
+    assert core.naming.derive_album_folder_name(Path('[2020] Kana - Tour')) == '[2020] Kana - Tour'
+    assert core.sources.source_name_path(Path('D:/Rips/Kana - Tour/DVDIMAGE.ISO')) == Path('D:/Rips/Kana - Tour')

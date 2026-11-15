@@ -8,7 +8,10 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from .jobs import JobCancelled
+from .jobs import Failure, JobCancelled
+
+# Child processes never open a console window of their own (Windows only; 0 elsewhere).
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +31,7 @@ TOOL_PATHS = {
 TOOL_DOWNLOAD_URLS = {
     "mkvmerge": "https://mkvtoolnix.download/downloads.html",
     "mkvextract": "https://mkvtoolnix.download/downloads.html",
+    "mkvpropedit": "https://mkvtoolnix.download/downloads.html",
     "ffmpeg": "https://ffmpeg.org/download.html",
     "ffprobe": "https://ffmpeg.org/download.html",
 }
@@ -61,9 +65,17 @@ def check_tools() -> dict[str, bool]:
     the right tool. See verify_tool_at_path() for why - existence alone
     doesn't prove much, and neither does exit code alone.
 
+    mkvpropedit has no setting of its own (it is looked up next to mkvmerge), but MKV
+    exports cannot finish without it, so it is checked like the others.
+
     Returns {tool_name: True/False}.
     """
-    return {name: verify_tool_at_path(path, name)[0] for name, path in TOOL_PATHS.items()}
+    return {name: verify_tool_at_path(path, name)[0] for name, path in tool_paths().items()}
+
+
+def tool_paths() -> dict[str, str]:
+    """Every tool the app runs and where it is looked for: the configured ones plus mkvpropedit."""
+    return {**TOOL_PATHS, "mkvpropedit": mkvpropedit_path()}
 
 
 # ffmpeg/ffprobe use a single-dash "-version" - "--version" (GNU style) is
@@ -77,6 +89,7 @@ def check_tools() -> dict[str, bool]:
 _VERSION_FLAGS = {
     "mkvmerge": "--version",
     "mkvextract": "--version",
+    "mkvpropedit": "--version",
     "ffmpeg": "-version",
     "ffprobe": "-version",
 }
@@ -86,6 +99,7 @@ _VERSION_FLAGS = {
 _IDENTIFYING_TEXT = {
     "mkvmerge": "mkvmerge v",
     "mkvextract": "mkvextract v",
+    "mkvpropedit": "mkvpropedit v",
     "ffmpeg": "ffmpeg version",
     "ffprobe": "ffprobe version",
 }
@@ -149,48 +163,50 @@ def verify_tool_at_path(path: str, tool_name: str, timeout: float = 10.0) -> tup
 
 
 # Tools that are always installed together in the same folder, so once the
-# user locates one we can offer to auto-detect the other instead of making
-# them browse twice for what's really one install.
-SIBLING_TOOL_NAMES = {
-    "ffmpeg": "ffprobe",
-    "ffprobe": "ffmpeg",
-    "mkvmerge": "mkvextract",
-    "mkvextract": "mkvmerge",
-}
+# user locates one the others are found next to it instead of browsing again.
+TOOL_FAMILIES = (("ffmpeg", "ffprobe"), ("mkvmerge", "mkvextract", "mkvpropedit"))
 
 
-def guess_sibling_tool_path(chosen_path: str, tool_name: str) -> Optional[str]:
+def tool_family(tool_name: str) -> tuple[str, ...]:
+    return next((family for family in TOOL_FAMILIES if tool_name in family), (tool_name,))
+
+
+def guess_sibling_tool_path(chosen_path: str, wanted: str) -> Optional[str]:
     """
-    Given a path the user just picked for one tool (e.g. .../bin/ffmpeg.exe),
-    guess the path for its usual companion in the same install (ffprobe
-    next to ffmpeg, mkvextract next to mkvmerge - both pairs are always
-    shipped together in the same bin/ folder). Only replaces the filename
-    itself, not anything matching the tool name elsewhere in the path
-    (e.g. a parent folder called "ffmpeg-8.1.2-full_build" is left alone).
+    Where `wanted` would be if it sits next to a tool the user just picked
+    (ffprobe next to ffmpeg, mkvextract and mkvpropedit next to mkvmerge).
+    Only the file name is swapped; the folder is left alone.
 
-    Returns the guessed path only if a file actually exists there - the
-    caller still has to run it through verify_tool_at_path() before
-    trusting it, since a same-named file isn't proof it's a working,
-    matching-architecture binary.
+    Returns the path only if a file exists there - the caller still has to
+    run it through verify_tool_at_path() before trusting it.
     """
-    sibling_name = SIBLING_TOOL_NAMES.get(tool_name)
-    if sibling_name is None:
-        return None
-
     chosen = Path(chosen_path)
-    candidate = chosen.with_name(chosen.name.replace(tool_name, sibling_name))
-    if candidate != chosen and candidate.is_file():
-        return str(candidate)
-    return None
+    candidate = chosen.with_name(wanted + chosen.suffix)
+    return str(candidate) if candidate != chosen and candidate.is_file() else None
+
+
+_versions: dict[tuple[str, str], str] = {}      # (tool, path) -> version line; a path's tool does not change mid-run
 
 
 def tool_versions() -> dict[str, str]:
     """First line of each configured tool's version output, for the job manifest."""
     versions: dict[str, str] = {}
     for name, configured_path in TOOL_PATHS.items():
-        ok, message = verify_tool_at_path(configured_path, name)
-        versions[name] = message if ok else "unknown"
+        key = (name, configured_path)
+        if key not in _versions:
+            ok, message = verify_tool_at_path(configured_path, name)
+            if not ok:
+                versions[name] = "unknown"      # not remembered: the tool may be put there later
+                continue
+            _versions[key] = message
+        versions[name] = _versions[key]
     return versions
+
+
+def _timed_out(args: list[str], timeout: Optional[float]) -> Failure:
+    tool = Path(args[0]).name if args else "process"
+    return Failure("tool_timeout", f"{tool} timed out after {timeout} seconds and was killed. "
+                                   f"Command: {' '.join(args)}", detail=" ".join(args), tool=tool)
 
 
 def run(
@@ -220,9 +236,7 @@ def run(
     calls that don't need to be cancellable (quick --version checks etc),
     which keeps using the simpler non-polling subprocess.run path.
     """
-    creationflags = 0
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+    creationflags = NO_WINDOW
 
     if cancel_event is None:
         try:
@@ -237,11 +251,7 @@ def run(
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
-            tool = Path(args[0]).name if args else "process"
-            raise RuntimeError(
-                f"{tool} timed out after {timeout} seconds and was killed. "
-                f"Command: {' '.join(args)}"
-            ) from exc
+            raise _timed_out(args, timeout) from exc
 
     # Cancellable path: subprocess.run() blocks until the process exits
     # with no way to interrupt it early, so use Popen + a short-timeout
@@ -277,11 +287,7 @@ def run(
             if timeout is not None and (time.monotonic() - started) > timeout:
                 proc.kill()
                 proc.communicate()
-                tool = Path(args[0]).name if args else "process"
-                raise RuntimeError(
-                    f"{tool} timed out after {timeout} seconds and was killed. "
-                    f"Command: {' '.join(args)}"
-                )
+                raise _timed_out(args, timeout)
 
 
 def probe_duration_seconds(media_path: Path) -> float:
@@ -310,30 +316,45 @@ def mkvpropedit_path() -> str:
     return "mkvpropedit"
 
 
+def _stop(process: subprocess.Popen) -> None:
+    """End a child that is no longer wanted and wait until it is gone (its files are free again)."""
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run_streaming(args: list[str], on_line: Callable[[str], None],
                    cancel_event: Optional[threading.Event] = None) -> int:
-    """Run a tool, handing each output line to on_line as it arrives; cancellable like run()."""
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    """
+    Run a tool, handing each output line to on_line as it arrives; cancellable like run().
+    The tool never outlives this call: if on_line raises, or the job is cancelled, it is stopped first.
+    """
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                               text=True, encoding="utf-8", errors="replace", creationflags=creationflags)
+                               text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
     lines: "list[str]" = []
     reader = threading.Thread(target=lambda: [lines.append(line.rstrip("\r\n")) for line in process.stdout], daemon=True)
     reader.start()
     seen = 0
-    while True:
-        while seen < len(lines):
-            on_line(lines[seen])
-            seen += 1
-        if process.poll() is not None:
-            reader.join(timeout=5)
-            for line in lines[seen:]:
-                on_line(line)
-            return process.returncode
-        if cancel_event is not None and cancel_event.is_set():
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-            raise JobCancelled("Cancelled by user.")
-        time.sleep(0.2)
+    try:
+        while True:
+            while seen < len(lines):
+                on_line(lines[seen])
+                seen += 1
+            if process.poll() is not None:
+                reader.join(timeout=5)
+                while seen < len(lines):
+                    on_line(lines[seen])
+                    seen += 1
+                return process.returncode
+            if cancel_event is not None and cancel_event.is_set():
+                raise JobCancelled("Cancelled by user.")
+            time.sleep(0.2)
+    finally:
+        _stop(process)

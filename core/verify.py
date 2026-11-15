@@ -72,7 +72,7 @@ def verify_output(path: Path, chapter: Chapter, *, container: str, audio_tracks:
     audios = [s for s in streams if s.get("codec_type") == "audio"]
     flac = container.lower() == "flac"
 
-    expected_length = (chapter.end_seconds - chapter.start_seconds) if chapter.end_seconds is not None else None
+    expected_length = chapter.duration
     try:
         actual_length = float((info.get("format") or {}).get("duration"))
     except (TypeError, ValueError):

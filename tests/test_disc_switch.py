@@ -1,4 +1,4 @@
-import extractor
+import core.models
 import core.chapter_marks
 import core.sources
 from test_backend import wait_idle
@@ -12,9 +12,9 @@ def test_new_disc_starts_without_the_last_discs_titles(backend, qt_app, tmp_path
     first, second = tmp_path / 'Artist - First Live.mkv', tmp_path / 'Artist - Second Live.mkv'
     first.touch()
     second.touch()
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: extractor.Playlist(p, chapter_count=3))
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: core.models.Playlist(p, chapter_count=3))
     monkeypatch.setattr(core.chapter_marks, 'read_chapters_from_source', lambda p, **kw: [
-        extractor.Chapter(1, 0, 60), extractor.Chapter(2, 60, 120), extractor.Chapter(3, 120, 180)])
+        core.models.Chapter(1, 0, 60), core.models.Chapter(2, 60, 120), core.models.Chapter(3, 120, 180)])
 
     backend.disc.setSource(str(first))
     wait_idle(backend, qt_app)

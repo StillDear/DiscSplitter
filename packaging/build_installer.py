@@ -4,8 +4,9 @@ Build the Windows installer: dist/DiscSplitter-Setup-<version>.exe
     .venv\\Scripts\\python.exe packaging\\build_installer.py [--version 2026.11.13]
         [--ffmpeg-dir DIR] [--mkvtoolnix-dir DIR] [--iscc PATH] [--skip-pyinstaller]
 
-1. PyInstaller builds the app as a folder (packaging/installer.spec -> build/installer/DiscSplitter).
-2. ffmpeg/ffprobe and mkvmerge/mkvextract are copied into its tools\\ folder with their licences;
+1. PyInstaller builds the app as a folder (packaging/installer.spec -> build/installer/DiscSplitter);
+   the version is written next to it (version.txt), where the app reads it.
+2. ffmpeg/ffprobe and mkvmerge/mkvextract/mkvpropedit are copied into its tools\\ folder with their licences;
    the installed app uses them unless the user sets other paths in Settings.
 3. Inno Setup (packaging/DiscSplitter.iss) packs that folder into the setup wizard.
 
@@ -24,10 +25,14 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from core import appinfo                      # noqa: E402  (the project root has to be on the path first)
+from gui.settings import SETTINGS_PATH as SETTINGS   # noqa: E402
+
 PACKAGING = ROOT / "packaging"
 APP_DIR = ROOT / "build" / "installer" / "DiscSplitter"
-SETTINGS = Path.home() / ".disc_splitter" / "settings.json"
-TOOLS = {"ffmpeg": ("ffmpeg", "ffprobe"), "mkvtoolnix": ("mkvmerge", "mkvextract")}
+# mkvpropedit has no setting of its own, but every MKV export needs it next to mkvmerge.
+TOOLS = {"ffmpeg": ("ffmpeg", "ffprobe"), "mkvtoolnix": ("mkvmerge", "mkvextract", "mkvpropedit")}
 
 
 def fail(message: str) -> None:
@@ -48,7 +53,8 @@ def tool_folder(family: str, override: str | None) -> Path:
     names = TOOLS[family]
     candidates = [override, os.environ.get(f"{family.upper()}_DIR")]
     for name in names:
-        candidates.append(str(Path(configured_path(name)).parent) if configured_path(name) else None)
+        configured = configured_path(name)
+        candidates.append(str(Path(configured).parent) if configured else None)
         found = shutil.which(name)
         candidates.append(str(Path(found).parent) if found else None)
     for folder in filter(None, candidates):
@@ -101,6 +107,9 @@ def main() -> None:
              PACKAGING / "installer.spec"])
     if not (APP_DIR / "DiscSplitter.exe").is_file():
         fail(f"no app build in {APP_DIR}")
+
+    # The app reads its version from here (About, and the User-Agent it sends to web services).
+    (APP_DIR / appinfo.VERSION_FILE).write_text(args.version + "\n", encoding="utf-8")
 
     tools = APP_DIR / "tools"
     shutil.rmtree(tools, ignore_errors=True)

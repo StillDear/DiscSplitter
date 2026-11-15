@@ -1,16 +1,17 @@
-import extractor as x
+import core.models
+import core.tracklist
 
 
 def chapters(lengths):
     out, t = [], 0
     for i, length in enumerate(lengths, 1):
-        out.append(x.Chapter(i, t, t + length))
+        out.append(core.models.Chapter(i, t, t + length))
         t += length
     return out
 
 
 def entries(pairs):
-    return [x.TracklistEntry(name, index=i, duration_seconds=d) for i, (name, d) in enumerate(pairs, 1)]
+    return [core.tracklist.TracklistEntry(name, index=i, duration_seconds=d) for i, (name, d) in enumerate(pairs, 1)]
 
 
 def names(result):
@@ -21,7 +22,7 @@ def test_concert_disc_skips_talk_chapters():
     # intro, song, MC, song, song, MC, song, encore talk, song, outro
     ch = chapters([7, 219, 100, 275, 319, 80, 181, 60, 340, 20])
     tl = entries([('A', 214), ('B', 280), ('C', 316), ('D', 185), ('E', 336)])
-    result = x.match_tracklist_to_chapters(ch, tl)
+    result = core.tracklist.match_tracklist_to_chapters(ch, tl)
     assert names(result) == [None, 'A', None, 'B', 'C', None, 'D', None, 'E', None]
     assert [m.entry_index for m in result.matches if m.name] == [0, 1, 2, 3, 4]
 
@@ -29,30 +30,30 @@ def test_concert_disc_skips_talk_chapters():
 def test_album_songs_missing_from_disc_are_skipped():
     ch = chapters([200, 300, 250])
     tl = entries([('A', 201), ('Bonus', 420), ('B', 298), ('C', 251)])
-    assert names(x.match_tracklist_to_chapters(ch, tl)) == ['A', 'B', 'C']
+    assert names(core.tracklist.match_tracklist_to_chapters(ch, tl)) == ['A', 'B', 'C']
 
 
 def test_order_is_never_shuffled():
     # Durations would fit better swapped, but alignment must stay monotonic.
     ch = chapters([300, 200])
     tl = entries([('First', 200), ('Second', 300)])
-    result = names(x.match_tracklist_to_chapters(ch, tl))
+    result = names(core.tracklist.match_tracklist_to_chapters(ch, tl))
     assert result != ['Second', 'First']           # never reordered
     assert sum(n is not None for n in result) == 1  # only one in-order pairing fits
 
 
 def test_loose_lengths_are_flagged_not_checked():
     ch = chapters([300])
-    result = x.match_tracklist_to_chapters(ch, entries([('A', 330)]))
+    result = core.tracklist.match_tracklist_to_chapters(ch, entries([('A', 330)]))
     assert result.matches[0].confidence == 'duration_mismatch'
 
 
 def test_order_mode_and_name_only_lists_stay_positional():
     ch = chapters([7, 219, 100])
     tl = entries([('A', 214), ('B', 280)])
-    assert names(x.match_tracklist_to_chapters(ch, tl, mode='order')) == ['A', 'B', None]
-    plain = [x.TracklistEntry('A'), x.TracklistEntry('B')]
-    assert names(x.match_tracklist_to_chapters(ch, plain)) == ['A', 'B', None]
+    assert names(core.tracklist.match_tracklist_to_chapters(ch, tl, mode='order')) == ['A', 'B', None]
+    plain = [core.tracklist.TracklistEntry('A'), core.tracklist.TracklistEntry('B')]
+    assert names(core.tracklist.match_tracklist_to_chapters(ch, plain)) == ['A', 'B', None]
 
 
 def test_backend_realign_and_manual_assignment(backend):
@@ -78,10 +79,10 @@ def test_backend_realign_and_manual_assignment(backend):
 def test_open_ended_last_chapter_still_aligns_by_duration():
     # Real playlists leave the last chapter without an end time ("runs to end of file").
     ch = chapters([7, 219, 319])
-    ch.append(x.Chapter(4, ch[-1].end_seconds, None))
+    ch.append(core.models.Chapter(4, ch[-1].end_seconds, None))
     tl = entries([('A', 221), ('B', 321), ('C', 250)])
-    assert x.can_align_by_duration(ch, tl)
-    assert names(x.match_tracklist_to_chapters(ch, tl)) == [None, 'A', 'B', None]
+    assert core.tracklist.can_align_by_duration(ch, tl)
+    assert names(core.tracklist.match_tracklist_to_chapters(ch, tl)) == [None, 'A', 'B', None]
 
 
 def test_does_not_leap_ahead_past_songs_for_a_slightly_closer_length():
@@ -90,13 +91,13 @@ def test_does_not_leap_ahead_past_songs_for_a_slightly_closer_length():
     album = [221, 321, 340, 255, 106, 102, 187, 73, 121, 187, 246, 248, 285, 276, 339, 181, 132, 97, 97]
     tl = entries([(f'S{i}', d) for i, d in enumerate(album, 1)])
     ch = chapters([7, 108, 219, 319, 181, 340, 260, 88, 177, 106])
-    used = [m.entry_index + 1 for m in x.match_tracklist_to_chapters(ch, tl).matches if m.entry_index is not None]
+    used = [m.entry_index + 1 for m in core.tracklist.match_tracklist_to_chapters(ch, tl).matches if m.entry_index is not None]
     assert used == sorted(used) and max(used) <= 9
 
 
 def test_order_mode_flags_clear_length_mismatches():
     ch = chapters([7, 219])
-    result = x.match_tracklist_to_chapters(ch, entries([('A', 221), ('B', 321)]), mode='order')
+    result = core.tracklist.match_tracklist_to_chapters(ch, entries([('A', 221), ('B', 321)]), mode='order')
     assert [m.confidence for m in result.matches] == ['duration_mismatch', 'duration_mismatch']
 
 

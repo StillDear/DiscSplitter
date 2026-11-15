@@ -19,6 +19,8 @@ from pathlib import Path
 from statistics import median
 from typing import Optional
 
+from .tools import NO_WINDOW
+
 _SCRIPT = r"""
 param([string]$Path, [string]$Langs)
 $ErrorActionPreference = 'Stop'
@@ -89,7 +91,7 @@ def _run(path: str, langs: str, timeout: float = 90) -> dict:
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
              "-Path", path, "-Langs", langs],
             capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            creationflags=NO_WINDOW)
     except FileNotFoundError as exc:
         raise OcrUnavailable("Windows PowerShell was not found") from exc
     out = result.stdout.decode("utf-8", "replace").strip()
@@ -212,30 +214,22 @@ def _words(raw) -> list[Word]:
     return [Word(str(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4])) for r in raw if len(r) >= 5]
 
 
-def _prepare(image_path: Path, max_side: int) -> tuple[Path, float]:
-    """Shrink images Windows would refuse; enlarge small ones (small text reads badly)."""
-    from PySide6.QtGui import QImage
-    from PySide6.QtCore import Qt
-    image = QImage(str(image_path))
-    if image.isNull():
-        raise ValueError("Not an image")
-    side = max(image.width(), image.height())
-    scale = 1.0
+def scale_for(width: int, height: int, max_side: int) -> float:
+    """Shrink images Windows would refuse; enlarge small ones (small text reads badly). 1.0: use as is."""
+    side = max(width, height)
     if side > max_side:
-        scale = max_side / side
-    elif image.height() < 1400 and side * 2 <= max_side:
-        scale = 2.0
-    if scale != 1.0:
-        image = image.scaled(int(image.width() * scale), int(image.height() * scale),
-                             Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-    target = Path(tempfile.gettempdir()) / f"dts-ocr-{abs(hash(str(image_path))) % 10**8}.png"
-    image.save(str(target), "PNG")
-    return target, scale
+        return max_side / side
+    if height < 1400 and side * 2 <= max_side:
+        return 2.0
+    return 1.0
 
 
 def recognize(image_path: Path, language: str = "auto") -> tuple[str, str]:
-    """Text of a set-list screenshot, one row per line; returns (text, language used)."""
-    available, max_side = languages()
+    """
+    Text of a set-list screenshot, one row per line; returns (text, language used).
+    The image must already fit Windows' limit (see languages() and scale_for()).
+    """
+    available, _ = languages()
     if not available:
         raise OcrUnavailable("No OCR language is installed in Windows")
     if language != "auto":
@@ -245,11 +239,7 @@ def recognize(image_path: Path, language: str = "auto") -> tuple[str, str]:
                  [t for t in available if t.lower().startswith("zh")] + \
                  [t for t in available if t.lower().startswith("ko")]
         wanted = prefer[:3] or available[:1]
-    prepared, _ = _prepare(Path(image_path), max_side)
-    try:
-        found = _run(str(prepared), ",".join(wanted))
-    finally:
-        prepared.unlink(missing_ok=True)
+    found = _run(str(image_path), ",".join(wanted))
     texts = {tag: rebuild_rows(_words(found.get(tag))) for tag in wanted}
     if language != "auto":
         return texts[wanted[0]], wanted[0]

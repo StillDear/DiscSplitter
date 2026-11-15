@@ -462,6 +462,23 @@ PAIRS = {
     'readme': ('README', 'README'),
     'report': ('报告问题', 'Report issue'),
     'about': ('关于', 'About'),
+    # Errors from the engine (core.jobs.Failure), by code. The tool's own output follows underneath.
+    'err_tool_failed': ('{tool} 运行出错。', '{tool} reported an error.'),
+    'err_tool_timeout': ('{tool} 长时间没有响应，已被结束。', '{tool} stopped responding and was ended.'),
+    'err_tool_missing': ('找不到 {tool}。它是 MKVToolNix 的一部分，应与 mkvmerge 在同一文件夹；可在“设置 → 外部工具”里重新指定。',
+                         '{tool} was not found. It is part of MKVToolNix and should sit next to mkvmerge; choose it again under Settings → External tools.'),
+    'err_no_chapters': ('这个播放列表没有章节标记，无法按曲拆分。', 'This playlist has no chapter markers, so it cannot be split into songs.'),
+    'err_tracks_unavailable': ('所选的轨道或章节在这个来源里已经找不到了，请重新扫描后再试。',
+                               'The chosen tracks or chapters are no longer in this source. Scan it again and retry.'),
+    'err_dvd_unsupported': ('当前的 ffmpeg 不能读取 DVD（编译时没有包含 dvdvideo）。请换用完整版 ffmpeg（例如 gyan.dev 的 full 版本），并在设置里选择它。',
+                            'This ffmpeg cannot read DVDs (it was built without the dvdvideo reader). Use a full ffmpeg build, such as the gyan.dev "full" build, and choose it in Settings.'),
+    'err_dvd_unreadable': ('无法读取这张 DVD，可能有加密或文件不完整。', 'Could not read the DVD. It may be encrypted or incomplete.'),
+    'err_iso_failed': ('Windows 无法打开这个光盘镜像：\n{path}', 'Windows could not open this disc image:\n{path}'),
+    'err_unreachable': ('连不上 {host}，请检查网络或代理设置。', 'Could not reach {host}. Check the network or the proxy settings.'),
+    'err_http_error': ('{host} 返回了错误（{status}）。', '{host} returned an error ({status}).'),
+    'err_bad_response': ('{host} 返回的数据无法识别。', '{host} returned data that could not be read.'),
+    'err_region_blocked': ('这个来源在当前地区不提供数据，可换用代理或其他来源。', 'This source returns no data in your region. Try a proxy or another source.'),
+    'versionLabel': ('版本', 'Version'),
     'aboutText': ('DiscSplitter\n把蓝光、DVD、MKV 按章节无损拆成带曲名的音频或视频，曲名自动对上章节。', 'DiscSplitter\nLosslessly split Blu-ray, DVD and MKV chapters into named audio or video tracks, with titles matched for you.'),
     'tipsText': ('1. 拖入蓝光 / DVD 原盘或 MKV。播放列表按音轨、章节和时长排序，第一个通常就是正片。\n2. 勾选要导出的章节、音轨和字幕。\n3. 用“获取曲名”填曲名：光盘自带、粘贴曲目表、导入文件或在线搜索，应用前都能逐条确认。\n4. 每张光盘导出到单独的专辑文件夹，覆盖已有文件前会先问。\n5. 中途取消会保存进度，继续时跳过已完成的章节。\n6. 报告问题时请附上日志（导出页“打开日志”）。日志和设置都在 %USERPROFILE%\\.disc_splitter。', '1. Drop in a Blu-ray / DVD source or an MKV. Playlists are sorted by audio, chapters and length; the first is usually the main programme.\n2. Tick the chapters, audio and subtitles to export.\n3. Use Get titles: disc names, a pasted tracklist, an imported file or an online search. Every title can be checked before it is applied.\n4. Each disc gets its own album folder. You are asked before existing files are replaced.\n5. Cancelling saves progress; resuming skips finished chapters.\n6. Attach the log when reporting a problem (Open log on the export page). Logs and settings are in %USERPROFILE%\\.disc_splitter.'),
     'closeBusy': ('正在导出', 'Export in progress'),
@@ -568,7 +585,6 @@ PAIRS = {
     'metaApplied': ('已应用到当前光盘', 'Applied to this disc'),
     'noResults': ('没有找到结果', 'No results'),
     'searchMeta': ('搜索', 'Search'),
-    'regionBlocked': ('Deezer 在你所在的地区不提供数据，请改用 MusicBrainz 或 Apple Music。', 'Deezer does not serve data in your region. Try MusicBrainz or Apple Music.'),
     'coverInvalid': ('只支持 JPG 或 PNG 图片。', 'Only JPG or PNG images are supported.'),
     'trackCount': ('{n} 首', '{n} tracks'),
     'metaPrivacy': ('搜索时只发送你填写的艺人、专辑或条码。', 'Only the artist, album or barcode you enter is sent.'),
@@ -663,31 +679,22 @@ EN = {key: value[1] for key, value in PAIRS.items()}
 CATALOGUES = {'zh': ZH, 'en': EN}
 
 
-def localize_reason(reason: str, language: str) -> str:
-    """Translate extractor's stable scoring explanations without changing scoring."""
-    if language != 'zh':
-        return reason
-    import re
-    literals = {
-        'No audio track at all - cannot be the right playlist': '无音轨，无法作为目标播放列表',
-        "No chapters - can't be split into songs even if selected": '无章节，无法按曲分割',
-        'No video track - audio-only playlist': '无视频轨，仅音频播放列表',
-        'Duration matches the expected tracklist closely': '时长与候选曲目列表接近',
-    }
-    if reason in literals:
-        return literals[reason]
-    rules = [
-        (r'Has a Dolby Atmos/TrueHD track \(ID (.+)\)', '包含 Dolby Atmos/TrueHD 音轨（ID {}）'),
-        (r'No Atmos, but best available track is lossless \((.+)\)', '无 Atmos，最佳音轨为无损（{}）'),
-        (r'No Atmos or lossless track - best available is (.+)', '无 Atmos 或无损音轨，最佳为 {}'),
-        (r'(\d+) chapters', '{} 个章节'),
-        (r'Includes a video track \((.+)\)', '包含视频轨（{}）'),
-        (r'Runs (.+) minutes', '总时长 {} 分钟'),
-        (r'Chapter count matches the expected tracklist \((.+)\)', '章节数与候选曲目列表一致（{}）'),
-        (r'Same duration/chapters/tracks as (.+) - likely a duplicate or alternate angle', '与 {} 的时长、章节和音轨相同，可能为重复或其他视角'),
-    ]
-    for pattern, template in rules:
-        match = re.fullmatch(pattern, reason)
-        if match:
-            return template.format(*match.groups())
-    return reason
+# core.sources.REASON_TEXT in Chinese, by reason code ({} is the reason's value).
+REASONS_ZH = {
+    'atmos': '包含 Dolby Atmos/TrueHD 音轨（ID {}）',
+    'lossless': '无 Atmos，最佳音轨为无损（{}）',
+    'lossy': '无 Atmos 或无损音轨，最佳为 {}',
+    'no_audio': '无音轨，无法作为目标播放列表',
+    'chapters': '{} 个章节',
+    'no_chapters': '无章节，无法按曲分割',
+    'video': '包含视频轨（{}）',
+    'no_video': '无视频轨，仅音频播放列表',
+    'minutes': '总时长 {} 分钟',
+    'duplicate': '与 {} 的时长、章节和音轨相同，可能为重复或其他视角',
+}
+
+
+def localize_reason(reason, language: str) -> str:
+    """A playlist scoring reason (core.sources.Reason) in the interface language."""
+    template = REASONS_ZH.get(getattr(reason, 'code', '')) if language == 'zh' else None
+    return template.format(reason.value) if template else str(reason)

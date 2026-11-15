@@ -30,8 +30,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-import extractor
-from core import musicbrainz
+from . import musicbrainz
+from .jobs import Failure
+from .tracklist import TracklistEntry
 
 SOURCES = ("musicbrainz", "itunes", "deezer", "discogs")
 USER_AGENT = musicbrainz.MUSICBRAINZ_USER_AGENT
@@ -58,14 +59,17 @@ def configure(proxy_mode: str = "system", proxy_url: str = "", timeout: float = 
     musicbrainz.configure(timeout)
 
 
+MB_RETRY_SECONDS = 2.0
+
+
 def _mb(fn, *args):
     """MusicBrainz answers 503 when requests come too fast; wait and retry once."""
     try:
         return fn(*args)
     except RuntimeError as exc:
-        if "(503)" not in str(exc):
+        if not isinstance(exc, musicbrainz.MusicBrainzBusy) and "(503)" not in str(exc):
             raise
-        time.sleep(2)
+        time.sleep(MB_RETRY_SECONDS)
         return fn(*args)
 
 
@@ -79,6 +83,8 @@ class Candidate:
     track_count: int = 0
     detail: str = ""
     thumb: str = ""          # small artwork URL for the result list (may 404 for MusicBrainz)
+    disc_track_counts: list[int] = field(default_factory=list)   # tracks per disc, when the source says
+    score: int = 0           # the source's own relevance (MusicBrainz: 0-100); ties are left in its order
 
 
 @dataclass
@@ -97,7 +103,24 @@ class AlbumInfo:
     date: str = ""
     genre: str = ""
     cover_url: str = ""
-    tracks: list[TrackInfo] = field(default_factory=list)
+    tracks: list[TrackInfo] = field(default_factory=list)          # every disc, in order
+    discs: list[list[TrackInfo]] = field(default_factory=list)     # the same tracks per disc, when known
+
+    def disc_tracks(self, chapter_count: int | None = None, disc_number: int | None = None) -> list[TrackInfo]:
+        """
+        The tracks of the one disc a playlist holds: a multi-disc release is narrowed to the disc
+        named in the source's folder ("... DISC 2"), else the one closest to the chapter count.
+        """
+        if len(self.discs) < 2:
+            return self.tracks
+        counts = [len(d) for d in self.discs]
+        return self.discs[musicbrainz.pick_medium(counts, chapter_count, disc_number)]
+
+
+def tracklist_entries(tracks: list[TrackInfo]) -> list[TracklistEntry]:
+    """Catalogue tracks as a tracklist to lay over the chapters (lengths, no start times)."""
+    return [TracklistEntry(t.title, index=i, duration_seconds=t.seconds)
+            for i, t in enumerate(tracks, start=1) if t.title.strip()]
 
 
 def _get_json(url: str, headers: dict | None = None) -> dict:
@@ -106,11 +129,20 @@ def _get_json(url: str, headers: dict | None = None) -> dict:
         with urllib.request.urlopen(request, timeout=_config["timeout"]) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"{urllib.parse.urlsplit(url).netloc} returned an error ({exc.code})") from exc
+        raise http_error(urllib.parse.urlsplit(url).netloc, exc) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Could not reach {urllib.parse.urlsplit(url).netloc}: {exc.reason}") from exc
+        raise unreachable(urllib.parse.urlsplit(url).netloc, exc) from exc
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"{urllib.parse.urlsplit(url).netloc} returned unexpected data") from exc
+        host = urllib.parse.urlsplit(url).netloc
+        raise Failure("bad_response", f"{host} returned unexpected data", host=host) from exc
+
+
+def http_error(host: str, exc: urllib.error.HTTPError) -> Failure:
+    return Failure("http_error", f"{host} returned an error ({exc.code})", host=host, status=exc.code)
+
+
+def unreachable(host: str, exc: urllib.error.URLError) -> Failure:
+    return Failure("unreachable", f"Could not reach {host}: {exc.reason}", detail=str(exc.reason), host=host)
 
 
 def _credit(credits) -> str:
@@ -124,11 +156,12 @@ def _credit(credits) -> str:
 def search(source: str, artist: str = "", album: str = "", barcode: str = "") -> list[Candidate]:
     artist, album, barcode = artist.strip(), album.strip(), barcode.strip()
     if source == "musicbrainz":
-        found = (_mb(extractor.search_musicbrainz_releases_by_barcode, barcode) if barcode
-                 else _mb(extractor.search_musicbrainz_releases, artist, album))
+        found = (_mb(musicbrainz.search_musicbrainz_releases_by_barcode, barcode) if barcode
+                 else _mb(musicbrainz.search_musicbrainz_releases, artist, album))
         return [Candidate("musicbrainz", c.release_id, c.title, c.artist, c.date, c.track_count,
                           " · ".join(x for x in (c.format_hint, c.date) if x),
-                          f"https://coverartarchive.org/release/{c.release_id}/front-250") for c in found]
+                          f"https://coverartarchive.org/release/{c.release_id}/front-250",
+                          disc_track_counts=list(c.medium_track_counts), score=c.score) for c in found]
     term = " ".join(x for x in (artist, album) if x) or barcode
     if not term:
         return []
@@ -148,7 +181,7 @@ def search(source: str, artist: str = "", album: str = "", barcode: str = "") ->
         data = _get_json("https://api.deezer.com/search/album?" + urllib.parse.urlencode({"q": term, "limit": 12}))
         if not data.get("data") and int(data.get("total") or 0) > 0:
             # Deezer reports matches but withholds them outside the countries it serves.
-            raise RuntimeError("REGION_BLOCKED:deezer")
+            raise Failure("region_blocked", "REGION_BLOCKED:deezer", host="deezer.com")
         return [Candidate("deezer", str(r["id"]), r.get("title", ""), (r.get("artist") or {}).get("name", ""), "",
                           int(r.get("nb_tracks") or 0), r.get("record_type", ""), r.get("cover_medium", ""))
                 for r in data.get("data", []) if r.get("id")]
@@ -222,25 +255,27 @@ def _discogs_tracks(items, album_artist: str) -> list[TrackInfo]:
 
 # ---------------------------------------------------------------- fetch
 
-def fetch(source: str, item_id: str) -> AlbumInfo:
+def fetch(source: str, item_id: str, tracks_only: bool = False) -> AlbumInfo:
+    """tracks_only: the caller wants the tracklist, so requests that only fill in album tags are skipped."""
     if source == "musicbrainz":
         data = _mb(musicbrainz.api_get, f"release/{item_id}", {"inc": "recordings+artist-credits+genres+tags+release-groups"})
         artist = _credit(data.get("artist-credit"))
         genres = data.get("genres") or []
         group_id = (data.get("release-group") or {}).get("id")
-        if not genres and group_id:
+        if not genres and group_id and not tracks_only:
             # Genres are usually voted on the release group, not on each edition.
             group = _mb(musicbrainz.api_get, f"release-group/{group_id}", {"inc": "genres+tags"})
             genres = group.get("genres") or group.get("tags") or []
         genres = sorted(genres or data.get("tags") or [], key=lambda g: -int(g.get("count") or 0))
-        tracks = [TrackInfo(t.get("title") or (t.get("recording") or {}).get("title", ""),
+        discs = [[TrackInfo(t.get("title") or (t.get("recording") or {}).get("title", ""),
                             _credit(t.get("artist-credit")) or artist,
                             (t.get("length") or 0) / 1000 or None)
-                  for medium in data.get("media") or [] for t in medium.get("tracks") or []]
+                  for t in medium.get("tracks") or []] for medium in data.get("media") or []]
         return AlbumInfo("musicbrainz", data.get("title", ""), artist, artist, data.get("date", ""),
                          ", ".join(g["name"].title() for g in genres[:2] if g.get("name")),
                          f"https://coverartarchive.org/release/{item_id}/"
-                         + {"standard": "front-500", "large": "front-1200", "original": "front"}[_config["cover_size"]], tracks)
+                         + {"standard": "front-500", "large": "front-1200", "original": "front"}[_config["cover_size"]],
+                         [t for disc in discs for t in disc], discs)
     if source == "itunes":
         data = _get_json("https://itunes.apple.com/lookup?" + urllib.parse.urlencode(
             {"id": item_id, "entity": "song", "country": _config["country"]}))
@@ -248,13 +283,17 @@ def fetch(source: str, item_id: str) -> AlbumInfo:
         album = next((r for r in rows if r.get("wrapperType") == "collection"), {})
         songs = sorted((r for r in rows if r.get("wrapperType") == "track"),
                        key=lambda r: (r.get("discNumber") or 1, r.get("trackNumber") or 0))
+        by_disc: dict[int, list[TrackInfo]] = {}
+        for s in songs:
+            by_disc.setdefault(s.get("discNumber") or 1, []).append(
+                TrackInfo(s.get("trackName", ""), s.get("artistName", ""), (s.get("trackTimeMillis") or 0) / 1000 or None))
+        discs = [by_disc[n] for n in sorted(by_disc)]
         art = album.get("artworkUrl100", "")
         return AlbumInfo("itunes", album.get("collectionName", ""), album.get("artistName", ""), album.get("artistName", ""),
                          (album.get("releaseDate") or "")[:10], album.get("primaryGenreName", ""),
                          art.replace("100x100bb", {"standard": "600x600bb", "large": "1200x1200bb",
                                                    "original": "3000x3000bb"}[_config["cover_size"]]) if art else "",
-                         [TrackInfo(s.get("trackName", ""), s.get("artistName", ""), (s.get("trackTimeMillis") or 0) / 1000 or None)
-                          for s in songs])
+                         [t for disc in discs for t in disc], discs)
     if source == "deezer":
         data = _get_json(f"https://api.deezer.com/album/{urllib.parse.quote(item_id)}")
         if "error" in data:

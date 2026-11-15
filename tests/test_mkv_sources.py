@@ -7,19 +7,24 @@ import threading
 import pytest
 from PySide6.QtCore import QUrl
 
-import extractor
+import core.jobs
+import core.manifest
+import core.models
+import core.naming
+import core.pipeline
+import core.tools
 from gui import logic
 from test_backend import wait_idle
 import core.chapter_marks
 import core.sources
 
 
-@pytest.mark.skipif(not all(shutil.which(tool) for tool in extractor.TOOL_PATHS),
+@pytest.mark.skipif(not all(shutil.which(tool) for tool in core.tools.TOOL_PATHS),
                     reason='MKVToolNix and FFmpeg are required')
 @pytest.mark.parametrize('keep_video', [True, False])
 def test_selected_chapters_keep_multiple_tracks_through_resume(tmp_path, monkeypatch, keep_video):
-    for tool in extractor.TOOL_PATHS:
-        monkeypatch.setitem(extractor.TOOL_PATHS, tool, shutil.which(tool))
+    for tool in core.tools.TOOL_PATHS:
+        monkeypatch.setitem(core.tools.TOOL_PATHS, tool, shutil.which(tool))
     source = tmp_path / 'concert.mkv'
     subtitles = tmp_path / 'lyrics.srt'
     subtitles.write_text('1\n00:00:00,400 --> 00:00:01,400\nIntro\n\n'
@@ -40,7 +45,7 @@ def test_selected_chapters_keep_multiple_tracks_through_resume(tmp_path, monkeyp
         '-disposition:a:0', 'default', '-disposition:a:1', '0', '-disposition:a:2', '0',
         '-disposition:s:0', '0', '-disposition:s:1', 'forced', str(source),
     ], check=True, capture_output=True)
-    playlist = extractor.inspect_playlist(source)
+    playlist = core.sources.inspect_playlist(source)
     audio_ids = [t.track_id for t in playlist.audio_tracks[1:]]
     subtitle_ids = [t.track_id for t in playlist.subtitle_tracks]
     output = tmp_path / 'output'
@@ -51,13 +56,13 @@ def test_selected_chapters_keep_multiple_tracks_through_resume(tmp_path, monkeyp
         if message.startswith('Splitting chapter 3:'):
             cancel.set()
 
-    with pytest.raises(extractor.JobCancelled):
-        extractor.run_full_pipeline(
+    with pytest.raises(core.jobs.JobCancelled):
+        core.pipeline.run_full_pipeline(
             playlist, playlist.audio_tracks[1], {3: 'Finale'}, work, output,
             audio_track_ids=audio_ids, subtitle_track_ids=subtitle_ids, chapter_indices=[1, 3],
             cancel_event=cancel, progress_cb=progress, keep_video=keep_video,
         )
-    manifest = extractor.read_manifest(work)
+    manifest = core.manifest.read_manifest(work)
     first = Path(manifest.completed_outputs[0])
     assert first.name == 'Track 01.mkv'
     assert manifest.audio_track_ids == audio_ids
@@ -71,7 +76,7 @@ def test_selected_chapters_keep_multiple_tracks_through_resume(tmp_path, monkeyp
     if not keep_video:
         # Resume must honour the saved video setting even when a new remux is needed.
         (work / '_audio_extracted.mkv').unlink()
-    paths = extractor.run_full_pipeline(
+    paths = core.pipeline.run_full_pipeline(
         playlist, playlist.audio_tracks[0], {}, work, output, resume=True, chapter_indices=[2],
         keep_video=not keep_video,
     )
@@ -104,11 +109,11 @@ def test_single_matroska_source(tmp_path, monkeypatch, suffix):
 
     def inspect(path):
         calls.append(path)
-        return extractor.Playlist(path, chapter_count=3)
+        return core.models.Playlist(path, chapter_count=3)
 
     monkeypatch.setattr(core.sources, 'inspect_playlist', inspect)
-    assert extractor.find_sources(source) == [source]
-    assert [p.path for p in extractor.scan_source(source)] == [source]
+    assert core.sources.find_sources(source) == [source]
+    assert [p.path for p in core.sources.scan_source(source)] == [source]
     assert calls == [source]
 
 
@@ -120,9 +125,9 @@ def test_folder_matroska_sources_are_sorted_and_top_level_only(tmp_path, monkeyp
     (tmp_path / 'nested' / 'hidden.mkv').touch()
     (tmp_path / 'not-a-file.mk3d').mkdir()
     (tmp_path / 'notes.txt').touch()
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: extractor.Playlist(p))
-    assert extractor.find_sources(tmp_path) == sorted(files)
-    assert [p.path for p in extractor.scan_source(tmp_path)] == sorted(files)
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: core.models.Playlist(p))
+    assert core.sources.find_sources(tmp_path) == sorted(files)
+    assert [p.path for p in core.sources.scan_source(tmp_path)] == sorted(files)
 
 
 @pytest.mark.parametrize('with_playlist', [True, False])
@@ -135,9 +140,9 @@ def test_bdmv_takes_precedence_even_without_playlists(tmp_path, monkeypatch, wit
         playlist.touch()
         expected = [playlist]
     (tmp_path / 'title_t00.mkv').touch()
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: extractor.Playlist(p))
-    assert extractor.find_sources(tmp_path) == expected
-    assert [p.path for p in extractor.scan_source(tmp_path)] == expected
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: core.models.Playlist(p))
+    assert core.sources.find_sources(tmp_path) == expected
+    assert [p.path for p in core.sources.scan_source(tmp_path)] == expected
 
 
 def test_unsupported_and_empty_sources(tmp_path, monkeypatch):
@@ -145,26 +150,26 @@ def test_unsupported_and_empty_sources(tmp_path, monkeypatch):
         pytest.fail(f'Unexpected inspection: {path}')
 
     monkeypatch.setattr(core.sources, 'inspect_playlist', unexpected)
-    assert extractor.scan_source(tmp_path) == []
+    assert core.sources.scan_source(tmp_path) == []
     other = tmp_path / 'concert.mp4'
     other.touch()
     for source in [other, tmp_path / 'missing.mkv', tmp_path]:
-        assert extractor.find_sources(source) == []
-        assert extractor.scan_source(source) == []
+        assert core.sources.find_sources(source) == []
+        assert core.sources.scan_source(source) == []
 
 
 def test_mkv_filename_drives_album_output_and_metadata(tmp_path):
     source = tmp_path / 'Dire Straits - Brothers In Arms (1985) [DVD].mkv'
     source.touch()
-    name_path = extractor.source_name_path(source)
+    name_path = core.sources.source_name_path(source)
     assert name_path.name == 'Dire Straits - Brothers In Arms (1985) [DVD]'
-    assert extractor.guess_artist_album_year(name_path) == ('Dire Straits', 'Brothers In Arms', 1985)
+    assert core.naming.guess_artist_album_year(name_path) == ('Dire Straits', 'Brothers In Arms', 1985)
     assert logic.album_output(str(source), str(tmp_path / 'library')) == (
         tmp_path / 'library' / 'Dire Straits - Brothers In Arms (1985)')
     # A folder with a Matroska suffix still follows the original folder rules.
     folder = tmp_path / 'Album.mkv'
     folder.mkdir()
-    assert extractor.source_name_path(folder) == folder
+    assert core.sources.source_name_path(folder) == folder
     assert logic.album_output(str(folder), str(tmp_path / 'library')).name == 'Album.mkv'
 
 
@@ -183,8 +188,8 @@ def test_backend_mkv_scan_uses_parent_sidecars_and_filename(backend, qt_app, tmp
     source.touch()
     sidecar = tmp_path / 'tracks.txt'
     sidecar.write_text('One\nTwo', encoding='utf-8')
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: extractor.Playlist(p, chapter_count=2))
-    monkeypatch.setattr(core.chapter_marks, 'read_chapters_from_source', lambda p, **kw: [extractor.Chapter(1, 0), extractor.Chapter(2, 60)])
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: core.models.Playlist(p, chapter_count=2))
+    monkeypatch.setattr(core.chapter_marks, 'read_chapters_from_source', lambda p, **kw: [core.models.Chapter(1, 0), core.models.Chapter(2, 60)])
     backend.disc.setSource(str(source))
     wait_idle(backend, qt_app)
     assert backend.state['sidecars'] == [str(sidecar)]
@@ -198,7 +203,7 @@ def test_backend_scores_multiple_mkv_candidates(backend, qt_app, tmp_path, monke
     short, concert = tmp_path / 'title_t00.mkv', tmp_path / 'title_t01.mkv'
     short.touch()
     concert.touch()
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: extractor.Playlist(
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: core.models.Playlist(
         p, chapter_count=12 if p == concert else 1, duration_seconds=3600 if p == concert else 30))
     monkeypatch.setattr(core.chapter_marks, 'read_chapters_from_source', lambda p, **kw: [])
     backend.disc.setSource(str(tmp_path))

@@ -4,13 +4,16 @@ from pathlib import Path
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QWindow
 
-import extractor as x
+import core.chapter_marks
+import core.models
+import core.naming
+import core.tracklist
 from gui import desktop
 import core.pipeline
 
 
 def chapters(names):
-    return [x.Chapter(i, (i - 1) * 60.0, i * 60.0, name=n) for i, n in enumerate(names, 1)]
+    return [core.models.Chapter(i, (i - 1) * 60.0, i * 60.0, name=n) for i, n in enumerate(names, 1)]
 
 
 def stems(planned):
@@ -20,19 +23,19 @@ def stems(planned):
 def test_filename_presets_number_the_exported_songs(tmp_path):
     ch = chapters(['Intro', 'Song A', 'Song B'])[1:]           # chapter 1 is not exported
     meta = {'album': {'artist': 'Kana'}, 'track_artists': {'3': 'Guest: X'}}
-    assert stems(x.plan_output_files(ch, tmp_path)) == ['Song A', 'Song B']
-    assert stems(x.plan_output_files(ch, tmp_path, filename_template='nn_title')) == ['01 - Song A', '02 - Song B']
-    assert stems(x.plan_output_files(ch, tmp_path, filename_template='nn_dot_title')) == ['01. Song A', '02. Song B']
+    assert stems(core.naming.plan_output_files(ch, tmp_path)) == ['Song A', 'Song B']
+    assert stems(core.naming.plan_output_files(ch, tmp_path, filename_template='nn_title')) == ['01 - Song A', '02 - Song B']
+    assert stems(core.naming.plan_output_files(ch, tmp_path, filename_template='nn_dot_title')) == ['01. Song A', '02. Song B']
     # per-track artist wins and is made filename-safe; no artist at all falls back to the title
-    assert stems(x.plan_output_files(ch, tmp_path, filename_template='artist_title', metadata=meta)) == \
+    assert stems(core.naming.plan_output_files(ch, tmp_path, filename_template='artist_title', metadata=meta)) == \
         ['Kana - Song A', 'Guest X - Song B']
-    assert stems(x.plan_output_files(ch, tmp_path, filename_template='artist_title')) == ['Song A', 'Song B']
+    assert stems(core.naming.plan_output_files(ch, tmp_path, filename_template='artist_title')) == ['Song A', 'Song B']
 
 
 def test_numbered_presets_do_not_flag_equal_titles_as_duplicates(tmp_path):
     ch = chapters(['Encore', 'Encore'])
-    assert all(p.duplicate_name for p in x.plan_output_files(ch, tmp_path))
-    numbered = x.plan_output_files(ch, tmp_path, filename_template='nn_title')
+    assert all(p.duplicate_name for p in core.naming.plan_output_files(ch, tmp_path))
+    numbered = core.naming.plan_output_files(ch, tmp_path, filename_template='nn_title')
     assert not any(p.duplicate_name for p in numbered)
     assert stems(numbered) == ['01 - Encore', '02 - Encore']
 
@@ -44,17 +47,17 @@ def test_chapter_language_accepts_two_and_three_letter_codes():
         '<ChapterDisplay><ChapterString>第1章</ChapterString><ChapterLanguage>und</ChapterLanguage>'
         '<ChapLanguageIETF>ja</ChapLanguageIETF></ChapterDisplay>'
         '</ChapterAtom>')
-    assert x._pick_chapter_display(atom, 'jpn')[0] == '第1章'
-    assert x._pick_chapter_display(atom, 'eng')[0] == 'Chapter 1'
-    assert x._pick_chapter_display(atom, 'first')[0] == 'Chapter 1'
-    assert x._pick_chapter_display(atom, 'kor')[0] == 'Chapter 1'       # missing language falls back
+    assert core.chapter_marks._pick_chapter_display(atom, 'jpn')[0] == '第1章'
+    assert core.chapter_marks._pick_chapter_display(atom, 'eng')[0] == 'Chapter 1'
+    assert core.chapter_marks._pick_chapter_display(atom, 'first')[0] == 'Chapter 1'
+    assert core.chapter_marks._pick_chapter_display(atom, 'kor')[0] == 'Chapter 1'       # missing language falls back
 
 
 def test_tolerance_decides_what_counts_as_a_length_match():
-    ch = [x.Chapter(1, 0, 300)]
-    entry = [x.TracklistEntry('A', index=1, duration_seconds=330)]
-    assert x.match_tracklist_to_chapters(ch, entry).matches[0].confidence == 'duration_mismatch'
-    loose = x.match_tracklist_to_chapters(ch, entry, duration_tolerance_seconds=40)
+    ch = [core.models.Chapter(1, 0, 300)]
+    entry = [core.tracklist.TracklistEntry('A', index=1, duration_seconds=330)]
+    assert core.tracklist.match_tracklist_to_chapters(ch, entry).matches[0].confidence == 'duration_mismatch'
+    loose = core.tracklist.match_tracklist_to_chapters(ch, entry, duration_tolerance_seconds=40)
     assert loose.matches[0].confidence != 'duration_mismatch'
 
 

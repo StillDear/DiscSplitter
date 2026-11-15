@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Optional
 
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
+# Losslessly packed audio, as named in mkvmerge's / ffprobe's codec strings (PCM is told by Track.is_pcm).
+PACKED_LOSSLESS = ("truehd", "mlp", "dts-hd master", "flac", "alac")
+
 
 @dataclass
 class Track:
@@ -33,6 +33,15 @@ class Track:
     @property
     def is_atmos(self) -> bool:
         return "atmos" in self.codec.lower()
+
+    @property
+    def is_pcm(self) -> bool:
+        """Uncompressed audio (LPCM): its bitrate follows exactly from rate, depth and channels."""
+        return "pcm" in self.codec.lower() or "pcm" in self.codec_id.lower()
+
+    @property
+    def is_lossless(self) -> bool:
+        return self.is_pcm or any(hint in self.codec.lower() for hint in PACKED_LOSSLESS)
 
     @property
     def channel_layout(self) -> str:
@@ -82,6 +91,7 @@ class Playlist:
     chapter_count: int = 0
     duration_seconds: float = 0.0
     iso_image: Optional[Path] = None  # ISO playlists use a path relative to the disc root.
+    measured: bool = field(default=False, compare=False)   # audio bitrates were looked up (sources.audio_bitrates)
 
     @property
     def atmos_track(self) -> Optional[Track]:
@@ -125,14 +135,12 @@ class Playlist:
         if not tracks:
             return None
 
-        LOSSLESS_HINTS = ("truehd", "dts-hd master", "flac", "pcm", "lpcm", "alac")
+        return max(tracks, key=lambda t: (t.is_lossless, t.channels or 0, t.bits_per_sample or 0))
 
-        def sort_key(t: Track) -> tuple:
-            codec_lower = t.codec.lower()
-            is_lossless = any(h in codec_lower for h in LOSSLESS_HINTS)
-            return (is_lossless, t.channels or 0, t.bits_per_sample or 0)
 
-        return max(tracks, key=sort_key)
+def default_title(index: int) -> str:
+    """What a chapter without a title is called (in file names and the title tag)."""
+    return f"Track {index:02d}"
 
 
 @dataclass
@@ -143,3 +151,13 @@ class Chapter:
     name: str = ""                        # final song title used for the output filename
     embedded_name: str = ""               # ChapterString read from the source, if any
     language: str = ""                    # ChapterLanguage of the embedded name, if any
+
+    @property
+    def duration(self) -> Optional[float]:
+        """Length in seconds; None for a last chapter that runs to the end of the source."""
+        return None if self.end_seconds is None else self.end_seconds - self.start_seconds
+
+    @property
+    def title(self) -> str:
+        """The song title, or "Track 07" for a chapter that was given none."""
+        return self.name or default_title(self.index)

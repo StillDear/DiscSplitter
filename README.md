@@ -35,7 +35,7 @@ python -m venv .venv
 .venv\Scripts\python.exe app.py
 ```
 
-Running from source uses MKVToolNix (`mkvmerge`, `mkvextract`, `mkvpropedit`) and ffmpeg (`ffmpeg`, `ffprobe`) from your `PATH`, or from paths set in the app (Settings → External tools). DVD sources need an ffmpeg build with `dvdvideo` support.
+Running from source uses MKVToolNix (`mkvmerge`, `mkvextract`, `mkvpropedit`, all three from the same folder) and ffmpeg (`ffmpeg`, `ffprobe`) from your `PATH`, or from paths set in the app (Settings → External tools). DVD sources need an ffmpeg build with `dvdvideo` support.
 
 Settings, logs and caches are kept in `%USERPROFILE%\.disc_splitter`.
 
@@ -56,16 +56,15 @@ Build the installer (needs Inno Setup 6; writes `dist\DiscSplitter-Setup-<versio
 packaging\build_installer.bat
 ```
 
-`build_exe.bat` builds a single portable `DiscSplitter.exe` instead; that one does not include MKVToolNix or ffmpeg.
+`build_exe.bat` builds a single portable `DiscSplitter.exe` instead (same `packaging/installer.spec`, one-file mode); that one does not include MKVToolNix or ffmpeg.
 
 | Path | What is there |
 |---|---|
 | `app.py` | Entry point |
 | `gui/` | The bridge between Python and QML: backend, controllers (`disc`, `preview`, `names`, `metadata`, `exporter`), models, texts |
 | `qml/` | Screens and components |
-| `core/` | Everything without a GUI: sources, tracklists, online lookups, naming, splitting, checks, the export pipeline |
-| `setlist.py`, `ocr.py` | Tracklist parsing and matching; OCR of tracklist images |
-| `split_now.py` | Command-line splitter for an already-extracted file |
+| `core/` | Everything without a GUI: sources, tracklists and pasted set lists, online lookups, OCR, previews, naming, tags, splitting, checks, the export pipeline (layers are listed in `core/__init__.py`) |
+| `split_now.py` | Command-line splitter for an MKV that has chapters |
 | `packaging/` | Installer build |
 | `tests/` | Unit, integration and smoke tests |
 

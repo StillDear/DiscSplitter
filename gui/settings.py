@@ -38,7 +38,7 @@ DEFAULTS: dict[str, Any] = {
     "last_source_folder": "",
     "last_output_folder": "",
     "output_container": "mkv",
-    "filename_template": "title",  # extractor.FILENAME_TEMPLATES key
+    "filename_template": "title",  # core.naming.FILENAME_TEMPLATES key
     "collision_policy": "ask",     # "ask" | "skip" | "overwrite" when output files already exist
     "chapter_language": "eng",     # preferred language of names stored on the disc, or "first"
     "duration_tolerance": "20",    # seconds a song may differ from its chapter and still be checked
@@ -50,7 +50,30 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
+LEGACY_FOLDER = ".disc_track_splitter"     # the app's folder under its first name
+
+
+def adopt_legacy_folder() -> None:
+    """
+    First start after the rename: take over the old folder (settings, logs, waveform and cover
+    caches) so nothing has to be set up again. Only ever looks next to the current folder.
+    """
+    folder = SETTINGS_PATH.parent
+    legacy = folder.with_name(LEGACY_FOLDER)
+    if folder.name == LEGACY_FOLDER or folder.exists() or not legacy.is_dir():
+        return
+    try:
+        legacy.rename(folder)
+    except OSError:
+        try:        # in use or not movable: at least bring the settings along
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / SETTINGS_PATH.name).write_bytes((legacy / SETTINGS_PATH.name).read_bytes())
+        except OSError:
+            pass
+
+
 def load() -> dict[str, Any]:
+    adopt_legacy_folder()
     if not SETTINGS_PATH.exists():
         return dict(DEFAULTS)
     try:

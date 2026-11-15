@@ -26,8 +26,8 @@ Item {
                     Copy { text: win.exportView.resumeText; font.pixelSize: Theme.px(15); font.bold: true; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideMiddle }
                     Copy { text: win.tr("resumeHint"); font.pixelSize: Theme.px(12); color: Theme.sub; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight }
                 }
-                ActionButton { text: win.tr("discard"); enabled: !win.appView.busy; onClicked: backend.exporter.requestDiscard() }
-                ActionButton { text: win.tr("resume"); primary: true; enabled: !win.appView.busy; onClicked: backend.exporter.resume() }
+                ActionButton { text: win.tr("discard"); enabled: !win.appView.working; onClicked: backend.exporter.requestDiscard() }
+                ActionButton { text: win.tr("resume"); primary: true; enabled: !win.appView.working; onClicked: backend.exporter.resume() }
             }
         }
 
@@ -53,7 +53,7 @@ Item {
                         scale: drop.containsDrag ? 1.12 : 1
                         Behavior on scale { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutBack } }
                         RotationAnimation on rotation {
-                            running: Theme.animate && (drop.containsDrag || (win.appView.busy && !win.appView.pipeline))
+                            running: Theme.animate && (drop.containsDrag || (win.appView.working && !win.appView.pipeline))
                             from: 0; to: 360; duration: 1600; loops: Animation.Infinite
                             onRunningChanged: if (!running) dropDisc.rotation = 0
                         }
@@ -62,9 +62,9 @@ Item {
                     Copy { text: win.tr("startHint"); color: Theme.muted; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; lineHeight: 1.3 }
                     RowLayout {
                         Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 6; spacing: 8
-                        Field { id: pathField; mono: true; Layout.preferredWidth: 360; placeholderText: "E:/Blurays/…"; enabled: !win.appView.busy; onAccepted: backend.disc.setSource(text) }
-                        ActionButton { text: win.tr("chooseFolder"); large: true; implicitHeight: 34; enabled: !win.appView.busy; onClicked: win.openFolder("source") }
-                        ActionButton { text: win.tr("chooseSourceFile"); large: true; implicitHeight: 34; enabled: !win.appView.busy; onClicked: win.openSourceFile() }
+                        Field { id: pathField; mono: true; Layout.preferredWidth: 360; placeholderText: "E:/Blurays/…"; enabled: !win.appView.working; onAccepted: backend.disc.setSource(text) }
+                        ActionButton { text: win.tr("chooseFolder"); large: true; implicitHeight: 34; enabled: !win.appView.working; onClicked: win.openFolder("source") }
+                        ActionButton { text: win.tr("chooseSourceFile"); large: true; implicitHeight: 34; enabled: !win.appView.working; onClicked: win.openSourceFile() }
                     }
                 }
             }
@@ -79,7 +79,7 @@ Item {
                 Icon { kind: "folder"; ink: Theme.muted; Layout.preferredWidth: 16; Layout.preferredHeight: 16 }
                 Copy { text: win.tr("recent"); color: Theme.muted; wrapMode: Text.NoWrap }
                 Copy { text: win.discView.source; font.family: Theme.mono; font.pixelSize: Theme.px(12); Layout.fillWidth: true; elide: Text.ElideMiddle; wrapMode: Text.NoWrap }
-                ActionButton { text: win.tr("reopen"); ghost: true; enabled: !win.appView.busy; onClicked: backend.disc.scan() }
+                ActionButton { text: win.tr("reopen"); ghost: true; enabled: !win.appView.working; onClicked: backend.disc.scan() }
             }
         }
     }

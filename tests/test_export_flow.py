@@ -2,7 +2,8 @@ import threading
 
 import pytest
 
-import extractor
+import core.jobs
+import core.manifest
 from gui.export_flow import ExportFlow, Phase
 from test_backend import setup_disc, wait_idle
 import core.sources
@@ -54,7 +55,7 @@ def test_backend_dismissing_resume_drops_the_question(backend, monkeypatch, tmp_
     setup_disc(backend)
     backend.put(source='Album', output=str(tmp_path))
     output = tmp_path / 'Album'
-    extractor.write_manifest(output / '_work', manifest(output, 'failed'))
+    core.manifest.write_manifest(output / '_work', manifest(output, 'failed'))
     backend.exporter.startExport()
     assert backend.exporter.flow.phase is Phase.CONFIRM_RESUME
     backend.exporter.cancelExport()                            # Escape / Cancel on the resume dialog
@@ -65,7 +66,7 @@ def test_failed_resume_does_not_leave_a_question_open(backend, qt_app, monkeypat
     from test_logic import manifest
     setup_disc(backend)
     m = manifest(tmp_path / 'Album', 'cancelled')
-    extractor.write_manifest(tmp_path / 'Album' / '_work', m)
+    core.manifest.write_manifest(tmp_path / 'Album' / '_work', m)
     backend.exporter.flow.manifest = m
     backend.exporter.flow.ask(Phase.CONFIRM_RESUME)
     monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path: (_ for _ in ()).throw(ValueError('gone')))
@@ -93,14 +94,14 @@ def test_rejected_job_leaves_no_running_badge(backend, qt_app):
 
 def test_progress_marks_the_interrupted_chapter(backend, tmp_path):
     setup_disc(backend)
-    backend.exporter.progress(extractor.splitting(2, 'Two'))
-    backend.exporter.progress(extractor.job_failed(RuntimeError('ffmpeg failed on chapter 2')))
+    backend.exporter.progress(core.jobs.splitting(2, 'Two'))
+    backend.exporter.progress(core.jobs.job_failed(RuntimeError('ffmpeg failed on chapter 2')))
     assert [r['status'] for r in backend.disc.chapter_model.rows] == ['pending', 'failed', 'pending']
 
 
 def test_progress_events_survive_the_worker_signal(backend, qt_app):
     setup_disc(backend)
-    backend.task(lambda progress: progress(extractor.splitting(3, 'Encore')), lambda r: None)
+    backend.task(lambda progress: progress(core.jobs.splitting(3, 'Encore')), lambda r: None)
     wait_idle(backend, qt_app)
     assert backend.state['stage'] == 'splitting' and backend.state['current'] == 3
     assert backend.disc.chapter_model.rows[2]['status'] == 'running'

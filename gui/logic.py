@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
-import extractor
+from core import jobs, manifest as job_manifest, naming, sources
 
 
 @dataclass(frozen=True)
@@ -14,8 +14,8 @@ class Progress:
 
 
 def progress_event(message: str) -> Progress:
-    """What a pipeline message means. Only extractor.ProgressEvent carries a meaning; the wording is never parsed."""
-    if isinstance(message, extractor.ProgressEvent):
+    """What a pipeline message means. Only jobs.ProgressEvent carries a meaning; the wording is never parsed."""
+    if isinstance(message, jobs.ProgressEvent):
         return Progress(message.stage, message.chapter, message.status)
     return Progress()
 
@@ -23,11 +23,11 @@ def progress_event(message: str) -> Progress:
 def album_output(source: str, library: str) -> Path | None:
     if not source.strip() or not library.strip():
         return None
-    return Path(library) / extractor.derive_album_folder_name(extractor.source_name_path(Path(source)))
+    return Path(library) / naming.derive_album_folder_name(sources.source_name_path(Path(source)))
 
 
 def resumable_job(output: Path | None):
-    manifest = extractor.read_manifest(output / "_work") if output else None
+    manifest = job_manifest.read_manifest(output / "_work") if output else None
     return manifest if manifest and manifest.status != "complete" else None
 
 
@@ -41,7 +41,7 @@ class CollisionPlan:
 def collision_plan(output: Path, count: int, names: dict, container="mkv", manifest=None, chapter_indices=None,
                    filename_template="title", metadata=None):
     # A resumed job keeps the naming and tags it started with.
-    items = extractor.preflight_check(output, count, names, container=container, chapter_indices=chapter_indices,
+    items = naming.preflight_check(output, count, names, container=container, chapter_indices=chapter_indices,
                                       number_filenames=manifest.number_filenames if manifest else False,
                                       filename_template=manifest.filename_template if manifest else filename_template,
                                       metadata=(manifest.metadata or metadata) if manifest else metadata)
@@ -49,6 +49,17 @@ def collision_plan(output: Path, count: int, names: dict, container="mkv", manif
     completed = {Path(p) for p in manifest.completed_outputs} if manifest else set()
     return CollisionPlan(items, [p for p in items if p.exists and p.path not in completed],
                          [p for p in items if p.duplicate_name])
+
+
+def track_fit(tracks: int, chapters: int) -> str:
+    """How well a release's track count fits the chapters being named: exact / close / far / unknown."""
+    if not tracks:
+        return 'unknown'
+    diff = abs(tracks - chapters)
+    return 'exact' if diff == 0 else 'close' if diff <= 2 else 'far'
+
+
+FIT_ORDER = {'exact': 0, 'close': 1, 'unknown': 2, 'far': 3}
 
 
 def safe_work_folder(output: Path) -> Path:
@@ -125,19 +136,20 @@ def format_bytes(size: int) -> str:
         size /= 1024
 
 
-# Facts the playlist card already shows elsewhere (its length · chapters line, the video panel), so they
-# never make the one-line summary.
-_RESTATED_REASONS = (r'\d+ chapters', r'Includes a video track \(.+\)', r'Runs .+ minutes')
+# What rules a playlist out (or marks it as a copy) leads; facts the playlist card already shows
+# elsewhere (its length · chapters line, the video panel) never make the one-line summary.
+_LEADING_REASONS = ('duplicate', 'no_audio', 'no_chapters')
+_RESTATED_REASONS = ('chapters', 'video', 'minutes')
 
 
-def headline_reason(reasons: list[str]) -> str:
-    """The one scoring reason worth showing on a playlist card: a duplicate or a disqualifier first,
-    then what decided the ranking (usually the audio verdict). Empty when nothing new is left to say."""
+def headline_reason(reasons: list) -> str:
+    """The one scoring reason (a core.sources.Reason) worth showing on a playlist card: a duplicate or
+    a disqualifier first, then what decided the ranking (usually the audio verdict). '' when nothing
+    new is left to say."""
     for reason in reasons:
-        if reason.startswith('Same duration/chapters/tracks as') or reason.startswith('No audio track') \
-                or reason.startswith('No chapters'):
+        if reason.code in _LEADING_REASONS:
             return reason
     for reason in reasons:
-        if not any(re.fullmatch(p, reason) for p in _RESTATED_REASONS):
+        if reason.code not in _RESTATED_REASONS:
             return reason
     return ''

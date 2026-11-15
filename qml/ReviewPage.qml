@@ -340,11 +340,11 @@ ColumnLayout {
                 anchors.fill: parent; spacing: 16
                 // Work in progress (what the title bar used to show)
                 RowLayout {
-                    visible: win.appView.busy && !win.appView.pipeline
+                    visible: win.appView.working && !win.appView.pipeline
                     Layout.fillWidth: true; spacing: 6
-                    BusyIndicator { running: win.appView.busy && !win.appView.pipeline; visible: running; Layout.preferredWidth: 20; Layout.preferredHeight: 20 }
+                    BusyIndicator { running: win.appView.working && !win.appView.pipeline; visible: running; Layout.preferredWidth: 20; Layout.preferredHeight: 20 }
                     Copy {
-                        visible: win.appView.busy && !win.appView.pipeline; text: win.tr(win.appView.status)
+                        visible: win.appView.working && !win.appView.pipeline; text: win.tr(win.appView.status)
                         color: Theme.muted; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap; elide: Text.ElideRight; Layout.fillWidth: true
                     }
                 }
@@ -358,7 +358,7 @@ ColumnLayout {
                     Layout.fillWidth: true; spacing: 8
                     SectionTitle { text: win.tr("titleSource"); Layout.fillWidth: true }
                     Segmented {
-                        fill: true; Layout.fillWidth: true; enabled: !win.appView.busy
+                        fill: true; Layout.fillWidth: true; enabled: !win.appView.working
                         options: [{ key: "disc", label: win.tr("fromDisc") }, { key: "online", label: win.tr("online") },
                                   { key: "paste", label: win.tr("paste") }]
                         current: win.namesView.reviewSource
@@ -402,7 +402,7 @@ ColumnLayout {
                             : win.namesView.reviewSource === "paste" ? win.tr(win.namesView.reviewCount === 0 ? "paste" : "repaste")
                             : win.tr(win.namesView.reviewCount === 0 ? "chooseFile" : "otherFile")
                         primary: win.namesView.reviewSource !== "disc" && win.namesView.reviewCount === 0
-                        Layout.fillWidth: true; enabled: !win.appView.busy
+                        Layout.fillWidth: true; enabled: !win.appView.working
                         onClicked: {
                             if (win.namesView.reviewSource === "disc") backend.names.reviewEmbedded()
                             else if (win.namesView.reviewSource === "paste") win.pasteTracklist()
@@ -411,7 +411,7 @@ ColumnLayout {
                     }
                     Item { Layout.fillHeight: true }
                     Copy { text: win.tr("tryOnline"); color: Theme.muted; font.pixelSize: Theme.px(12); Layout.fillWidth: true }
-                    ActionButton { text: win.tr("online"); primary: win.namesView.reviewSource === "disc" || win.namesView.reviewCount > 0; Layout.fillWidth: true; enabled: !win.appView.busy; onClicked: backend.names.openOnline() }
+                    ActionButton { text: win.tr("online"); primary: win.namesView.reviewSource === "disc" || win.namesView.reviewCount > 0; Layout.fillWidth: true; enabled: !win.appView.working; onClicked: backend.names.openOnline() }
                 }
 
                 // Online lookup
@@ -427,13 +427,13 @@ ColumnLayout {
                     onArtistValueChanged: if (artist.text !== artistValue) artist.text = artistValue
                     onAlbumValueChanged: if (album.text !== albumValue) album.text = albumValue
                     // The barcode field stays folded away until asked for (or already filled in).
-                    function run() { if (!win.appView.busy) backend.names.search(artist.text, album.text, barcodeToggle.open ? barcode.text : "") }
+                    function run() { if (!win.appView.working) backend.names.search(artist.text, album.text, barcodeToggle.open ? barcode.text : "") }
                     // Labels in front of their fields, in one column so the fields line up
                     GridLayout {
                         Layout.fillWidth: true; columns: 2; columnSpacing: 8; rowSpacing: 10
                         Copy { text: win.tr("sourceLabel"); color: Theme.muted; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
                         SourcePicker {
-                            Layout.fillWidth: true; enabled: !win.appView.busy
+                            Layout.fillWidth: true; enabled: !win.appView.working
                             current: win.namesView.titleSource || "musicbrainz"
                             onPicked: function(key) { backend.names.setTitleSource(key) }
                         }
@@ -443,7 +443,7 @@ ColumnLayout {
                         Field { id: album; text: win.namesView.mbAlbum; Layout.fillWidth: true; onAccepted: queryForm.run(); Accessible.name: win.tr("album") }
                         Disclosure {
                             id: barcodeToggle; Layout.columnSpan: 2
-                            text: win.tr("barcodeToggle"); enabled: !win.appView.busy
+                            text: win.tr("barcodeToggle"); enabled: !win.appView.working
                             onOpenChanged: if (open) barcode.forceActiveFocus()
                         }
                         Copy { visible: barcodeToggle.open; text: win.tr("barcodeShort"); color: Theme.muted; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
@@ -451,7 +451,7 @@ ColumnLayout {
                     }
                     ActionButton {
                         text: win.namesView.mb === "searching" ? win.tr("sourceSearching") : win.tr("searchSource")
-                        primary: releaseList.count === 0; Layout.fillWidth: true; enabled: !win.appView.busy; onClicked: queryForm.run()
+                        primary: releaseList.count === 0; Layout.fillWidth: true; enabled: !win.appView.working; onClicked: queryForm.run()
                     }
                 }
                 SectionTitle { text: win.tr("versions"); note: releaseList.count > 0 ? String(releaseList.count) : ""; Layout.fillWidth: true }
@@ -508,7 +508,7 @@ ColumnLayout {
                                 Copy { text: rel.detail; color: Theme.muted; Layout.fillWidth: true; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap; elide: Text.ElideRight }
                             }
                         }
-                        MouseArea { anchors.fill: parent; enabled: !win.appView.busy; cursorShape: Qt.PointingHandCursor; onClicked: backend.names.selectRelease(rel.index) }
+                        MouseArea { anchors.fill: parent; enabled: !win.appView.working; cursorShape: Qt.PointingHandCursor; onClicked: backend.names.selectRelease(rel.index) }
                     }
                 }
                 Copy { text: win.tr("mbHint"); color: Theme.faint; font.pixelSize: Theme.px(12); Layout.fillWidth: true; lineHeight: 1.3; visible: releaseList.count > 0 }

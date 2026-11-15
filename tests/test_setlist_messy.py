@@ -1,5 +1,5 @@
-import setlist
-from setlist import SONG, EXTRA, HEADER, NOTE, OFF, MERGED
+from core import setlist
+from core.setlist import SONG, EXTRA, HEADER, NOTE, OFF, MERGED
 
 NL, TAB, Q = "\n", "\t", '"'
 
