@@ -104,23 +104,25 @@ Rectangle {
         }
     }
 
+    // The preview panel (from Main) docks here, under the left and centre columns; the streams column
+    // runs the full height beside it.
+    property alias previewSlot: previewSlot
     RowLayout {
         id: columns
         anchors.fill: parent; spacing: 0
+        ColumnLayout {
+            Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
+        RowLayout {
+            Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; spacing: 0
         // ---------- Left: disc + playlists ----------
         Card {
-            flat: true; padding: 20
+            flat: true; padding: 0
             Layout.preferredWidth: page.leftWidth; Layout.fillHeight: true
-            // Like the streams column: every candidate stays readable and the column scrolls as a whole when short.
-            Flickable {
-                id: discFlick
-                anchors.fill: parent; clip: true
-                contentWidth: width; contentHeight: discColumn.height
-                boundsBehavior: Flickable.StopAtBounds; interactive: contentHeight > height
-                ScrollBar.vertical: SlimScrollBar { id: discBar }
             ColumnLayout {
-                id: discColumn
-                width: discFlick.width - discBar.gutter; height: Math.max(discFlick.height, implicitHeight); spacing: 16
+                anchors.fill: parent; spacing: 0
+                // Fixed: what the export makes and which disc is open. Only the playlists and what follows scroll.
+                ColumnLayout {
+                    Layout.fillWidth: true; Layout.margins: 20; Layout.bottomMargin: 16; spacing: 16
                 // What the workspace produces, named by its format; each button tells what it makes when hovered.
                 RowLayout {
                     id: modeRow
@@ -185,6 +187,20 @@ Rectangle {
                         ActionButton { text: win.tr("rescan"); Layout.fillWidth: true; enabled: !win.appView.working; onClicked: backend.disc.scan() }
                     }
                 }
+                }
+                // A hairline once the list has scrolled under the fixed part
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line; opacity: discFlick.contentY > 1 ? 1 : 0 }
+                // Every candidate stays readable: the list scrolls when it is taller than the room left.
+                // The scroll bar runs down the column's own edge, in the margin beside the content.
+                Flickable {
+                    id: discFlick
+                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                    contentWidth: width; contentHeight: discColumn.height + 20
+                    boundsBehavior: Flickable.StopAtBounds; interactive: contentHeight > height
+                    ScrollBar.vertical: SlimScrollBar { id: discBar }
+            ColumnLayout {
+                id: discColumn
+                x: 20; width: discFlick.width - 40; height: Math.max(discFlick.height - 20, implicitHeight); spacing: 16
                 SectionTitle { text: win.tr("playlist"); note: win.fmt("candidateCount", { n: playlistList.count }); Layout.fillWidth: true }
                 ListView {
                     id: playlistList
@@ -299,6 +315,7 @@ Rectangle {
                     }
                 }
             }
+                }
             }
         }
 
@@ -730,6 +747,12 @@ Rectangle {
                         // Rows are divided by a hairline; the selected one also gets an accent edge
                         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line2 }
                         Rectangle { visible: chapterRow.on; width: 2; height: parent.height - 1; color: Theme.accent }
+                        // A click anywhere on the row selects the chapter, as a click on the timeline does
+                        // (it shows there too); it does not play. The row's own controls keep their clicks.
+                        TapHandler {
+                            acceptedButtons: Qt.LeftButton
+                            onTapped: page.selectedChapter = chapterRow.index
+                        }
                         TapHandler {
                             acceptedButtons: Qt.RightButton; enabled: !win.appView.busy
                             onTapped: function(point) { page.openChapterMenu(chapterRow.index, chapterRow.seconds, chapterRow, point.position.x, point.position.y) }
@@ -838,6 +861,10 @@ Rectangle {
             }
         }
 
+        }
+            ColumnLayout { id: previewSlot; Layout.fillWidth: true; spacing: 0 }
+        }
+
         Splitter {
             Layout.fillHeight: true; Layout.leftMargin: -6; Layout.rightMargin: -6; z: 1; divider: true
             size: page.rightWidth; direction: -1; minimum: 260; maximum: Math.min(520, page.width - page.leftWidth - page.centerMinimum - 24)
@@ -847,24 +874,18 @@ Rectangle {
         }
         // ---------- Right: streams ----------
         Card {
-            flat: true; padding: 20
+            flat: true; padding: 0
             Layout.preferredWidth: page.rightWidth; Layout.fillHeight: true
-            // Every stream stays visible: when the column outgrows the card it scrolls as a whole,
-            // instead of the audio list collapsing to nothing.
-            Flickable {
-                id: streamFlick
-                anchors.fill: parent; clip: true
-                contentWidth: width; contentHeight: streamColumn.height
-                boundsBehavior: Flickable.StopAtBounds; interactive: contentHeight > height
-                ScrollBar.vertical: SlimScrollBar { id: streamBar }
             ColumnLayout {
-                id: streamColumn
-                width: streamFlick.width - streamBar.gutter; height: Math.max(streamFlick.height, implicitHeight); spacing: 18
+                anchors.fill: parent; spacing: 0
+                // Fixed, and built like the left column's top: a full-width switch (here the language) with the
+                // settings and help beside it, over the same hairline.
+                ColumnLayout {
+                    Layout.fillWidth: true; Layout.margins: 20; Layout.bottomMargin: 16; spacing: 16
                 RowLayout {
-                    Layout.fillWidth: true; Layout.preferredHeight: page.headerHeight; spacing: 6
-                    Item { Layout.fillWidth: true }
+                    Layout.fillWidth: true; Layout.preferredHeight: page.headerHeight; spacing: 8
                     Segmented {
-                        itemHeight: page.headerHeight - 6
+                        Layout.fillWidth: true; fill: true; itemHeight: page.headerHeight - 6
                         options: [{ key: "zh", label: "中文" }, { key: "en", label: "EN" }]
                         current: backend.config.language
                         onPicked: function(key) { backend.setPreference("language", key) }
@@ -872,6 +893,20 @@ Rectangle {
                     IconButton { iconKind: "gear"; enabled: !win.appView.working; onClicked: backend.navigate("settings"); ToolTip.visible: hovered; ToolTip.text: win.tr("settings"); Accessible.name: win.tr("settings") }
                     IconButton { id: helpButton; iconKind: "help"; onClicked: win.openHelp(helpButton); ToolTip.visible: hovered; ToolTip.text: win.tr("help"); Accessible.name: win.tr("help") }
                 }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; Layout.topMargin: -4; color: Theme.line }
+                }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line; opacity: streamFlick.contentY > 1 ? 1 : 0 }
+                // Every stream stays visible: when the column outgrows the room it scrolls, instead of the audio
+                // list collapsing to nothing. The scroll bar runs down the column's own edge.
+                Flickable {
+                    id: streamFlick
+                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                    contentWidth: width; contentHeight: streamColumn.height + 20
+                    boundsBehavior: Flickable.StopAtBounds; interactive: contentHeight > height
+                    ScrollBar.vertical: SlimScrollBar { id: streamBar }
+            ColumnLayout {
+                id: streamColumn
+                x: 20; width: streamFlick.width - 40; height: Math.max(streamFlick.height - 20, implicitHeight); spacing: 18
                 // Video stream (video mode): one line of key parameters, full details on click
                 ColumnLayout {
                     Layout.fillWidth: true; spacing: 8
@@ -1073,6 +1108,7 @@ Rectangle {
                     }
                 }
             }
+                }
             }
         }
     }

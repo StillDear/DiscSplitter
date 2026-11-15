@@ -117,6 +117,7 @@ ApplicationWindow {
     }
 
     ColumnLayout {
+        id: pageColumn
         anchors.fill: parent; anchors.leftMargin: win.flush ? 0 : 12; anchors.rightMargin: win.flush ? 0 : 12
         anchors.topMargin: win.flush || win.headerShown ? 0 : 12
         anchors.bottomMargin: win.flush ? 0 : 12; spacing: win.flush ? 0 : 12
@@ -166,7 +167,7 @@ ApplicationWindow {
                 NumberAnimation { target: pageIn.page; property: "scale"; from: Theme.animate ? 0.985 : 1; to: 1; duration: Theme.slow; easing.type: Easing.OutCubic }
             }
             StartPage { win: rootWindow }
-            Workspace { win: rootWindow }
+            Workspace { id: workspace; win: rootWindow }
             ReviewPage { win: rootWindow }
             ExportPage { win: rootWindow }
             DonePage { win: rootWindow }
@@ -174,18 +175,28 @@ ApplicationWindow {
             MetadataPage { win: rootWindow }
         }
 
-        Splitter {
-            vertical: false; visible: previewBar.visible && previewBar.video
-            // Takes no room of its own: it overlaps the gap (or, flush, the hairline) between the two.
-            Layout.fillWidth: true; Layout.topMargin: win.flush ? -6 : -12; Layout.bottomMargin: win.flush ? -6 : -12
-            z: 1
-            size: previewBar.videoHeight; direction: -1
-            minimum: previewBar.minimumVideoHeight; maximum: previewBar.maximumVideoHeight
-            onResized: function(value) { previewBar.heightLive = value }
-            onCommitted: function(value) { backend.setLayoutSize("preview_ratio", value / rootWindow.height); previewBar.heightLive = -1 }
-            onReset: backend.setLayoutSize("preview_ratio", -1)
+        // The preview panel and its height handle. On the workspace it docks under the left and centre columns
+        // (the streams column keeps the full height); on the other pages it runs along the bottom of the window.
+        ColumnLayout {
+            id: previewArea
+            parent: win.appView.page === "main" ? workspace.previewSlot : pageColumn
+            // (not previewBar.visible: a hidden parent hides the bar too, and it could never come back)
+            visible: previewBar.Layout.preferredHeight > 0
+            Layout.fillWidth: true; spacing: 0
+            Splitter {
+                vertical: false; visible: previewBar.visible && previewBar.video
+                // Takes no room of its own: it overlaps the gap (or, flush, the hairline) between the two.
+                // Centred on the gap above the panel: the page spacing (12, or none when flush) plus its own 12 px.
+                Layout.fillWidth: true; Layout.topMargin: win.flush ? -6 : -12; Layout.bottomMargin: win.flush ? -6 : 0
+                z: 1
+                size: previewBar.videoHeight; direction: -1
+                minimum: previewBar.minimumVideoHeight; maximum: previewBar.maximumVideoHeight
+                onResized: function(value) { previewBar.heightLive = value }
+                onCommitted: function(value) { backend.setLayoutSize("preview_ratio", value / rootWindow.height); previewBar.heightLive = -1 }
+                onReset: backend.setLayoutSize("preview_ratio", -1)
+            }
+            PreviewBar { id: previewBar; win: rootWindow; flush: win.flush }
         }
-        PreviewBar { id: previewBar; win: rootWindow; flush: win.flush }
     }
 
     TrackInfoDialog { id: trackInfoDialog; win: rootWindow }
