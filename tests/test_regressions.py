@@ -238,3 +238,4 @@ def test_the_timeline_spans_the_whole_programme(backend):
     backend.disc.chapters = [core.models.Chapter(1, 0, 200), core.models.Chapter(2, 200, 4000)]
     backend.disc.rebuild_chapters()
     assert backend.state['timelineSeconds'] == 4000 and backend.state['longClock']
+    assert backend.state['timelineChapters'] == [[0, 200], [200, 3800]]

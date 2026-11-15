@@ -26,7 +26,7 @@ class DiscController(Controller):
         super().__init__(
             app, source=cfg.get('last_source_folder', ''), output=cfg.get('last_output_folder', ''),
             sidecars=[], album='', artist='',
-            chapterSelected=0, longClock=False, timelineSeconds=0, audioSelected=0, subtitleSelected=0, unnamedRows=[], originsMixed=False, chaptersEdited=False,
+            chapterSelected=0, longClock=False, timelineSeconds=0, timelineChapters=[], audioSelected=0, subtitleSelected=0, unnamedRows=[], originsMixed=False, chaptersEdited=False,
             hasVideo=False, keepVideo=False, videoSummary='', videoExtra='', exportEstimate={}, sourceSummary='', chapterKinds={}, chapterKindsManual=[],
             outputFormat=cfg.get('output_container') if cfg.get('output_container') in self.FORMATS else 'mkv',
             canM2ts=False,
@@ -466,7 +466,9 @@ class DiscController(Controller):
         total = max([self.playlist.duration_seconds or 0 if self.playlist else 0]
                     + [c.end_seconds or c.start_seconds for c in self.chapters])
         long = total >= 3600
-        self.put(longClock=long, timelineSeconds=total)     # the timeline's scale
+        # The timeline's scale, and each chapter's [start, length] as the chapter list shows them
+        self.put(longClock=long, timelineSeconds=total,
+                 timelineChapters=[[c.start_seconds, max(1, c.duration or 1)] for c in self.chapters])
         self.chapter_model.replace([dict(number=c.index, title=names.get(c.index, ''), origin='',
             duration=logic.format_time(c.duration), seconds=max(1, c.duration or 1),
             start=logic.format_clock(c.start_seconds, long), begin=c.start_seconds, status='pending', file='',

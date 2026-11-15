@@ -375,18 +375,46 @@ Rectangle {
                     Behavior on Layout.preferredHeight { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
                     ColumnLayout {
                         anchors.fill: parent; anchors.margins: 12; spacing: 6
-                        // Chapters laid out on the programme's own clock: x is when, width is how long.
+                        // Chapters in programme order, each as wide as its length: every chapter first gets a
+                        // minimum width (so a short MC or intro stays visible and clickable), the rest of the
+                        // width is shared out by length. Time maps to x chapter by chapter.
                         Item {
                             id: track
                             Layout.fillWidth: true; Layout.fillHeight: true
                             readonly property real total: Math.max(1, win.discView.timelineSeconds || 1)
-                            function secondsAt(x) { return Math.max(0, Math.min(total, x / Math.max(1, width) * total)) }
-                            function rowAt(seconds) {
-                                for (let i = segments.count - 1; i >= 0; i--) {
-                                    const s = segments.itemAt(i)
-                                    if (s && seconds >= s.begin) return i
+                            readonly property int minimumWidth: 24
+                            readonly property var spans: {
+                                const times = win.discView.timelineChapters || [], n = times.length
+                                if (!n || width <= 0) return []
+                                // At most 40% of the width goes to the minimums, so lengths still show with many chapters
+                                const least = Math.min(minimumWidth, width / n * 0.4)
+                                let sum = 0
+                                for (let i = 0; i < n; i++) sum += times[i][1]
+                                const spare = Math.max(0, width - n * least), out = []
+                                let x = 0
+                                for (let i = 0; i < n; i++) {
+                                    const w = least + (sum > 0 ? times[i][1] / sum * spare : spare / n)
+                                    out.push({ x: x, w: w, begin: times[i][0], seconds: times[i][1] })
+                                    x += w
                                 }
-                                return segments.count ? 0 : -1
+                                return out
+                            }
+                            function rowAtX(x) {
+                                for (let i = 0; i < spans.length; i++) if (x < spans[i].x + spans[i].w) return i
+                                return spans.length - 1
+                            }
+                            function secondsAt(x) {
+                                const i = rowAtX(x)
+                                if (i < 0) return 0
+                                const s = spans[i]
+                                return s.begin + Math.max(0, Math.min(1, (x - s.x) / s.w)) * s.seconds
+                            }
+                            function xAt(t) {
+                                for (let i = spans.length - 1; i >= 0; i--) {
+                                    const s = spans[i]
+                                    if (t >= s.begin) return s.x + Math.min(1, (t - s.begin) / Math.max(0.001, s.seconds)) * s.w
+                                }
+                                return 0
                             }
                             function clock(s) {
                                 s = Math.floor(Math.max(0, s))
@@ -414,8 +442,9 @@ Rectangle {
                                     readonly property bool talk: kind === "talk" || kind === "unsure"
                                     readonly property bool interlude: kind === "interlude"
                                     readonly property color fill: unnamed ? Theme.pendingBg : Theme.chip
-                                    x: begin / track.total * track.width
-                                    width: Math.max(2, seconds / track.total * track.width - 2)
+                                    readonly property var span: track.spans[index] || ({ x: 0, w: 0 })
+                                    x: span.x
+                                    width: Math.max(2, span.w - 2)
                                     height: track.height
                                     radius: Math.min(6, width / 2)
                                     color: on ? Theme.accent : talk ? "transparent"
@@ -491,8 +520,8 @@ Rectangle {
                                     }
                                 }
                             }
-                            // Hover: a hairline and the time under the pointer. Click selects the chapter and, while
-                            // the preview is open, plays from there; double-click always plays.
+                            // Hover: a hairline and the time under the pointer. A click only selects the chapter;
+                            // a double-click plays it from that point.
                             Rectangle {
                                 visible: trackArea.containsMouse
                                 x: Math.round(trackArea.mouseX); width: 1; height: parent.height
@@ -502,17 +531,17 @@ Rectangle {
                                 id: trackArea
                                 anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                 readonly property real hoverSeconds: track.secondsAt(mouseX)
-                                readonly property int hoverRow: containsMouse ? track.rowAt(hoverSeconds) : -1
-                                function pick(seconds, play) {
-                                    const row = track.rowAt(seconds)
+                                readonly property int hoverRow: containsMouse ? track.rowAtX(mouseX) : -1
+                                function pick(x, play) {
+                                    const row = track.rowAtX(x)
                                     if (row < 0) return
                                     page.selectedChapter = row
                                     chapterList.positionViewAtIndex(row, ListView.Contain)
-                                    if ((play || win.previewView.previewRow >= 0) && !win.appView.busy && audioList.count > 0)
-                                        win.previewFrom(row, (seconds - segments.itemAt(row).begin) * 1000)
+                                    if (play && !win.appView.busy && audioList.count > 0)
+                                        win.previewFrom(row, (track.secondsAt(x) - track.spans[row].begin) * 1000)
                                 }
-                                onClicked: function(mouse) { pick(track.secondsAt(mouse.x), false) }
-                                onDoubleClicked: function(mouse) { pick(track.secondsAt(mouse.x), true) }
+                                onClicked: function(mouse) { pick(mouse.x, false) }
+                                onDoubleClicked: function(mouse) { pick(mouse.x, true) }
                                 ToolTip.visible: hoverRow >= 0; ToolTip.delay: 300
                                 ToolTip.text: {
                                     const s = hoverRow >= 0 ? segments.itemAt(hoverRow) : null
@@ -521,28 +550,40 @@ Rectangle {
                                 }
                             }
                         }
-                        // Time ruler: a label every 1, 2, 5, 10… minutes, as many as fit
+                        // Time ruler: a label every 1, 2, 5, 10… minutes, placed where that time falls on the
+                        // chapters above; a label that would run into the one before it is left out.
                         Item {
                             id: ruler
                             Layout.fillWidth: true; Layout.preferredHeight: rulerProbe.implicitHeight
                             visible: chapterList.count > 0
-                            readonly property real step: {
+                            readonly property var ticks: {
+                                const label = rulerProbe.implicitWidth, total = track.total
+                                if (width <= 0 || !track.spans.length) return []
                                 const steps = [60, 120, 300, 600, 900, 1200, 1800, 3600, 7200]
+                                let step = 7200
                                 for (let i = 0; i < steps.length; i++)
-                                    if (steps[i] / track.total * width >= rulerProbe.implicitWidth + 24) return steps[i]
-                                return 7200
+                                    if (steps[i] / total * width >= label + 24) { step = steps[i]; break }
+                                const out = []
+                                let lastEnd = -1e9
+                                for (let t = 0; t <= total; t += step) {
+                                    const at = track.xAt(t), left = t === 0 ? 0 : at - label / 2
+                                    if (left < lastEnd + 12 || left + label > width) continue
+                                    out.push({ at: at, left: left, text: track.clock(t) })
+                                    lastEnd = left + label
+                                }
+                                return out
                             }
                             Text { id: rulerProbe; visible: false; text: track.clock(track.total); font.family: Theme.num; font.pixelSize: Theme.caption }
                             Repeater {
-                                model: Math.floor(track.total / ruler.step) + 1
+                                model: ruler.ticks
                                 Text {
+                                    required property var modelData
                                     required property int index
-                                    readonly property real at: index * ruler.step / track.total * ruler.width
-                                    text: track.clock(index * ruler.step)
-                                    x: index === 0 ? 0 : at - width / 2
-                                    visible: x + width <= ruler.width
+                                    x: modelData.left; width: rulerProbe.implicitWidth
+                                    horizontalAlignment: index === 0 && modelData.left === 0 ? Text.AlignLeft : Text.AlignHCenter
+                                    text: modelData.text
                                     font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.caption; color: Theme.faint
-                                    Rectangle { visible: parent.index > 0; x: parent.width / 2; y: -3; width: 1; height: 3; color: Theme.line2 }
+                                    Rectangle { visible: parent.modelData.at > 0; x: parent.modelData.at - parent.x; y: -3; width: 1; height: 3; color: Theme.line2 }
                                 }
                             }
                         }
