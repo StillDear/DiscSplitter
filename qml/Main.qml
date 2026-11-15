@@ -33,7 +33,7 @@ ApplicationWindow {
     }
     // Playback wording: "试听" (listen) for audio, "播放" when a video is being previewed (key + "Video").
     function playTr(key, video) { return video && t[key + "Video"] ? t[key + "Video"] : tr(key) }
-    readonly property bool videoMode: discView.outputFormat === "mkv" && !!discView.hasVideo
+    readonly property bool videoMode: discView.outputFormat !== "flac" && !!discView.hasVideo
     function openFolder(kind) { browseKind = kind; folderDialog.open() }
     function openSourceFile() { sourceFileDialog.open() }
     function browseTool(tool) { toolName = tool; toolDialog.open() }

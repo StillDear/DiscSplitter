@@ -119,8 +119,10 @@ class ExportController(Controller):
             playlist_path = Path(manifest.source_playlist)
             image = Path(manifest.source_iso) if manifest.source_iso else None
             with self.app.preview_mounts.use(playlist_path, image) as path:
-                playlist = sources.inspect_playlist(path)
-                sources.apply_bitrates(playlist, sources.audio_bitrates(playlist, path))
+                # Read the way the job was checkpointed: its track IDs are PIDs (engine) or mkvmerge's numbers.
+                playlist = sources.inspect_playlist(path, use_engine=manifest.track_numbers == 'engine')
+                if not playlist.measured:
+                    sources.apply_bitrates(playlist, sources.audio_bitrates(playlist, path))
                 playlist.measured = True
                 size = space.source_size_bytes(path)
             if image is not None:
@@ -174,7 +176,7 @@ class ExportController(Controller):
         if container == 'flac':
             summary = self.tr('flacExportSummary').format(n=len(indices), a=len(audio_ids))
         else:
-            summary = self.tr('exportSummary').format(n=len(indices), a=len(audio_ids), s=len(subtitle_ids))
+            summary = self.tr('exportSummary').format(n=len(indices), a=len(audio_ids), s=len(subtitle_ids), f=container.upper())
             if not keep_video:
                 summary += ' · ' + self.tr('videoExcluded')
         self.put(exportConfirmation=summary)
@@ -333,6 +335,8 @@ class ExportController(Controller):
         """Read every finished file back (worker thread): length, streams and title against the plan."""
         audio_tracks = [t for t in playlist.audio_tracks if t.track_id in plan['audio_ids']]
         keep_video = plan['keep_video'] and plan['container'] != 'flac' and playlist.video_track is not None
+        # An M2TS copies the picture as the disc plays it, a Dolby Vision enhancement layer included.
+        video_count = len(playlist.picture_tracks) if plan['container'] == 'm2ts' else 1
         items = [p for p in plan['plan'].items if p.chapter.index in chapters]
         progress(jobs.ProgressEvent(f'Checking {len(items)} file(s)', stage='verifying'))
         results = []
@@ -341,7 +345,7 @@ class ExportController(Controller):
             title = plan['names'].get(chapter.index, '').strip() or models.default_title(chapter.index)
             result = verify.verify_output(item.path, chapter, container=plan['container'], audio_tracks=audio_tracks,
                                              subtitle_count=len(plan['subtitle_ids']) if plan['container'] != 'flac' else 0,
-                                             keep_video=keep_video, title=title)
+                                             keep_video=keep_video, title=title, video_count=video_count)
             results.append(result)
             line = f'Check {item.path.name}: ' + ('OK' if result.ok else '; '.join(
                 f'{i.code} expected {i.expected!r} got {i.actual!r}' if i.expected or i.actual else i.code for i in result.issues))

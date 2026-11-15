@@ -222,7 +222,7 @@ def test_a_resumed_job_shows_its_own_playlist_card(backend, qt_app, monkeypatch,
     m.audio_track_id = 1
     core.manifest.write_manifest(output / '_work', m)
     backend.exporter.flow.manifest = m
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path: playlist)
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path, **_: playlist)
     monkeypatch.setattr(core.pipeline, 'run_full_pipeline', lambda *a, **k: [])
     backend.exporter.resume()
     wait_idle(backend, qt_app)

@@ -14,6 +14,20 @@ def pytest_configure(config):
     Path(config.rootpath, config.getini('cache_dir'), 'v', 'cache').mkdir(parents=True, exist_ok=True)
     # pytest's own abandoned cache staging directories contain no test sources.
     config.addinivalue_line('norecursedirs', 'pytest-cache-files-*')
+    config.addinivalue_line('markers', 'engine: runs the built-in Blu-ray engine (engine/bin/tsMuxeR.exe)')
+
+
+@pytest.fixture(autouse=True)
+def _engine_only_when_asked(request, monkeypatch):
+    """
+    Tests fake mkvmerge on made-up discs; the built-in engine would read those discs for real. It is
+    switched off unless a test is marked @pytest.mark.engine (then skipped when it has not been built).
+    """
+    from core import engine
+    if request.node.get_closest_marker('engine') is None:
+        monkeypatch.setattr(engine, 'available', lambda: False)
+    elif not engine.available():
+        pytest.skip('the engine has not been built (python engine/build_engine.py)')
 
 
 @pytest.fixture

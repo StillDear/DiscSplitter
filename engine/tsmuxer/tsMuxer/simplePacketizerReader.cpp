@@ -1,0 +1,1801 @@
+// Largely rewritten by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#include "simplePacketizerReader.h"
+
+#include <fs/systemlog.h>
+
+#include <algorithm>
+#include <cstring>
+#include <iostream>
+
+#include "avCodecs.h"
+#include "tsMuxer.h"  // V3_flags
+#include "vodCoreException.h"
+#include "vod_common.h"
+
+SimplePacketizerReader::SimplePacketizerReader()
+{
+    m_needSync = true;
+    m_tmpBufferLen = 0;
+    m_curPts = PTS_CONST_OFFSET;
+    m_frameNum = 0;
+    m_processedBytes = 0;
+    m_lostBytes = 0;
+    m_readBytes = 0;
+    m_everSynced = false;
+    m_pendingLost = 0;
+    m_tagCredit = 0;
+    m_tagProbePos = nullptr;
+    m_tagCeilingEnd = nullptr;
+    m_containerDataType = 0;
+    m_containerStreamIndex = 0;
+    m_stretch = 1.0;
+    m_curMplsIndex = -1;
+    m_lastMplsTime = 0;
+    m_mplsOffset = 0;
+    m_halfFrameLen = 0;
+}
+
+// Does the BODY of an ID3v2 tag look like an ID3v2 tag, rather than merely starting with "ID3"?
+//
+// ** THE DECLARED LENGTH LANDING ON A FRAME SYNC IS ALMOST NO EVIDENCE AT ALL, AND THAT WAS
+// MEASURED, NOT ASSUMED. ** Requiring a frame of the codec to begin exactly where the tag says it
+// ends LOOKS like sixteen bits of confirmation. It is worth about two, because the two numbers are
+// not independent: the length field's byte 7 moves the end in steps of 16,384, and an audio stream
+// has a CONSTANT frame size, so the two grids share a factor. On a real AC-3 stream, 5 x 16,384 =
+// 64 x 1,280, and 26 OF THE 128 LEGAL VALUES OF THAT ONE BYTE land exactly on an 0x0B77 sync -
+// every fifth one, in an arithmetic run. Measured on the file, not reasoned about.
+//
+// So a SINGLE FLIPPED BYTE in a length field had about a one in five chance of being believed, and
+// each time it was believed it silently ate everything between the real end of the tag and the
+// false one: 1,966,080 bytes of AC-3, 1,048,576 of AAC, 835,584 of the user's own MP3, all with
+// exit 0 and nothing on screen. Confirming MORE frames afterwards cannot help, because a length
+// that lands on a frame boundary lands on GENUINE AUDIO, which confirms perfectly.
+//
+// The evidence has to come from INSIDE the tag. Two things are checked, and the second is the one
+// that catches a flipped length:
+//
+//   A. the body must BEGIN like a tag: a frame identifier of A-Z and 0-9, or 0x00 where padding
+//      starts. Random audio passes this about once in 250 tries, so 10 bytes of damage that happen
+//      to read "ID3" no longer swallow the rest of the file
+//   B. ** PADDING MUST BE ZERO, AND THE SPECIFICATION SAYS SO IN WORDS THAT CAN BE QUOTED. ** ID3v2
+//      section 3.0: "The value of the padding bytes must be $00." A corrupted length turns real
+//      audio into "padding", and audio is not zero
+//
+// Anything this cannot understand - a tag with the whole body unsynchronised, a compressed 2.2 tag,
+// an extended header that does not fit - returns "do not skip", which is exactly the behaviour of
+// the unmodified reader. NOT SKIPPING IS ALWAYS SAFE. Skipping wrongly is what destroys audio.
+static bool id3v2BodyIsPlausible(const uint8_t* p, const uint8_t* end, const int64_t tagLen)
+{
+    const int ver = p[3];
+    if (ver < 2 || ver > 4)
+        return false;
+    const bool unsync = (p[5] & 0x80) != 0;
+    const bool hasExt = (p[5] & 0x40) != 0;
+    const bool hasFooter = ver >= 4 && (p[5] & 0x10) != 0;
+    // 2.2 uses bit 6 for compression, not for an extended header, and says a tag it does not
+    // understand should be ignored. Nothing can be walked inside one, so nothing is claimed.
+    if (ver == 2 && hasExt)
+        return false;
+
+    // ** EVERYTHING BELOW COMPARES LENGTHS, NEVER POINTERS PAST THE BUFFER. ** A declared ID3v2
+    // length can be 2^28, so `p + tagLen` is a pointer up to 268 MB beyond a 2 MiB buffer. Nothing
+    // ever dereferenced it - the "is the whole tag here yet" test stopped that - but merely FORMING
+    // a pointer that far outside an allocation is undefined behaviour, and so is comparing it. It
+    // works on every flat address space there is, which is exactly what makes it easy to leave in.
+    //
+    // So `at` and `bodyEnd` are OFFSETS from p, and `avail` is how much is really in the buffer.
+    // p[at] is read only where at < avail has been established.
+    const int64_t avail = end - p;
+    const int64_t bodyEnd = tagLen - (hasFooter ? 10 : 0);  // where the frames must finish
+    int64_t at = 10;
+
+    if (ver >= 3 && hasExt)
+    {
+        if (avail - at < 4)
+            return true;  // not here yet: judged when the rest arrives, not guessed at now
+        // 2.3 gives the size of what FOLLOWS the field; 2.4 gives a syncsafe size INCLUDING it.
+        const uint8_t* e = p + at;
+        const int64_t extSize = ver == 3 ? (static_cast<int64_t>(e[0]) << 24) | (static_cast<int64_t>(e[1]) << 16) |
+                                               (static_cast<int64_t>(e[2]) << 8) | static_cast<int64_t>(e[3])
+                                         : ((static_cast<int64_t>(e[0]) << 21) | (static_cast<int64_t>(e[1]) << 14) |
+                                            (static_cast<int64_t>(e[2]) << 7) | static_cast<int64_t>(e[3])) -
+                                               4;
+        if (extSize < 0 || extSize > bodyEnd - at - 4)
+            return false;
+        at += 4 + extSize;
+    }
+
+    // A. The first thing in the body. Everything after this point needs the whole tag, so a body
+    //    that has not arrived yet is neither accepted nor condemned here.
+    const int idLen = ver == 2 ? 3 : 4;
+    const int hdrLen = ver == 2 ? 6 : 10;
+
+    // ** AN EMPTY TAG IS STILL A TAG, AND FORGETTING THAT CONDEMNED FIVE PERFECTLY GOOD FILES. ** A
+    // ten byte ID3v2 header declaring a body of nothing is legal and ordinary. Reading a "frame
+    // identifier" out of it reads the first four bytes of the AUDIO, which are 0xff 0xfd for MPEG,
+    // so the tag was rejected and the file fell back to the unmodified reader's answer. Measured on
+    // the five zero length fixtures in the block edge set, which went from exactly right to 959
+    // bytes of leak before this line existed.
+    if (at >= bodyEnd)
+        return at == bodyEnd;
+
+    if (avail - at < idLen)
+        return true;
+
+    // A body too short to hold even one frame identifier can only be padding, and padding is zero.
+    // bodyEnd is below avail here, because avail - at is not, so every byte read is in the buffer.
+    if (bodyEnd - at < idLen)
+    {
+        for (int64_t z = at; z < bodyEnd; ++z)
+            if (p[z] != 0)
+                return false;
+        return true;
+    }
+
+    if (p[at] != 0)
+    {
+        for (int i = 0; i < idLen; ++i)
+            if (!((p[at + i] >= 'A' && p[at + i] <= 'Z') || (p[at + i] >= '0' && p[at + i] <= '9')))
+                return false;
+    }
+
+    // B needs every byte of the tag, and the frame sizes are only readable when the body is not
+    // unsynchronised as a whole, which 2.3 permits and 2.4 replaced with a per frame flag.
+    //
+    // From here on bodyEnd <= avail, so the walk below cannot read outside the buffer.
+    if (avail < bodyEnd || unsync)
+        return true;
+
+    while (at < bodyEnd)
+    {
+        if (p[at] == 0)  // padding begins, and from here to the end must be nothing else
+        {
+            for (int64_t z = at; z < bodyEnd; ++z)
+                if (p[z] != 0)
+                    return false;
+            return true;
+        }
+        if (bodyEnd - at < hdrLen)
+            return false;
+        const uint8_t* f = p + at;  // in bounds: at + hdrLen <= bodyEnd <= avail
+        for (int i = 0; i < idLen; ++i)
+            if (!((f[i] >= 'A' && f[i] <= 'Z') || (f[i] >= '0' && f[i] <= '9')))
+                return false;
+        int64_t fsize;
+        if (ver == 2)
+            fsize = (static_cast<int64_t>(f[3]) << 16) | (static_cast<int64_t>(f[4]) << 8) | static_cast<int64_t>(f[5]);
+        else if (ver == 3)
+            fsize = (static_cast<int64_t>(f[4]) << 24) | (static_cast<int64_t>(f[5]) << 16) |
+                    (static_cast<int64_t>(f[6]) << 8) | static_cast<int64_t>(f[7]);
+        else
+        {
+            // 2.4 frame sizes are syncsafe. Taggers that wrote 2.3 sizes into a 2.4 tag are common
+            // enough that a size with a high bit set is treated as "cannot walk this" rather than
+            // as a forgery, so those tags keep the old behaviour instead of being condemned.
+            if ((f[4] | f[5] | f[6] | f[7]) >= 0x80)
+                return true;
+            fsize = (static_cast<int64_t>(f[4]) << 21) | (static_cast<int64_t>(f[5]) << 14) |
+                    (static_cast<int64_t>(f[6]) << 7) | static_cast<int64_t>(f[7]);
+        }
+        if (fsize < 0 || fsize > bodyEnd - at - hdrLen)
+            return false;
+        at += hdrLen + fsize;
+    }
+    return at == bodyEnd;
+}
+
+// ** THE CHECK ID3v2 HAS AND APEv2 NEVER GOT. **
+//
+// The APEv2 branch below used to take its declared size on faith, and that size is a LINEAR DIAL on
+// what the loss report prints. Measured: an AC-3 file with a million bytes of audio wiped reports
+// "1000032 bytes of the 2000626 read" correctly, and the same file with those first 32 bytes
+// replaced by a well formed APEv2 header reports ** NOTHING AT ALL **, while changing one byte of
+// the same header, APETAGEX to APETAGEY, brings the correct figure straight back. A tag header is
+// eleven bytes of structure over a region of any size, so a corrupted one hides a loss of any size.
+//
+// An APEv2 header declares an item count and a size. After the 32 byte header come that many items,
+// each: 4 byte little endian value size, 4 byte flags, a key of printable ASCII terminated by 0x00,
+// then the value. The declared size counts the items plus the footer and EXCLUDES the header, so
+// the whole tag is 32 + size. This walks exactly that many items and requires the accumulated
+// length to land EXACTLY on the declared size, with either nothing left over or one consistent
+// footer.
+//
+// ** THE FOOTER IS DECIDED BY THE EXACT LANDING, NOT BY THE FLAG BIT ALONE. ** The flag that says
+// "contains no footer" is left clear by writers that do write one, so refusing a tag on that bit
+// would reject genuine cover art and leak its payload.
+//
+// LIKE THE ID3v2 WALK, THIS IS PERMISSIVE WHEN THE BODY HAS NOT ARRIVED: a genuine tag larger than
+// one read block is still credited. And like it, everything compares OFFSETS, so no pointer past
+// the buffer is ever formed.
+//
+// ** WHAT IT DOES NOT DO, STATED PLAINLY: it validates STRUCTURE, and an item's value bytes are
+// opaque by design because they carry cover art. A deliberately crafted tag can therefore declare
+// one item whose value IS the audio and pass this walk. That costs an attacker eleven bytes beyond
+// the header and no check confined to this reader can prevent it. This defends against CORRUPTION,
+// which is what actually occurs: a genuine tag with one flipped byte, which the exact landing
+// catches. It does not defend against forgery, and it does not claim to. **
+static bool apev2BodyIsPlausible(const uint8_t* p, const uint8_t* end, int64_t* walkEnd)
+{
+    *walkEnd = 32;  // until the whole tag verifies, only the header bytes were truly seen
+    const int64_t avail = end - p;
+    if (avail < 32)
+        return true;  // the header is not all here yet, so it is judged when it is
+
+    const auto le32 = [](const uint8_t* q)
+    {
+        return static_cast<int64_t>(q[0]) | (static_cast<int64_t>(q[1]) << 8) | (static_cast<int64_t>(q[2]) << 16) |
+               (static_cast<int64_t>(q[3]) << 24);
+    };
+    const int64_t version = le32(p + 8);
+    const int64_t size = le32(p + 12);
+    const int64_t count = le32(p + 16);
+    const auto flags = static_cast<uint32_t>(le32(p + 20));
+
+    if ((flags & 0x20000000u) == 0)
+        return true;  // a footer: the items are behind us and the caller returns a fixed 32
+    if (version != 2000)
+        return false;  // only APEv2 carries a header at all
+    if ((flags & 0x1FFFFFF8u) != 0)
+        return false;  // the undefined flag bits must be zero
+    if ((p[24] | p[25] | p[26] | p[27] | p[28] | p[29] | p[30] | p[31]) != 0)
+        return false;  // and so must the reserved eight
+    if (count > (1LL << 20))
+        return false;  // not a streaming format; this is a corrupted count
+
+    const int64_t declaredEnd = 32 + size;
+    int64_t at = 32;
+    for (int64_t i = 0; i < count; ++i)
+    {
+        if (declaredEnd - at < 8)
+            return false;  // the tag does not declare room for another item prefix
+        if (avail - at < 8)
+            return true;  // the prefix has not arrived
+        const int64_t vsize = le32(p + at);
+        int64_t k = at + 8;
+        int64_t klen = 0;
+        for (;;)
+        {
+            if (k >= declaredEnd)
+                return false;  // the key ran past the tag without a terminator
+            if (avail - k < 1)
+                return true;  // the key has not arrived
+            const uint8_t c = p[k];
+            if (c == 0)
+                break;
+            if (c < 0x20 || c > 0x7E)
+                return false;  // a key is printable ASCII, so this is not one
+            if (++klen > 255)
+                return false;  // longer than a key may be, still with no terminator
+            ++k;
+        }
+        if (klen < 2)
+            return false;  // shorter than the two character minimum
+        const int64_t valAt = k + 1;
+        if (vsize > declaredEnd - valAt)
+            return false;  // the value overruns the length the tag declared for itself
+        const int64_t nxt = valAt + vsize;
+        if (nxt > avail)
+            return true;  // the value has not arrived
+        at = nxt;
+    }
+
+    const int64_t leftover = declaredEnd - at;
+    if (leftover == 0)
+    {
+        *walkEnd = declaredEnd;  // header and items, and the size lands exactly on the end
+        return true;
+    }
+    if (leftover != 32)
+        return false;  // the declared size lands neither on the end nor on a footer
+
+    if (avail - at < 32)
+        return true;  // the footer has not arrived
+    const uint8_t* f = p + at;
+    if (memcmp(f, "APETAGEX", 8) != 0)
+        return false;
+    if ((static_cast<uint32_t>(le32(f + 20)) & 0x20000000u) != 0)
+        return false;  // a footer must not claim to be the header
+    if (le32(f + 12) != size || le32(f + 16) != count)
+        return false;  // and it must agree with the header about both figures
+
+    *walkEnd = declaredEnd;
+    return true;
+}
+
+// The length of ONE metadata tag beginning at p, or 0 if there is not one there.
+//
+// Only the three that actually occur in front of, behind and between elementary audio streams are
+// recognised. Each one declares its own length, so nothing here is a guess about how long a tag
+// might be, and an unrecognised block is still counted as lost, which is the safe direction.
+static int64_t oneTagLength(const uint8_t* p, const uint8_t* end)
+{
+    const int64_t avail = end - p;
+
+    // ID3v2: "ID3", two version bytes, flags, then four SYNCSAFE length bytes, each below 0x80.
+    // The length excludes the 10 byte header, and a footer adds another 10.
+    //
+    // ** THE FOOTER FLAG EXISTS ONLY FROM ID3v2.4. ** The 2.4 specification defines the flags as
+    // %abcd0000 and says of bit 4 that it "indicates that a footer is present at the very end of
+    // the tag". In 2.2 and 2.3 that bit is not the footer flag and is to be ignored, so honouring
+    // it there makes the length ten bytes too long and steps over the first ten bytes of audio.
+    if (avail >= 10 && p[0] == 'I' && p[1] == 'D' && p[2] == '3' && p[3] != 0xff && p[4] != 0xff &&
+        (p[6] | p[7] | p[8] | p[9]) < 0x80)
+    {
+        const int64_t size = (static_cast<int64_t>(p[6]) << 21) | (static_cast<int64_t>(p[7]) << 14) |
+                             (static_cast<int64_t>(p[8]) << 7) | static_cast<int64_t>(p[9]);
+        const bool hasFooter = p[3] >= 4 && (p[5] & 0x10) != 0;
+        const int64_t len = 10 + size + (hasFooter ? 10 : 0);
+        return id3v2BodyIsPlausible(p, end, len) ? len : 0;
+    }
+
+    // APEv2: "APETAGEX", version, then the size INCLUDING the footer but EXCLUDING the header.
+    //
+    // ** WHICH 32 BYTE BLOCK THIS IS DECIDES EVERYTHING, AND IT IS BIT 29, NOT BIT 31. ** Bit 31
+    // says the tag CONTAINS a header; bit 29 says THIS block IS the header. Reading 31 for 29 made
+    // a footer look like a header and returned the whole tag size from a position where the tag
+    // body is already BEHIND us, overshooting into the audio by size minus 32.
+    //
+    // Landing on a FOOTER means exactly 32 bytes remain to step over. Landing on a HEADER means
+    // the header plus everything it declares.
+    //
+    // A footer's 32 bytes are fixed and need no checking. A HEADER's length is whatever it says it
+    // is, so it gets the body walk, for the reason apev2BodyIsPlausible sets out above.
+    if (avail >= 32 && memcmp(p, "APETAGEX", 8) == 0)
+    {
+        const int64_t size = static_cast<int64_t>(p[12]) | (static_cast<int64_t>(p[13]) << 8) |
+                             (static_cast<int64_t>(p[14]) << 16) | (static_cast<int64_t>(p[15]) << 24);
+        const bool isHeader = (p[23] & 0x20) != 0;
+        if (!isHeader)
+            return 32;
+        int64_t walkEnd = 32;
+        return apev2BodyIsPlausible(p, end, &walkEnd) ? 32 + size : 0;
+    }
+
+    // Enhanced ID3v1, "TAG+", a fixed 227 bytes that sits immediately BEFORE the 128 byte ID3v1.
+    // Checked before plain ID3v1 because "TAG" is a prefix of "TAG+" and would otherwise win.
+    if (avail >= 227 && p[0] == 'T' && p[1] == 'A' && p[2] == 'G' && p[3] == '+')
+        return 227;
+
+    // Lyrics3, v1 and v2. It declares its length only at its END, so the length cannot be read
+    // going forward the way every other format's can. What CAN be done is look for the terminator
+    // it is required to carry, within what is already in the buffer, and take everything up to it.
+    // The chain is confirmed against a real frame afterwards either way, so a wrong guess here
+    // costs nothing but a fallback to the ordinary search.
+    if (avail >= 11 && memcmp(p, "LYRICSBEGIN", 11) == 0)
+    {
+        // ** v2 IS WALKED, NOT SEARCHED, BECAUSE ITS FIELDS DECLARE THEIR OWN SIZES. **
+        //
+        // A bounded search stood here and it was wrong in both directions. The bound was 16 KB,
+        // justified by "v2's fields cannot approach this figure", and that justification is simply
+        // false: a v2 field carries a SIX character size, so one field alone may be 999,999 bytes.
+        // Every tag past the bound was charged to the user as lost audio. Measured, on files whose
+        // demuxed output is identical to the same file with no tag at all:
+        //
+        //     a 3 KB tag        silent, correct
+        //     a 20 KB tag       "20052 bytes of the 5540872 read"
+        //     a 900 KB tag      "900099 bytes of the 6420919 read"
+        //
+        // The format gives a better answer than any bound. A v2 block is "LYRICSBEGIN", then field
+        // records of a three character field ID and FIVE characters of size followed by that many
+        // bytes, then a SIX character size and "LYRICS200". So the fields can be STEPPED THROUGH
+        // the way every other tag's length is read, and the terminator is recognised by its shape
+        // rather than hunted for: six digits followed by "LYRICS200" cannot be a field record,
+        // whose first three bytes are letters.
+        //
+        // ** THE FIELD SIZE IS FIVE CHARACTERS AND THE CLOSING SIZE IS SIX, WHICH IS NOT WHAT ONE
+        // PUBLISHED DESCRIPTION OF THE FORMAT SAYS. ** It calls the field size six characters.
+        // Real tags disagree with it, and the tags win: a 3,044 byte example reads
+        // "IND" "00002" "11" then "LYR" "03000" and three thousand bytes, ending "003029"
+        // "LYRICS200", where 3,044 - 15 = 3,029 and 11 + 10 + 3,008 = 3,029 exactly. Four
+        // independent tags of different sizes all parse on the five character reading and none on
+        // the six.
+        //
+        // Stepping through does NOT make the pathological input cheaper, and it was worth measuring
+        // rather than assuming. The caller asks at EVERY byte of a region, and the ninth review
+        // measured a 2 MB block full of the word "LYRICSBEGIN" driving that to a scan per byte.
+        // Such a block leaves this walk at once, because "LYR" is three letters but "ICSBE" is not
+        // five digits, and then meets the same bounded search as before. Measured on that input,
+        // three runs each, minima: 1,311 ms before this change and 1,321 ms after, with identical
+        // output. The walk buys correctness on large tags and costs nothing here.
+        const auto isDigit = [](const uint8_t c) { return c >= '0' && c <= '9'; };
+        const auto isUpper = [](const uint8_t c) { return c >= 'A' && c <= 'Z'; };
+        int64_t at = 11;
+        bool sawField = false;
+        while (avail - at >= 15)
+        {
+            // The terminator: six digits, then the closing keyword.
+            if (isDigit(p[at]) && isDigit(p[at + 1]) && isDigit(p[at + 2]) && isDigit(p[at + 3]) &&
+                isDigit(p[at + 4]) && isDigit(p[at + 5]) && memcmp(p + at + 6, "LYRICS200", 9) == 0)
+                return at + 15;
+            // Otherwise a field record: three letters, five digits. Anything else is not v2, and
+            // falls through to the v1 search below rather than being rejected outright.
+            if (!isUpper(p[at]) || !isUpper(p[at + 1]) || !isUpper(p[at + 2]))
+                break;
+            bool sized = true;
+            int64_t fsize = 0;
+            for (int i = 3; i < 8; ++i)
+            {
+                if (!isDigit(p[at + i]))
+                {
+                    sized = false;
+                    break;
+                }
+                fsize = fsize * 10 + (p[at + i] - '0');
+            }
+            if (!sized)
+                break;
+            at += 8 + fsize;
+            sawField = true;
+            if (at > avail)
+                return 0;  // the tag runs past what has arrived, so no length can be stated
+        }
+        if (sawField)
+            return 0;  // v2 fields parsed but the end has not arrived. Claiming a length here would
+                       // be a guess, and the search below would be hunting a keyword inside field
+                       // TEXT, where finding one proves nothing
+
+        // Lyrics3 v1 has no field structure at all, only text and a closing keyword, so it is the
+        // one thing here that must still be searched for. The bound stays where it was: a v2 tag
+        // this walk cannot parse would otherwise be charged as lost, which is the defect being
+        // fixed, so the old search is kept underneath as a safety net rather than narrowed.
+        constexpr int64_t LYRICS3_MAX = 16384;
+        const uint8_t* stop = end - p > LYRICS3_MAX ? p + LYRICS3_MAX : end;
+        for (const uint8_t* q = p + 11; q + 9 <= stop; ++q)
+        {
+            if (memcmp(q, "LYRICS200", 9) == 0)
+                return q + 9 - p;
+            if (memcmp(q, "LYRICSEND", 9) == 0)
+                return q + 9 - p;
+        }
+        return 0;  // no terminator within reach, so nothing is claimed
+    }
+
+    // ID3v1 is always exactly 128 bytes and always begins "TAG".
+    //
+    // ** THREE BYTES IS NOT ENOUGH EVIDENCE TO STEP OVER 128, AND THE YEAR FIELD IS FREE. ** With
+    // "TAG" alone this was measured eating whole undamaged frames: an MP2 stream whose frames are
+    // 96 bytes lost one entirely; a legal MLP frame header IS 0x54 0x41 0x47, meaning "length
+    // 2178", and 18,926 bytes went with it; and AC-3 damage beginning "TAG" turned a recoverable
+    // file into a destroyed one. The control in each case differed by a single bit, "UAG" or
+    // "TAH", and behaved correctly, which is what proved the three bytes were the whole cause.
+    //
+    // The layout is fixed: 3 + 30 title + 30 artist + 30 album, then FOUR YEAR CHARACTERS at 93.
+    // Requiring those to be digits, spaces or nul costs nothing and multiplies the evidence by
+    // about eleven bits per character. "TAG" alone is one chance in 16 million; with the year it
+    // is one in millions of millions.
+    if (avail >= 128 && p[0] == 'T' && p[1] == 'A' && p[2] == 'G')
+    {
+        bool yearOk = true;
+        for (int i = 93; i < 97; ++i)
+            if (!(p[i] == 0 || p[i] == ' ' || (p[i] >= '0' && p[i] <= '9')))
+                yearOk = false;
+        if (yearOk)
+            return 128;
+    }
+
+    return 0;
+}
+
+// How many of the bytes starting at p are metadata tags rather than data that was lost.
+//
+// ** THIS NEVER MOVES THE READ POSITION, AND THAT IS THE WHOLE POINT. **
+//
+// An earlier version of this change recognised a tag and then JUMPED over it by its declared
+// length. Eight rounds of review found THIRTEEN separate ways for that to destroy real audio in
+// silence, and every one of them had the same shape: a length was believed, the position moved,
+// and whatever lay between the real end of the tag and the false one was gone. Measured, on the
+// user's own music and on synthetic streams alike: 835,584 bytes from one flipped byte;
+// 2,094,810 cut out of the middle of a file; 9,752,382, being 97 per cent of a stream, from a
+// bound that had been raised to quiet a warning.
+//
+// ** THE AUDIO NEVER NEEDED IT. ** The frame search already steps over a tag on its own, because
+// none of a tag looks like a frame, and commit 14638a4 made that search strict enough to prove
+// it: measured over the whole corpus, an ID3v2 tag at the HEAD of an MP2, MP3, AAC or AC-3 file
+// comes out EXACTLY right with none of this code present. What the search cannot do is know that
+// what it stepped over was a TAG rather than lost data, so it reported an ordinary tagged file as
+// damaged.
+//
+// So the recogniser survives, and its only job now is to answer that one question. Being wrong
+// here costs a wrong number in a warning. It cannot cost a byte of audio, because nothing that
+// follows depends on it.
+
+// The chain of tags beginning EXACTLY at p, or 0. It is probed while m_curPos is still standing on
+// the tag, because by the time the loss is charged the header is often already behind us: measured
+// on a join of two tagged MP3s, the reader decodes a FALSE frame out of the tag's first 419 bytes,
+// and the 360,570 that then get charged contain no header at all for a scan to find.
+//
+// ** THE WHOLE DECLARED LENGTH IS CREDITED, EVEN THE PART THAT HAS NOT ARRIVED. ** A tag bigger
+// than one read block is charged across several buffers and only the first still has a header in
+// it. Believing a declared length is what destroyed audio in eight rounds of review - but that was
+// believing it enough to MOVE. This only ever subtracts from a number that is printed.
+static int64_t tagRunAt(const uint8_t* p, const uint8_t* end)
+{
+    int64_t total = 0;
+    for (;;)
+    {
+        const int64_t len = oneTagLength(p + total, end);
+        if (len <= 0)
+            return total;
+        total += len;
+        if (p + total >= end)
+            return total;
+    }
+}
+
+// The bytes inside [p, end) that belong to a metadata tag, found by SEARCHING the region.
+//
+// ** THIS AND tagRunAt ABOVE CATCH DIFFERENT TAGS AND BOTH ARE NEEDED. ** tagRunAt handles a tag
+// whose header is already BEHIND the region being charged - the reader decodes a false frame out
+// of a tag's first few hundred bytes and the header goes with it. This one handles a tag whose
+// header sits INSIDE the region, which happens at a join seam where the reader arrives part way
+// through the previous file's last frame.
+//
+// Removing this and keeping only the run made the empty tag seam case charge 531 where 521 is
+// right - the ten byte tag went back on the bill. Keeping BOTH naively is what the ninth review
+// caught as DOUBLE CREDIT, every tag subtracted twice. The caller therefore gives each of them a
+// DISJOINT part of the region: the run covers the prefix, the scan covers whatever is left.
+static int64_t tagBytesAt(const uint8_t* p, const uint8_t* end)
+{
+    int64_t total = 0;
+    for (const uint8_t* q = p; q < end;)
+    {
+        // ** ONE COMPARE BEFORE THE EXPENSIVE QUESTION. ** This asks oneTagLength at EVERY byte of
+        // the region, and that function runs several memcmp calls before it can say no. Every tag
+        // it knows begins with one of four letters, so anything else is rejected for the price of
+        // a single test. Measured on a 2 MB block engineered to be the worst case: 53.5 seconds
+        // before the Lyrics3 bound, 6.1 after it, and this line is what closes the rest of the gap
+        // to the unmodified reader's 0.16.
+        const uint8_t c = *q;
+        if (c != 'I' && c != 'A' && c != 'T' && c != 'L')
+        {
+            ++q;
+            continue;
+        }
+        const int64_t len = oneTagLength(q, end);
+        if (len <= 0)
+        {
+            ++q;
+            continue;
+        }
+        const int64_t take = len < end - q ? len : end - q;
+        total += take;
+        q += take;
+    }
+    return total;
+}
+
+// ** HOW FAR A TAG THE READER HAS ACTUALLY VERIFIED REACHES, WHICH IS NOT HOW LONG IT SAYS IT IS. **
+//
+// This exists for one job: to tell a frame search where it is allowed to DISBELIEVE a sync. An AAC
+// sync is twelve bits and two more, with no checksum, so arbitrary data satisfies it about once
+// every sixteen thousand bytes. In front of the audio that arbitrary data is usually a picture: a
+// 1.2 MB cover art tag holds about seventy false syncs, and the reader used to demux 455,104 bytes
+// for a stream whose audio is 194,146. Requiring a second header one frame length on removes them.
+//
+// ** BUT THE SAME STRICTNESS, APPLIED TO REAL AUDIO, DESTROYS IT. ** A genuine frame whose
+// successor is damaged looks exactly like a false sync, and refusing it throws away everything in
+// front of the next confirmable one. Measured: one flipped byte cost 881 bytes of undamaged audio,
+// and on a file whose frames are separated by junk it cost 193,449 of 194,146.
+//
+// The two cases cannot be told apart by looking at the candidate, or at how many frames follow it;
+// they are identical on every such measure. What DOES separate them is nothing about the sync at
+// all: it is whether the reader is standing inside a block of metadata that declared itself and
+// then proved it. Inside such a block a refusal costs nothing, because there is no audio there to
+// lose. Outside it, the unmodified answer is returned and nothing can be lost that was not lost
+// before.
+//
+// So the ceiling must be what was VERIFIED, never what was declared. The credit path above is
+// deliberately permissive when a body has not arrived, because a tag larger than a read block is
+// still a tag and should not be charged as loss; a ceiling may not be, because it decides where
+// audio may be disbelieved. A length taken on trust here would let a few bytes of forged header
+// arm a skip over real audio, which is the whole defect this file already fixed once for the loss
+// figure.
+//
+// Formats with nothing to walk forward do not feed it. Lyrics3 v1 is found by searching for its
+// closing keyword rather than by stepping through declared sizes, so it is not here, and neither is
+// v2, whose walk is not separable from that search at this point. They therefore behave exactly as
+// they always did: no ceiling, no strictness, no risk.
+static int64_t oneTagCeiling(const uint8_t* p, const uint8_t* end)
+{
+    const int64_t avail = end - p;
+
+    // ID3v2, and the whole tag must be here. See above: permissive is right for the credit and
+    // wrong for the ceiling.
+    if (avail >= 10 && p[0] == 'I' && p[1] == 'D' && p[2] == '3' && p[3] != 0xff && p[4] != 0xff &&
+        (p[6] | p[7] | p[8] | p[9]) < 0x80)
+    {
+        const int64_t size = (static_cast<int64_t>(p[6]) << 21) | (static_cast<int64_t>(p[7]) << 14) |
+                             (static_cast<int64_t>(p[8]) << 7) | static_cast<int64_t>(p[9]);
+        const bool hasFooter = p[3] >= 4 && (p[5] & 0x10) != 0;
+        const int64_t len = 10 + size + (hasFooter ? 10 : 0);
+        return avail >= len && id3v2BodyIsPlausible(p, end, len) ? len : 0;
+    }
+
+    // APEv2 already produces exactly this number as the conservative half of its walk: the whole
+    // tag when every item was stepped through and the size landed on its end, and the 32 header
+    // bytes when it could not be.
+    if (avail >= 32 && memcmp(p, "APETAGEX", 8) == 0)
+    {
+        const bool isHeader = (p[23] & 0x20) != 0;
+        if (!isHeader)
+            return 32;
+        int64_t walkEnd = 32;
+        apev2BodyIsPlausible(p, end, &walkEnd);
+        return walkEnd;
+    }
+
+    // The two fixed size tags are their own proof: there is no declared length to corrupt. ID3v1
+    // still goes through oneTagLength so that the year characters are checked there rather than
+    // tested twice in two places that could drift apart.
+    if (avail >= 227 && p[0] == 'T' && p[1] == 'A' && p[2] == 'G' && p[3] == '+')
+        return 227;
+    if (avail >= 128 && p[0] == 'T' && p[1] == 'A' && p[2] == 'G' && p[3] != '+')
+        return oneTagLength(p, end) == 128 ? 128 : 0;
+
+    return 0;
+}
+
+// The verified run beginning exactly at p, tags back to back, the way tagRunAt walks the declared
+// one. Everything is an offset, so nothing can be formed past the buffer even if a length lies.
+static int64_t tagCeilingRunAt(const uint8_t* p, const uint8_t* end)
+{
+    const int64_t avail = end - p;
+    int64_t total = 0;
+    while (total < avail)
+    {
+        const int64_t len = oneTagCeiling(p + total, end);
+        if (len <= 0 || len > avail - total)
+            break;
+        total += len;
+    }
+    return total;
+}
+
+static constexpr double mplsEps = INTERNAL_PTS_FREQ / 45000.0 / 2.0;
+
+void SimplePacketizerReader::doMplsCorrection()
+{
+    if (m_curMplsIndex == -1)
+        return;
+    if (m_curPts >= (m_lastMplsTime - mplsEps) && m_curMplsIndex < static_cast<int>(m_mplsInfo.size() - 1))
+    {
+        m_curMplsIndex++;
+        // The sound of a clip cut to the part played is cut to it by the demuxer (TSDemuxer::keptInPart), and has no
+        // frame to remove where it meets another part
+        if (m_mplsInfo[m_curMplsIndex].connection_condition == 5 && !m_mplsInfo[m_curMplsIndex].part.isCut() &&
+            !m_mplsInfo[m_curMplsIndex - 1].part.isCut())
+        {
+            m_mplsOffset += m_curPts - m_lastMplsTime;
+        }
+        m_lastMplsTime +=
+            (m_mplsInfo[m_curMplsIndex].OUT_time - m_mplsInfo[m_curMplsIndex].IN_time) * (INTERNAL_PTS_FREQ / 45000.0);
+    }
+}
+
+void SimplePacketizerReader::setBuffer(uint8_t* data, const uint32_t dataLen, bool lastBlock)
+{
+    // ** COUNTED HERE, WHERE THE BYTES ARRIVE, BECAUSE EVERY OTHER PLACE MISSES SOME OF THEM. **
+    // The loss report says "N bytes ... read for this track", and N used to be m_processedBytes,
+    // which counts what the reader got THROUGH rather than what it was GIVEN. A tag at the end of
+    // a file is stepped over on purpose and never added, so N came up short by exactly its length:
+    //     X3, a 27,435,292 byte file whose last 1,900,000 bytes are a tag -> "of the 25535292"
+    //     X4, the same file with junk instead of a tag                    -> "of the 27435292"
+    // Two files of identical size, the same real loss, and two different denominators.
+    //
+    // Trying to add the missing bytes back at the point they are skipped means finding every such
+    // point, and there are several: the tag skip, the park, and the flush that drops what the park
+    // was holding. This is the one place all of them pass through, so it cannot miss any.
+    //
+    // getProcessedSize is deliberately LEFT ALONE. metaDemuxer.cpp uses it to drive the progress
+    // display, where "how far have we got" is the right question and this is not the answer.
+    m_readBytes += dataLen;
+    m_lastBlock = lastBlock;
+    if (dataLen > 0 && data != nullptr)
+    {
+        const uint8_t* const from = data + MAX_AV_PACKET_SIZE;
+        const size_t keep = (std::min)(static_cast<size_t>(dataLen), TAIL_KEEP);
+        // trimmed only past twice the size, so a source of small blocks (a container's frames) is not moved each time
+        m_tail.insert(m_tail.end(), from + (dataLen - keep), from + dataLen);
+        if (m_tail.size() > 2 * TAIL_KEEP)
+            m_tail.erase(m_tail.begin(), m_tail.begin() + static_cast<std::ptrdiff_t>(m_tail.size() - TAIL_KEEP));
+    }
+
+    if (static_cast<size_t>(m_tmpBufferLen + dataLen) > m_tmpBuffer.size())
+        m_tmpBuffer.resize(static_cast<size_t>(m_tmpBufferLen + dataLen));
+
+    if (!m_tmpBuffer.empty())
+        memcpy(m_tmpBuffer.data() + m_tmpBufferLen, data + MAX_AV_PACKET_SIZE, dataLen);
+    m_tmpBufferLen += dataLen;
+
+    if (!m_tmpBuffer.empty())
+        m_curPos = m_buffer = m_tmpBuffer.data();
+    else
+        m_curPos = m_buffer = nullptr;
+    m_bufEnd = m_buffer + m_tmpBufferLen;
+    m_tmpBufferLen = 0;
+}
+
+int64_t SimplePacketizerReader::getProcessedSize() { return m_processedBytes; }
+
+// ONE tag of the chain that ENDS at e, read backwards from its footer, in bytes, or 0 if there is none; held is how
+// many bytes are held in front of e and before how far back the data goes (a length found may reach before the bytes
+// held, into bytes no longer held). kind, if given, is set to the kind found.
+// The order at the end of a file is the audio, then an APE tag or a Lyrics3 tag, then ID3v1, and each of them can be
+// found from its last bytes: ID3v1 is the last 128 and begins "TAG", with the 227 bytes of the enhanced tag ("TAG+")
+// in front of it when there are; an APE footer is the last 32, "APETAGEX", with the size of the items and the footer,
+// and a header in front when its flags say so; Lyrics3 v2 ends with a six digit size and "LYRICS200", v1 with
+// "LYRICSEND" and is searched back for its "LYRICSBEGIN" as the forward reading does; an ID3v2.4 tag appended at the
+// end has a footer, "3DI", with the size of its frames. A size is believed as far as the data goes back, as tagRunAt
+// believes one: it only takes bytes off the count the frames are measured against, and never moves the read
+// position. A file source is cut where the chain begins, and checks the starts as well: see tagChainAtFileEnd.
+int64_t SimplePacketizerReader::oneTagBeforeEnd(const uint8_t* const e, const int64_t held, const int64_t before,
+                                                EndTagKind* const kind)
+{
+    const auto le32 = [](const uint8_t* q)
+    {
+        return static_cast<int64_t>(q[0]) | (static_cast<int64_t>(q[1]) << 8) | (static_cast<int64_t>(q[2]) << 16) |
+               (static_cast<int64_t>(q[3]) << 24);
+    };
+    const auto found = [kind](const EndTagKind k, const int64_t len)
+    {
+        if (kind != nullptr)
+            *kind = k;
+        return len;
+    };
+    if (held < 15)
+        return 0;
+    // ID3v1, with the year rule of oneTagLength
+    if (held >= 128 && memcmp(e - 128, "TAG", 3) == 0)
+    {
+        const uint8_t* const t = e - 128;
+        bool yearOk = true;
+        for (int i = 93; i < 97; ++i)
+            if (!(t[i] == 0 || t[i] == ' ' || (t[i] >= '0' && t[i] <= '9')))
+                yearOk = false;
+        if (yearOk)
+        {
+            if (held >= 128 + 227 && before >= 128 + 227 && memcmp(t - 227, "TAG+", 4) == 0)
+                return found(EndTagKind::id3v1, 128 + 227);
+            return found(EndTagKind::id3v1, 128);
+        }
+    }
+    // An APE footer: bit 29 clear (this block is not the header), a version of 1.000 or 2.000
+    if (held >= 32 && memcmp(e - 32, "APETAGEX", 8) == 0)
+    {
+        const uint8_t* const f = e - 32;
+        const int64_t version = le32(f + 8);
+        const int64_t size = le32(f + 12);
+        const auto flags = static_cast<uint32_t>(le32(f + 20));
+        const int64_t len = size + ((flags & 0x80000000u) != 0 ? 32 : 0);
+        if ((version == 1000 || version == 2000) && (flags & 0x20000000u) == 0 && size >= 32 && len <= before)
+            return found(EndTagKind::ape, len);
+    }
+    // Lyrics3 v2: "LYRICSBEGIN" ... six digits of the size up to them, "LYRICS200"
+    if (memcmp(e - 9, "LYRICS200", 9) == 0)
+    {
+        int64_t size = 0;
+        bool digits = true;
+        for (int i = 15; i > 9; --i)
+        {
+            const uint8_t c = *(e - i);
+            if (c < '0' || c > '9')
+                digits = false;
+            else
+                size = size * 10 + (c - '0');
+        }
+        if (digits && size >= 11 && size + 15 <= before)
+            return found(EndTagKind::lyrics3v2, size + 15);
+    }
+    // Lyrics3 v1: its start is searched for, within the bound the forward reading uses
+    if (held >= 20 && memcmp(e - 9, "LYRICSEND", 9) == 0)
+    {
+        constexpr int64_t LYRICS3_MAX = 16384;
+        const int64_t reach = (std::min)((std::min)(held, before), LYRICS3_MAX);
+        for (int64_t back = 20; back <= reach; ++back)
+            if (memcmp(e - back, "LYRICSBEGIN", 11) == 0)
+                return found(EndTagKind::lyrics3v1, back);
+    }
+    // ID3v2.4 footer: "3DI", version 4, a revision, the flags with the footer bit, four SYNCSAFE bytes of the size of
+    // the frames, which leaves out the header and the footer (ten bytes each)
+    if (memcmp(e - 10, "3DI", 3) == 0)
+    {
+        const uint8_t* const f = e - 10;
+        if (f[3] == 4 && f[4] != 0xff && (f[5] & 0x10) != 0 && (f[6] | f[7] | f[8] | f[9]) < 0x80)
+        {
+            const int64_t size = (static_cast<int64_t>(f[6]) << 21) | (static_cast<int64_t>(f[7]) << 14) |
+                                 (static_cast<int64_t>(f[8]) << 7) | static_cast<int64_t>(f[9]);
+            if (size + 20 <= before)
+                return found(EndTagKind::id3v2, size + 20);
+        }
+    }
+    return 0;
+}
+
+// The chain of tags that ENDS at end, tag by tag (oneTagBeforeEnd); base is where the bytes held begin and dataLen how
+// far back the data goes. A tag that reaches back past what is held ends the chain: nothing before it can be read.
+static int64_t tagChainBeforeEnd(const uint8_t* const base, const uint8_t* const end, const int64_t dataLen)
+{
+    int64_t total = 0;
+    for (;;)
+    {
+        const int64_t held = (end - base) - total;  // the bytes still held in front of the chain found so far
+        if (held < 15)
+            return total;
+        const int64_t len = SimplePacketizerReader::oneTagBeforeEnd(end - total, held, dataLen - total);
+        if (len <= 0)
+            return total;
+        total += len;
+    }
+}
+
+static bool readFileAt(const File& file, const int64_t pos, uint8_t* const buf, const uint32_t len)
+{
+    return file.seek(pos, File::SeekMethod::smBegin) == pos && file.read(buf, len) == static_cast<int>(len);
+}
+
+// The items of an APE tag fill what its footer gives them, the bytes from end - size up to the footer, exactly: each
+// is the length of its value, its flags, a key of printable ASCII ended by a zero, and the value
+static bool apeItemsFill(const File& file, const int64_t end, const int64_t size, const int64_t count)
+{
+    const int64_t footer = end - 32;
+    int64_t pos = end - size;
+    if (count < 0 || count * 10 > size - 32)
+        return false;
+    uint8_t item[8 + 256];
+    for (int64_t i = 0; i < count; ++i)
+    {
+        if (footer - pos < 10)
+            return false;
+        const auto n = static_cast<uint32_t>((std::min)(footer - pos, static_cast<int64_t>(sizeof item)));
+        if (!readFileAt(file, pos, item, n))
+            return false;
+        const int64_t valueLen = static_cast<int64_t>(item[0]) | (static_cast<int64_t>(item[1]) << 8) |
+                                 (static_cast<int64_t>(item[2]) << 16) | (static_cast<int64_t>(item[3]) << 24);
+        uint32_t k = 8;
+        while (k < n && item[k] >= 0x20 && item[k] <= 0x7e) ++k;
+        if (k == 8 || k >= n || item[k] != 0)
+            return false;
+        pos += k + 1 + valueLen;
+        if (pos > footer)
+            return false;
+    }
+    return pos == footer;
+}
+
+int64_t SimplePacketizerReader::tagChainAtFileEnd(const File& file)
+{
+    int64_t size = 0;
+    if (!file.size(&size) || size <= 0)
+        return 0;
+    std::vector<uint8_t> tail;
+    int64_t total = 0;
+    for (;;)
+    {
+        const int64_t end = size - total;  // where the chain found so far begins
+        if (end < 15)
+            return total;
+        const int64_t held = (std::min)(end, static_cast<int64_t>(TAIL_KEEP));
+        tail.resize(static_cast<size_t>(held));
+        if (!readFileAt(file, end - held, tail.data(), static_cast<uint32_t>(held)))
+            return total;
+        const uint8_t* const e = tail.data() + held;
+        EndTagKind kind = EndTagKind::id3v1;
+        const int64_t len = oneTagBeforeEnd(e, held, end, &kind);
+        if (len <= 0)
+            return total;
+        const int64_t start = end - len;
+        uint8_t head[32];
+        bool startOk = true;
+        if (kind == EndTagKind::ape)
+        {
+            const uint8_t* const f = e - 32;
+            const auto le32 = [](const uint8_t* q)
+            {
+                return static_cast<int64_t>(q[0]) | (static_cast<int64_t>(q[1]) << 8) |
+                       (static_cast<int64_t>(q[2]) << 16) | (static_cast<int64_t>(q[3]) << 24);
+            };
+            const int64_t itemsSize = le32(f + 12);
+            if ((static_cast<uint32_t>(le32(f + 20)) & 0x80000000u) != 0)
+                startOk = readFileAt(file, start, head, 32) && memcmp(head, "APETAGEX", 8) == 0 &&
+                          (static_cast<uint32_t>(le32(head + 20)) & 0x20000000u) != 0 && le32(head + 12) == itemsSize;
+            startOk = startOk && apeItemsFill(file, end, itemsSize, le32(f + 16));
+        }
+        else if (kind == EndTagKind::lyrics3v2)
+            startOk = readFileAt(file, start, head, 11) && memcmp(head, "LYRICSBEGIN", 11) == 0;
+        else if (kind == EndTagKind::id3v2)
+            startOk = readFileAt(file, start, head, 10) && memcmp(head, "ID3", 3) == 0 && head[3] == 4 &&
+                      memcmp(head + 6, e - 4, 4) == 0;
+        if (!startOk)
+            return total;
+        total += len;
+    }
+}
+
+bool SimplePacketizerReader::cutsEndTags(const int codecID)
+{
+    return codecID == CODEC_A_AAC || codecID == CODEC_A_AC3 || codecID == CODEC_A_EAC3 || codecID == CODEC_A_DTS ||
+           codecID == CODEC_A_HDAC3 || codecID == CODEC_A_MPEG_AUDIO || codecID == CODEC_A_MLP ||
+           codecID == CODEC_A_FLAC;
+}
+
+int64_t SimplePacketizerReader::trailingTagBytes() const
+{
+    if (m_tail.empty())
+        return 0;
+    const int64_t chain = tagChainBeforeEnd(m_tail.data(), m_tail.data() + m_tail.size(), m_readBytes);
+    if (chain <= 0)
+        return 0;
+    // A tag of the chain the forward reading stood on and credited is not counted again
+    const int64_t from = m_readBytes - chain;
+    const int64_t overlap = (std::min)(m_creditTo, m_readBytes) - (std::max)(m_creditFrom, from);
+    return chain - (overlap > 0 ? overlap : 0);
+}
+
+int64_t SimplePacketizerReader::getTagBytes() const { return m_tagBytes + trailingTagBytes(); }
+
+void SimplePacketizerReader::addRun(std::vector<ByteRun>& runs, const int64_t end, const int64_t amount)
+{
+    if (amount <= 0)
+        return;
+    if (!runs.empty() && runs.back().to == end - amount)
+    {
+        runs.back().to = end;
+        return;
+    }
+    if (runs.size() >= MAX_BYTE_RUNS)
+        runs.erase(runs.begin(), runs.begin() + static_cast<std::ptrdiff_t>(MAX_BYTE_RUNS / 2));
+    runs.push_back({end - amount, end});
+}
+
+void SimplePacketizerReader::noteRun(std::vector<ByteRun>& runs, const uint8_t* const regionEnd,
+                                     const int64_t amount) const
+{
+    addRun(runs, m_readBytes - (m_bufEnd - regionEnd), amount);
+}
+
+// The bytes of the runs that lie in the chain of tags ending the data, the whole chain, as a tag the forward reading
+// stood on had its own bytes paid by its credit and never billed
+int64_t SimplePacketizerReader::bytesInTrailingTags(const std::vector<ByteRun>& runs) const
+{
+    if (m_tail.empty() || runs.empty())
+        return 0;
+    const int64_t chain = tagChainBeforeEnd(m_tail.data(), m_tail.data() + m_tail.size(), m_readBytes);
+    if (chain <= 0)
+        return 0;
+    const int64_t from = m_readBytes - chain;
+    int64_t inside = 0;
+    for (auto it = runs.rbegin(); it != runs.rend() && it->to > from; ++it)
+        inside += it->to - (std::max)(it->from, from);
+    return inside;
+}
+
+int64_t SimplePacketizerReader::getLostSize() const
+{
+    const int64_t lost = m_lostBytes - bytesInTrailingTags(m_lostRuns);
+    return lost > 0 ? lost : 0;
+}
+
+int64_t SimplePacketizerReader::getFrameBytes() const
+{
+    const int64_t frames = m_frameBytes - bytesInTrailingTags(m_frameRuns);
+    return frames > 0 ? frames : 0;
+}
+
+// The bytes of [from, to) the search steps over that are in runs of zeros or of 0xFF, the part the tag chain we stand
+// on has credit for left out, as those bytes count as the tag's already (an ID3v2 tag's padding is zeros)
+int64_t SimplePacketizerReader::countPadding(const uint8_t* from, const uint8_t* const to)
+{
+    int64_t counted = 0;
+    from += (std::min)(m_tagCredit, static_cast<int64_t>(to - from));
+    while (from < to)
+    {
+        const uint8_t fill = *from;
+        if (fill != 0x00 && fill != 0xff)
+        {
+            ++from;
+            continue;
+        }
+        const uint8_t* const run = from;
+        while (from < to && *from == fill) ++from;
+        if (from - run >= PAD_RUN_MIN)
+            counted += from - run;
+    }
+    m_padBytes += counted;
+    return counted;
+}
+
+void SimplePacketizerReader::countLostPadding(const uint8_t* from, const uint8_t* const to)
+{
+    const int64_t credit = m_tagCredit;  // the tag credit is that of the main stream, not of these bytes
+    m_tagCredit = 0;
+    m_lostPadBytes += countPadding(from, to);
+    m_tagCredit = credit;
+}
+
+int SimplePacketizerReader::flushPacket(AVPacket& avPacket)
+{
+    avPacket.duration = 0;
+    avPacket.data = nullptr;
+    avPacket.size = 0;
+    avPacket.stream_index = m_streamIndex;
+    avPacket.flags = m_flags + AVPacket::IS_COMPLETE_FRAME;
+    avPacket.codecID = getCodecInfo().codecID;
+    avPacket.codec = this;
+    int skipBytes = 0;
+    int skipBeforeBytes = 0;
+    if (m_needSync && m_tmpBufferLen > 0 &&
+        findFrame(m_tmpBuffer.data(), m_tmpBuffer.data() + m_tmpBufferLen) != m_tmpBuffer.data())
+    {
+        // Held while a frame was being looked for, and no frame begins with them: the end of a
+        // tag or junk after the last frame, or junk and the start of a frame cut off by the end
+        // of the file. None of it is sound, and it used to be written out as a last frame.
+        m_processedBytes += m_tmpBufferLen;
+        m_tmpBufferLen = 0;
+        return 0;
+    }
+    // ** A FRAME THE END OF THE FILE CUT OFF IS NOT A FRAME. ** What is held here is what readPacket could not send
+    // because the frame did not fit, and at the end of the source nothing more comes. It was sent as it was, as the
+    // last frame: an AC-3 file that an encoder stopped in the middle of a frame got 1,280 of the frame's 2,560 bytes
+    // as a frame of its own, one a player cannot decode, and the track came out 32 ms longer than its sound. A tail of
+    // seven bytes, the header and nothing else, became a frame as well. The same held for E-AC-3, DTS, AAC and MPEG
+    // audio, in a transport stream and in Matroska alike.
+    //
+    // NOT_ENOUGH_BUFFER cannot tell this, which is why the length is asked of the header instead: DTS answers it for
+    // every whole last frame, because it looks for four bytes behind the frame, and so would FLAC, which ends a frame
+    // at the header of the next. Where the header gives a length, a frame is whole when that many bytes are here. A
+    // whole frame with the cut start of another behind it, a DTS core whose extension substream was cut, is sent and
+    // the rest left out. The part left out is said, as the IVF reader says it, and is not an error: a recording that
+    // stops in the middle of a frame is ordinary. What follows a whole frame without being the start of one, the
+    // three zero bytes a DTS file was measured with, is not sound either and is left out without a word, as the
+    // junk after the last frame is above.
+    if (m_tmpBufferLen > 0)
+    {
+        uint8_t* const tail = m_tmpBuffer.data();
+        uint8_t* const tailEnd = tail + m_tmpBufferLen;
+        const int whole = wholeFrameSizeAt(tail, tailEnd);
+        if (whole == NOT_ENOUGH_BUFFER || whole > m_tmpBufferLen)
+        {
+            leaveOutCutFrame(m_tmpBufferLen);
+            m_tmpBufferLen = 0;
+            return 0;
+        }
+        if (whole > 0 && whole < m_tmpBufferLen)
+        {
+            const int64_t rest = m_tmpBufferLen - whole;
+            const int next = wholeFrameSizeAt(tail + whole, tailEnd);
+            if (next == NOT_ENOUGH_BUFFER || next > rest)
+            {
+                leaveOutCutFrame(rest);
+                m_tmpBufferLen = whole;
+            }
+            else if (next == 0)
+            {
+                m_processedBytes += rest;
+                m_tmpBufferLen = whole;
+            }
+            // A whole frame behind it as well is not what readPacket leaves here, and is sent as it always was.
+        }
+    }
+    // ** FEWER BYTES THAN A HEADER ARE NEVER A FRAME. ** Every frame begins with its header, so a tail shorter than
+    // one, behind the last whole frame, is junk: three zero bytes at the end of an AC-3, AAC or MPEG audio file were
+    // written out as a frame of three bytes, which a player cannot decode and which made the track a frame longer.
+    // They are left out as the junk above is. A tail that begins like a header was left out with a warning above.
+    if (m_tmpBufferLen > 0 && m_tmpBufferLen < getHeaderLen())
+    {
+        m_processedBytes += m_tmpBufferLen;
+        m_tmpBufferLen = 0;
+        return 0;
+    }
+    if (m_tmpBufferLen >= getHeaderLen())
+    {
+        const int size =
+            decodeFrame(m_tmpBuffer.data(), m_tmpBuffer.data() + m_tmpBufferLen, skipBytes, skipBeforeBytes);
+        if (size + skipBytes + skipBeforeBytes <= 0 && size != NOT_ENOUGH_BUFFER)
+            return 0;
+        // A reader that gives no length above can still size the frame here. One longer than what is left was cut
+        // off as well: MPEG audio sizes a frame from its header without asking whether the frame is all there.
+        if (size > 0 && size + skipBytes + skipBeforeBytes > m_tmpBufferLen)
+        {
+            leaveOutCutFrame(m_tmpBufferLen);
+            m_tmpBufferLen = 0;
+            return 0;
+        }
+    }
+    // What a reader skips at the start of the last frame, as the header of a WAV file, is not part of it. The frame was
+    // sent at its whole length from behind that header, and the read ran past the end of the buffer by as much.
+    if (skipBeforeBytes > 0 && m_tmpBufferLen > 0 && m_tmpBufferLen <= static_cast<uint32_t>(skipBeforeBytes))
+    {
+        m_processedBytes += m_tmpBufferLen;
+        m_tmpBufferLen = 0;
+        return 0;
+    }
+    avPacket.dts = avPacket.pts = static_cast<int64_t>(m_curPts * m_stretch) + m_timeOffset;
+    if (m_tmpBufferLen > 0)
+    {
+        avPacket.data = m_tmpBuffer.data();
+        avPacket.data += skipBeforeBytes;
+        avPacket.size = static_cast<int>(m_tmpBufferLen) - skipBeforeBytes;
+        if (isPriorityData(&avPacket))
+            avPacket.flags |= AVPacket::PRIORITY_DATA;
+        if (isIFrame(&avPacket))
+            avPacket.flags |= AVPacket::IS_IFRAME;  // can be used in split points
+    }
+    LTRACE(LT_DEBUG, 0, "Processed " << m_frameNum << " " << getCodecInfo().displayName << " frames");
+    m_processedBytes += avPacket.size + skipBytes + skipBeforeBytes;
+    return static_cast<int>(m_tmpBufferLen);
+}
+
+// The bytes are counted as read, so that a source whose last frame was cut off still counts as read to its end, and
+// the job does not end with "The mux stopped before the source was finished" over an output that has every whole
+// frame. They are not counted as lost either: nothing in the middle of the stream was thrown away.
+void SimplePacketizerReader::leaveOutCutFrame(const int64_t bytes)
+{
+    LTRACE(LT_WARN, 2,
+           getCodecInfo().displayName << " stream (track " << m_streamIndex << "): the file ends inside a frame, "
+                                      << bytes << " bytes left out");
+    m_processedBytes += bytes;
+}
+
+void SimplePacketizerReader::addTimeGap(const int64_t atNs, const int64_t gapNs)
+{
+    m_timeGaps.emplace_back(atNs, gapNs);
+}
+
+// A gap the source asks for (addTimeGap) begins at the frame that comes at its time, within half a frame
+void SimplePacketizerReader::applyTimeGaps()
+{
+    while (!m_timeGaps.empty() && (m_curPts - PTS_CONST_OFFSET + m_halfFrameLen) * 1e9 / INTERNAL_PTS_FREQ >=
+                                      static_cast<double>(m_timeGaps.front().first))
+    {
+        m_curPts += static_cast<double>(m_timeGaps.front().second) * INTERNAL_PTS_FREQ / 1e9;
+        m_timeGaps.erase(m_timeGaps.begin());
+    }
+}
+
+int SimplePacketizerReader::readPacket(AVPacket& avPacket)
+{
+    applyTimeGaps();
+    do
+    {
+        avPacket.flags = m_flags + AVPacket::IS_COMPLETE_FRAME | AVPacket::FORCE_NEW_FRAME;
+        avPacket.stream_index = m_streamIndex;
+        avPacket.codecID = getCodecInfo().codecID;
+        avPacket.codec = this;
+        avPacket.data = nullptr;
+        avPacket.size = 0;
+        avPacket.duration = 0;
+        avPacket.dts = avPacket.pts = static_cast<int64_t>(m_curPts * m_stretch) + m_timeOffset;
+        assert(m_curPos <= m_bufEnd);
+        if (m_curPos == m_bufEnd)
+            return NEED_MORE_DATA;
+        // ** NOTICED HERE, CHARGED LATER, AND THE POSITION IS NEVER MOVED. ** If a tag chain begins
+        // exactly where we are standing, remember how long it is. The frame search will step over
+        // it in its own time, and when the bill for that arrives this credit cancels it. Looking
+        // only at the moment of charging is too late: the reader often decodes a false frame out of
+        // the first few hundred bytes of a tag, so by then the header is behind us and there is
+        // nothing left to recognise.
+        // ** THE CREDIT IS A RUN OF BYTES, NOT AN AMOUNT, AND THIS IS THE THIRD ATTEMPT AT IT. **
+        //
+        // m_tagCredit holds how much of the chain we are standing on has NOT yet been accounted
+        // for, and it is decremented by every byte the reader advances - whether those bytes are
+        // emitted as a false frame, skipped one at a time, or charged as loss. When it reaches
+        // zero the chain is spent and nothing later can draw on it.
+        //
+        // Attempt one credited an AMOUNT and let it stand. The ninth review measured what that
+        // costs: a credit banked at one place cancelled a hole FIVE MEGABYTES later, and 400
+        // ID3v1 tags scattered through a file excused 51,200 bytes of completely unrelated audio
+        // damage - the report said 40,472 where the untagged control said 91,672.
+        // Attempt two expired it when audio resumed, which fixed the distance but not the aim:
+        // the credit was still spent on whatever bill arrived next, tag or not.
+        // ** A CHAIN CAN ONLY EXCUSE THE BYTES IT IS ACTUALLY MADE OF. **
+        if (m_tagCredit <= 0 && m_curPos != m_tagProbePos)
+        {
+            m_tagProbePos = m_curPos;
+            m_tagCredit = tagRunAt(m_curPos, m_bufEnd);
+            m_tagBytes += m_tagCredit;
+            if (m_tagCredit > 0)
+            {
+                m_creditFrom = m_readBytes - (m_bufEnd - m_curPos);
+                m_creditTo = m_creditFrom + m_tagCredit;
+            }
+        }
+        int skipBytes = 0;
+        int skipBeforeBytes = 0;
+        if (m_needSync)
+        {
+            // Where a frame search may disbelieve a sync, and nowhere else. See oneTagCeiling.
+            m_tagCeilingEnd = m_curPos + tagCeilingRunAt(m_curPos, m_bufEnd);
+            uint8_t* frame = findFrame(m_curPos, m_bufEnd);
+            if (frame == nullptr)
+            {
+                // ** A TAG HEADER THAT STRADDLES A READ BLOCK BOUNDARY. **
+                //
+                // A tag is recognised by its first few bytes, and none of them can be read when
+                // only a handful are on this side of the boundary. Once the next block arrives
+                // m_curPos is already past the header, so the region scan starts INSIDE the tag
+                // body and finds nothing, the run credit was never armed, and the whole tag is
+                // charged as loss. Measured on a 360,989 byte tag whose header begins five bytes
+                // before a 2 MB boundary: every byte of it reported as lost on a file whose audio
+                // is complete.
+                //
+                // So a SHORT tail is carried into the next block instead, exactly as the paths
+                // below do when a frame is split. The bound is what the longest header any format
+                // needs to identify itself, so this can never accumulate: it is at most a few tens
+                // of bytes once per read block. Carried unconditionally, the way the split frame
+                // paths below already do, and flushPacket deals with whatever is left at the end.
+                constexpr int64_t LONGEST_TAG_HEADER = 32;  // APETAGEX, the longest of them
+                const int64_t tail = m_bufEnd - m_curPos;
+                if (tail > 0 && tail < LONGEST_TAG_HEADER)
+                {
+                    memmove(m_tmpBuffer.data(), m_curPos, static_cast<size_t>(tail));
+                    m_tmpBufferLen = static_cast<int>(tail);
+                    m_curPos = m_bufEnd;
+                    return NEED_MORE_DATA;
+                }
+                // ** AND THE LAST BYTES OF A LONG RUN ARE CARRIED TOO. ** A frame's sync can begin
+                // in the last few bytes of the block, where the searches cannot test it: AC-3 needs
+                // its second sync byte, MPEG audio its four header bytes, ADTS its second byte. With
+                // nothing carried the next block began after them and the frame was lost: one AC-3
+                // or MP3 frame after a tag that ended just before a 2 MB boundary, or the first AAC
+                // frame of a file with 2,097,151 bytes in front of it, in silence.
+                uint8_t* const keepFrom = m_bufEnd - LONGEST_TAG_HEADER;
+
+                const int64_t pad = countPadding(m_curPos, keepFrom);
+                m_processedBytes += keepFrom - m_curPos;
+                // Nothing recognisable is left in this buffer. HELD BACK, not counted: if a frame
+                // turns up later this really was a hole and it is promoted to lost; if none ever
+                // does, these were the trailing bytes of the file and a file is entitled to carry
+                // them. An identifier tag at the end of an audio file is the ordinary case, and
+                // counting it made the report fire on files whose audio was byte perfect.
+                //
+                // KNOWN LIMIT, measured and deliberately left: whatever is still held when the
+                // stream ends is never counted, so damage that runs to the end of the file is
+                // silent AT ANY SIZE. 8,388,608 bytes of it were measured silent here, while the
+                // same bytes moved into the middle of the same stream are reported exactly.
+                if (m_everSynced)
+                {
+                    const int64_t region = keepFrom - m_curPos;
+                    const int64_t paid = m_tagCredit < region ? m_tagCredit : region;
+                    m_tagCredit -= paid;
+                    const int64_t held = region - paid - tagBytesAt(m_curPos + paid, keepFrom);
+                    m_pendingLost += held > 0 ? held : 0;
+                    m_pendingPad += (std::min)(pad, held > 0 ? held : 0);
+                    noteRun(m_pendingRuns, keepFrom, held);
+                }
+                memmove(m_tmpBuffer.data(), keepFrom, static_cast<size_t>(LONGEST_TAG_HEADER));
+                m_tmpBufferLen = static_cast<int>(LONGEST_TAG_HEADER);
+                m_curPos = m_bufEnd;
+                return NEED_MORE_DATA;
+            }
+            int decodeRez = decodeFrame(frame, m_bufEnd, skipBytes, skipBeforeBytes);
+            if (decodeRez == NOT_ENOUGH_BUFFER)
+            {
+                if (m_bufEnd - frame > DEFAULT_FILE_BLOCK_SIZE)
+                    THROW(ERR_COMMON,
+                          getCodecInfo().displayName << " stream (track " << m_streamIndex << "): invalid stream.")
+                memmove(m_tmpBuffer.data(), m_curPos, m_bufEnd - m_curPos);
+                m_tmpBufferLen = m_bufEnd - m_curPos;
+                m_curPos = m_bufEnd;
+                return NEED_MORE_DATA;
+            }
+            if (decodeRez + skipBytes + skipBeforeBytes <= 0)
+            {
+                // ** STEP PAST THE SYNC THAT FAILED, NOT ONE BYTE FROM WHERE THE SEARCH BEGAN. **
+                //
+                // findFrame returns the next sync AHEAD of m_curPos, which can be a long way
+                // ahead. Advancing m_curPos by one left that same false sync still in front of
+                // us, so the next search found it again, decoded it again and failed again, once
+                // for every byte of the gap. The cost of rejecting bytes that are not this codec
+                // was therefore quadratic in the size of the gap.
+                //
+                // Measured on 1 MB of TrueHD named as AC-3: readPacket called 1,005,837 times,
+                // one per byte, and 13.7 seconds, where the DTS reader rejects the same bytes in
+                // two calls and 0.3 seconds. A damaged AC-3 file behaves the same way: 300 KB of
+                // foreign data spliced into a good stream cost 299,917 calls and 4.9 seconds.
+                //
+                // The bytes are accounted for exactly as before, in one go rather than one per
+                // call: whatever the tag chain has credit for is spent first, and the rest is a
+                // loss once the stream has synced at least once.
+                const int64_t skipped = frame + 1 - m_curPos;
+                const int64_t pad = countPadding(m_curPos, frame + 1);
+                m_curPos = frame + 1;
+                m_processedBytes += skipped;
+                const int64_t paid = m_tagCredit < skipped ? m_tagCredit : skipped;
+                m_tagCredit -= paid;
+                if (m_everSynced)
+                {
+                    m_lostBytes += skipped - paid;
+                    m_lostPadBytes += (std::min)(pad, skipped - paid);
+                    noteRun(m_lostRuns, frame + 1, skipped - paid);
+                }
+                return 0;
+            }
+            if (frame + decodeRez + skipBytes + skipBeforeBytes > m_bufEnd)
+            {
+                // ** A SYNC FOUND WHILE SEARCHING WHOSE FRAME RUNS PAST THE BLOCK IS NOT YET A FRAME. **
+                // A search can only confirm a candidate by the header after it, and near the end of
+                // a block there is none to read, so it is accepted unconfirmed. Taken as the stream's
+                // sync at once, it could not be rejected later: a UTF-16 byte order mark in a tag
+                // 100 bytes before a 2 MB boundary became 128 bytes of sound. The search now goes on
+                // from it in the next block, where its successor can be read. At the end of the
+                // stream there is no more to read, and a frame cut off by the end is not one either:
+                // the same mark in a tag at the end of a file became the last 40 bytes of sound.
+                if (m_lastBlock)
+                {
+                    const int64_t skipped = frame + 1 - m_curPos;
+                    const int64_t pad = countPadding(m_curPos, frame + 1);
+                    m_curPos = frame + 1;
+                    m_processedBytes += skipped;
+                    const int64_t paid = m_tagCredit < skipped ? m_tagCredit : skipped;
+                    m_tagCredit -= paid;
+                    if (m_everSynced)
+                    {
+                        m_pendingLost += skipped - paid;
+                        m_pendingPad += (std::min)(pad, skipped - paid);
+                        noteRun(m_pendingRuns, frame + 1, skipped - paid);
+                    }
+                    return 0;
+                }
+                const int64_t pad = countPadding(m_curPos, frame);
+                m_processedBytes += frame - m_curPos;
+                if (m_everSynced)
+                {
+                    const int64_t region = frame - m_curPos;
+                    const int64_t paid = m_tagCredit < region ? m_tagCredit : region;
+                    m_tagCredit -= paid;
+                    const int64_t held = region - paid - tagBytesAt(m_curPos + paid, frame);
+                    m_pendingLost += held > 0 ? held : 0;
+                    m_pendingPad += (std::min)(pad, held > 0 ? held : 0);
+                    noteRun(m_pendingRuns, frame, held);
+                }
+                memmove(m_tmpBuffer.data(), frame, m_bufEnd - frame);
+                m_tmpBufferLen = m_bufEnd - frame;
+                m_curPos = m_bufEnd;
+                return NEED_MORE_DATA;
+            }
+            const int64_t pad = countPadding(m_curPos, frame);
+            m_processedBytes += frame - m_curPos;
+            // The bytes stepped over to reach this frame. On the FIRST sync they are the leading
+            // fragment of a stream that started mid frame, which is not a loss; on every later one
+            // they are data that could not be parsed and is being abandoned.
+            //
+            // EXCEPT FOR THE PART OF THEM THAT IS A TAG, which is metadata and is not a loss
+            // wherever it sits. Two ordinary files appended, or two named on one join line, put a
+            // tag in the MIDDLE of the stream, and counting it reported a loss on a file whose
+            // output was byte identical to the same file without the tags. Measured on AAC, AC-3,
+            // MPEG audio Layer II and Layer III, and on the user's own music, where a join of two
+            // tagged MP3s announced 4,239 bytes dropped on a byte perfect result.
+            //
+            // ** THE SEARCH HAS ALREADY DONE THE STEPPING OVER. ** All that happens here is that
+            // the tag's share of it is not charged to the user. Nothing below depends on this
+            // number, so the worst a mistake can do is print a wrong figure.
+            if (m_everSynced)
+            {
+                const int64_t region = frame - m_curPos;
+                const int64_t paid = m_tagCredit < region ? m_tagCredit : region;
+                m_tagCredit -= paid;
+                const int64_t bill = region - paid - tagBytesAt(m_curPos + paid, frame);
+                m_lostBytes += bill > 0 ? bill : 0;
+                m_lostPadBytes += (std::min)(pad, bill > 0 ? bill : 0);
+                // the held runs first, as they lie before this region in the stream
+                for (const ByteRun& r : m_pendingRuns) addRun(m_lostRuns, r.to, r.to - r.from);
+                m_pendingRuns.clear();
+                noteRun(m_lostRuns, frame, bill);
+            }
+            else
+                m_everSynced = true;
+            // A frame HAS turned up, so anything held back earlier was a hole in the middle of the
+            // stream after all, not its tail. Promote it. Whatever is still held when the stream
+            // ends is never promoted, and that is exactly the trailing data.
+            m_lostBytes += m_pendingLost;
+            m_pendingLost = 0;
+            m_lostPadBytes += m_pendingPad;
+            m_pendingPad = 0;
+            LTRACE(LT_INFO, 2,
+                   "Decoding " << getCodecInfo().displayName << " stream (track " << m_streamIndex
+                               << "): " << getStreamInfoAt(frame, m_bufEnd));
+            if (m_syncFreq != 0 && (getFreq() != m_syncFreq || getChannels() != m_syncChannels))
+                m_syncChanges++;
+            m_syncFreq = getFreq();
+            m_syncChannels = getChannels();
+            m_curPos = frame;
+            m_needSync = false;
+        }
+        avPacket.dts = avPacket.pts = static_cast<int64_t>(m_curPts * m_stretch) + m_timeOffset;
+        if (m_bufEnd - m_curPos < getHeaderLen())
+        {
+            memmove(m_tmpBuffer.data(), m_curPos, m_bufEnd - m_curPos);
+            m_tmpBufferLen = m_bufEnd - m_curPos;
+            m_curPos = m_bufEnd;
+            return NEED_MORE_DATA;
+        }
+        skipBytes = 0;
+        skipBeforeBytes = 0;
+        int frameLen = decodeFrame(m_curPos, m_bufEnd, skipBytes, skipBeforeBytes);
+        if (frameLen == NOT_ENOUGH_BUFFER)
+        {
+            if (m_bufEnd - m_curPos > DEFAULT_FILE_BLOCK_SIZE)
+                THROW(ERR_COMMON,
+                      getCodecInfo().displayName << " stream (track " << m_streamIndex << "): invalid stream.")
+            memmove(m_tmpBuffer.data(), m_curPos, m_bufEnd - m_curPos);
+            m_tmpBufferLen = m_bufEnd - m_curPos;
+            m_curPos = m_bufEnd;
+            return NEED_MORE_DATA;
+        }
+        if (frameLen + skipBytes + skipBeforeBytes <= 0)
+        {
+            LTRACE(LT_INFO, 2,
+                   getCodecInfo().displayName
+                       << " stream (track " << m_streamIndex << "): bad frame detected at position"
+                       << floatToTime((double)(avPacket.pts - PTS_CONST_OFFSET) / INTERNAL_PTS_FREQ, ',')
+                       << ". Resync stream.");
+            m_needSync = true;
+            return 0;
+        }
+        if (m_bufEnd - m_curPos < frameLen + skipBytes + skipBeforeBytes)
+        {
+            memmove(m_tmpBuffer.data(), m_curPos, m_bufEnd - m_curPos);
+            m_tmpBufferLen = m_bufEnd - m_curPos;
+            m_curPos = m_bufEnd;
+            return NEED_MORE_DATA;
+        }
+        avPacket.data = m_curPos;
+        avPacket.data += skipBeforeBytes;
+        if (frameLen > getMaxFrameSize())
+            THROW(ERR_AV_FRAME_TOO_LARGE, "AV frame too large (" << frameLen << " bytes). Increase AV buffer.")
+        avPacket.size = frameLen;
+        if (isPriorityData(&avPacket))
+            avPacket.flags |= AVPacket::PRIORITY_DATA;
+        if (isIFrame(&avPacket))
+            avPacket.flags |= AVPacket::IS_IFRAME;  // can be used in split points
+
+        // A disc carries audio at 48, 96 or 192 kHz only. The rate is checked when the track is added, from its first
+        // frames, so a join whose later file has another rate went onto the disc without a word (AC-3 at 48 kHz, then
+        // 44.1 kHz).
+        if (const int freq = getFreq(); freq > 0)
+        {
+            if (m_firstFreq == 0)
+                m_firstFreq = freq;
+            else if (freq != m_firstFreq && !m_laterFreqSaid && (V3_flags & BLURAY_OUT) && freq != 48000 &&
+                     freq != 96000 && freq != 192000)
+            {
+                m_laterFreqSaid = true;
+                LTRACE(LT_WARN, 2,
+                       "Warning: track "
+                           << m_streamIndex << " (" << getCodecInfo().displayName << ") changes its sample rate from "
+                           << m_firstFreq << " to " << freq << " Hz at "
+                           << floatToTime(static_cast<double>(avPacket.pts - PTS_CONST_OFFSET) / INTERNAL_PTS_FREQ, ',')
+                           << ", as a join of files with different rates does. A Blu-ray disc carries audio at 48, 96 "
+                              "or 192 kHz only, and its stream information gives one rate for the track, so a player "
+                              "may not play this part. Convert the audio to 48 kHz before muxing.");
+            }
+            // Every other output, and a disc whose later rate is one a disc has, states one rate for the track as well:
+            // the Matroska header and the descriptor of a TS give the first. Such a join went on without a word. A
+            // demux writes the frames as they are, each with its own rate. Only once a later file of the join has
+            // begun: within one file another rate is a damaged frame or a file of another codec.
+            else if (freq != m_firstFreq && !m_laterFreqSaid && !m_demuxMode && m_joinSeen)
+            {
+                m_laterFreqSaid = true;
+                LTRACE(LT_WARN, 2,
+                       "Warning: track "
+                           << m_streamIndex << " (" << getCodecInfo().displayName << ") changes its sample rate from "
+                           << m_firstFreq << " to " << freq << " Hz at "
+                           << floatToTime(static_cast<double>(avPacket.pts - PTS_CONST_OFFSET) / INTERNAL_PTS_FREQ, ',')
+                           << ", as a join of files with different rates does. The output gives one rate for the "
+                              "track, the first, so a player may play this part at the wrong speed or not at all. "
+                              "Convert the audio of the joined files to one rate before muxing.");
+            }
+        }
+
+        if (m_halfFrameLen == 0.0)
+            m_halfFrameLen = getFrameDuration() / 2.0;
+        const double frameStep = getFrameDuration();
+        m_curPts += frameStep;
+        int64_t nextDts = static_cast<int64_t>(m_curPts * m_stretch) + m_timeOffset;
+        avPacket.duration = nextDts - avPacket.dts;
+        // doMplsCorrection();
+        m_frameNum++;
+        const int taken = frameLen + skipBytes + skipBeforeBytes;
+        m_frameBytes += taken;
+        noteRun(m_frameRuns, m_curPos + taken, taken);
+        if (m_frameNum % 1000 == 0)
+            LTRACE(LT_DEBUG, 0, "Processed " << m_frameNum << " " << getCodecInfo().displayName << " frames");
+        m_curPos += frameLen + skipBytes + skipBeforeBytes;
+        m_processedBytes += frameLen + skipBytes + skipBeforeBytes;
+        // These bytes came out of the chain too, if we are inside one. A false frame decoded from
+        // the first few hundred bytes of a tag is the ordinary case, and if it were not counted
+        // here the same bytes would be excused twice.
+        m_tagCredit -= frameLen + skipBytes + skipBeforeBytes;
+        if (m_tagCredit < 0)
+            m_tagCredit = 0;
+
+        if (needMPLSCorrection())
+        {
+            if (/*m_demuxMode && */ m_mplsOffset > m_halfFrameLen)
+            {  // overlap frame detected. skip frame
+                if (avPacket.duration)
+                    LTRACE(LT_INFO, 2,
+                           getCodecInfo().displayName
+                               << " stream (track " << m_streamIndex << "): overlapped frame detected at position "
+                               << floatToTime((double)(avPacket.pts - PTS_CONST_OFFSET) / INTERNAL_PTS_FREQ, ',')
+                               << ". Remove frame.");
+                m_mplsOffset -= getFrameDuration();
+                m_curPts -= getFrameDuration();
+                return readPacket(avPacket);  // ignore overlapped packet, get next one
+            }
+            doMplsCorrection();
+        }
+
+        // The start-up samples an encoder puts in front of the sound (the codec delay of a DTS-HD file) are left out,
+        // and so is their time: the first sample after them is where the sound starts. Their time was kept, so the
+        // sound of a DTS-HD file with a codec delay of 1024 samples came 21.3 ms late against the picture.
+        if (needSkipFrame(avPacket))
+        {
+            m_curPts -= frameStep;
+            continue;
+        }
+
+        return 0;
+
+    } while (true);
+}
+
+StreamDiscoveryData SimplePacketizerReader::probeStream(uint8_t* buffer, const int len,
+                                                        const ContainerType containerType, const int containerDataType,
+                                                        const int containerStreamIndex)
+{
+    StreamDiscoveryData data;
+    const CheckStreamRez rez = checkStream(buffer, len, containerType, containerDataType, containerStreamIndex);
+    if (!rez.codecInfo.codecID)
+        return data;  // detection failed: return empty data
+
+    data.discovered = true;
+    data.codecName = rez.codecInfo.programName;
+    data.streamDescr = rez.streamDescr;
+
+    // Let the concrete reader fill in codec-specific fields.
+    fillDiscoveryData(data);
+
+    return data;
+}
+
+void SimplePacketizerReader::fillDiscoveryData(StreamDiscoveryData& data)
+{
+    // Base implementation fills common audio fields.
+    data.sampleRate = getFreq();
+    data.channels = getChannels();
+}
+
+static constexpr int CHECK_FRAMES_COUNT = 10;
+static constexpr int MIN_SHORT_FILE_FRAMES = 3;
+// ** A CHAIN THAT BREAKS IS LOOKED FOR AGAIN BEHIND THE BREAK. ** See checkStream. At most this many chains, and none
+// that begins further into the data than RESUME_SPAN: a track that is not this codec is turned down after a bounded
+// number of tries, as before, and the listing of such a track takes no longer than 16 short searches.
+static constexpr int MAX_FRAME_CHAINS = 16;
+static constexpr int64_t RESUME_SPAN = 8 * 1024 * 1024;
+// A track its transport stream declares as this codec (declaredByContainer) needs this many frames in a row in a chain
+// after the first: the stream type already says what it is, and the frames only have to show that the data agrees.
+static constexpr int DECLARED_CHAIN_FRAMES = 3;
+// A track its transport stream declares as this codec is accepted on this many good frames ANYWHERE in the first
+// RESUME_SPAN of its data, back to back or not, when no chain was found. See goodFramesAnywhere.
+static constexpr int DECLARED_GOOD_FRAMES = 5;
+
+CheckStreamRez SimplePacketizerReader::checkStream(uint8_t* buffer, const int len, const ContainerType containerType,
+                                                   const int containerDataType, const int containerStreamIndex)
+{
+    m_containerType = containerType;
+    m_containerDataType = containerDataType;
+    m_containerStreamIndex = containerStreamIndex;
+    setTestMode(true);
+
+    CheckStreamRez rez;
+    uint8_t* end = buffer + len;
+    // ** DETECTION NEEDS THE CEILING TOO, AND FOR THE SAME REASON THE DEMUX DOES. ** This retries
+    // the search only five times, so it escapes about ten bytes of junk and no more. Without a
+    // ceiling a tagged file is not recognised at all: a real one carrying cover art answered
+    // "Can't detect stream type" and could not be muxed.
+    m_tagCeilingEnd = buffer + tagCeilingRunAt(buffer, end);
+
+    // ** ONE DAMAGED FRAME USED TO DECIDE THE WHOLE TRACK. ** After the first frame the next ones must decode back to
+    // back, and the first that did not ended the detection with "not detected", although the data holds up to 64 MiB
+    // of the track. One TS packet lost near the start of an AC-3, E-AC-3, DTS or AAC track of a transport stream, the
+    // 20th of its PID, which is about its third frame, made the listing say "Can't detect stream type", and the track
+    // was left out of the job without a word: the sound of a recording that begins with one damaged packet, which is
+    // ordinary broadcast material, was simply lost. The same packet lost later, the 400th, was found and muxed with
+    // the loss reported.
+    //
+    // So a chain that breaks is looked for again from behind the frame that failed, and the new chain must be whole
+    // on its own: CHECK_FRAMES_COUNT frames back to back, the AC-3 CRC checked on each, as the first chain. A chain of
+    // ten that random data forms by chance is no likelier for being looked for sixteen times. The first chain is
+    // exactly the check it always was, so a track it accepts is accepted as before, from the same frames.
+    //
+    // A chain after the first in a track the transport stream DECLARES as this codec needs DECLARED_CHAIN_FRAMES in a
+    // row instead: the stream type says what the track is, and a stream that loses one packet in 30 has no ten whole
+    // frames in a row anywhere.
+    const int resumedChainFrames = declaredByContainer() ? DECLARED_CHAIN_FRAMES : CHECK_FRAMES_COUNT;
+    uint8_t* from = buffer;
+    const uint8_t* const lastChainStart = end - buffer > RESUME_SPAN ? buffer + RESUME_SPAN : end;
+    for (int chain = 0; chain < MAX_FRAME_CHAINS && from < lastChainStart; ++chain)
+    {
+        // ** EVERY CHAIN BEGINS FROM A CLEAN STATE. ** A reader keeps what the frames of a chain told it: TrueHD found
+        // behind an AC-3 frame and the state of its units, the extension substream of DTS-HD, the Atmos and DTS:X
+        // counters, the rate and the channels. A chain that broke handed all that to the next, which began on other
+        // frames, so what the listing said of an accepted chain could depend on the damage in front of it, and on a
+        // TrueHD track it began in a TrueHD unit as if it were one. A chain behind a break now starts as the first
+        // one did. Measured on TrueHD with its AC-3 core (Atmos and 7.1), DTS-HD MA with DTS:X, E-AC-3 with Atmos
+        // and E-AC-3 7.1, each with the 3rd, 8th, 20th or 60th TS packet of the track lost: every listing is the
+        // one of the undamaged track (TrueHD needed AC3Codec::trueHDMajorSyncAhead as well).
+        if (chain > 0)
+            resetDecodeState();
+        uint8_t* const brokeAt = frameChainBreak(from, end, chain == 0 ? CHECK_FRAMES_COUNT : resumedChainFrames,
+                                                 chain == 0, lastChainStart);
+        if (brokeAt == nullptr)
+        {
+            setTestMode(false);
+            rez.codecInfo = getCodecInfo();
+            rez.streamDescr = getStreamInfo();
+            return rez;
+        }
+        if (brokeAt == end)
+            break;  // no frame of this codec behind the break
+        from = brokeAt + 1;
+    }
+    if (declaredByContainer() && frameProvesItself() && goodFramesAnywhere(buffer, end))
+    {
+        setTestMode(false);
+        rez.codecInfo = getCodecInfo();
+        rez.streamDescr = getStreamInfo();
+        return rez;
+    }
+    setTestMode(false);
+    return rez;
+}
+
+// ** A DECLARED TRACK IS TAKEN ON GOOD FRAMES, WHERE THEY STAND. ** A stream that loses one TS packet in 30 has no
+// chain at all. Measured on AC-3, E-AC-3 and DTS tracks of a TS with one packet in 30 lost: the longest run of
+// frames back to back in the first 8 MiB was three, in two places or one, so all three tracks said "Can't detect
+// stream type" and were left out of the job, while most of their frames were whole. Worse on a disc: E-AC-3 behind
+// its AC-3 core, a PES of 15 packets for each core frame and each E-AC-3 frame, lost the last packet of every E-AC-3
+// frame, so no period was whole anywhere; DTS-HD MA, whose frames take 60 packets and more, lost two in every
+// frame. The stream type of the PMT already says what the track is.
+//
+// So for a declared track a frame counts where it is, if it is good on its own: findFrame found it, or it follows a
+// good one where that ends, and decodeFrame read it whole (the AC-3 CRC over the whole frame; DTS has no CRC, and its
+// decodeFrame asks that the frame does not run into the next one and that its length is one the header allows).
+// One frame counts for each period of sound: the one that moves the time on, or, where the period broke behind a
+// good frame that does not (an AC-3 core whose E-AC-3 frame was damaged, a DTS core whose extension was), that frame.
+// Frames are counted by their layout (frameLayoutKey: the sample rate, the channels and, for DTS, the frame length
+// and the samples a frame), and DECLARED_GOOD_FRAMES of one layout are enough, so a false frame cannot decide the
+// layout. A track that is not this codec does not get there: other data in a track declared as AC-3 must meet the
+// 16 bit CRC on every frame, and five DTS frames of one layout in random data, each with a 32 bit sync, are out of
+// reach. A track no container declares, and every raw file, keep the strict rule above, and so does a declared AAC
+// track: an ADTS header proves nothing alone (see frameProvesItself).
+bool SimplePacketizerReader::goodFramesAnywhere(uint8_t* buffer, uint8_t* end)
+{
+    const uint8_t* const stop = end - buffer > RESUME_SPAN ? buffer + RESUME_SPAN : end;
+    resetDecodeState();
+    static constexpr int MAX_LAYOUTS = 8;
+    uint64_t layouts[MAX_LAYOUTS]{};
+    int counts[MAX_LAYOUTS]{};
+    int nLayouts = 0;
+    const auto count = [&](const uint64_t key)
+    {
+        int k = 0;
+        while (k < nLayouts && layouts[k] != key) ++k;
+        if (k == nLayouts)
+        {
+            if (nLayouts == MAX_LAYOUTS)
+                return false;
+            layouts[nLayouts++] = key;
+        }
+        return ++counts[k] >= DECLARED_GOOD_FRAMES;
+    };
+    uint8_t* from = buffer;
+    while (from < stop)
+    {
+        uint8_t* frame = findFrame(from, end);
+        if (frame == nullptr || frame < from || frame >= stop)
+            return false;
+        // The frames behind a good frame are read where it ends, as the demux reads them: the DTS-HD extension
+        // substream and the E-AC-3 frame behind an AC-3 core are found there, and no search would find them.
+        bool waiting = false;  // a good frame that does not move the time on, not yet followed by one that does
+        uint64_t waitingKey = 0;
+        while (frame < end)
+        {
+            int skipBytes = 0;
+            int skipBeforeBytes = 0;
+            const int frameLen = decodeFrame(frame, end, skipBytes, skipBeforeBytes);
+            const int64_t step = static_cast<int64_t>(frameLen) + skipBytes + skipBeforeBytes;
+            if (frameLen <= 0 || step > end - frame)
+                break;
+            if (getFrameDuration() > 0)
+            {
+                waiting = false;
+                if (count(frameLayoutKey()))
+                    return true;
+            }
+            else if (!waiting)
+            {
+                waiting = true;
+                waitingKey = frameLayoutKey();
+            }
+            frame += step;
+        }
+        if (waiting && count(waitingKey))
+            return true;
+        if (frame >= end)
+            return false;
+        from = frame + 1;
+    }
+    return false;
+}
+
+// One chain of frames from the first frame found at or after from. nullptr: the chain is whole, needFrames frames
+// back to back, or fewer that run to the end of the data (see below). Otherwise where it broke, the frame that did not
+// decode, or end when no frame was found to start a chain at. firstChain keeps the rule the check always had for the
+// chain at the start of the data: a run of any length that ends exactly at the end of the data is enough. A chain
+// further in must begin at or before lastStart, and is never accepted on less than MIN_SHORT_FILE_FRAMES frames.
+uint8_t* SimplePacketizerReader::frameChainBreak(uint8_t* from, uint8_t* end, const int needFrames,
+                                                 const bool firstChain, const uint8_t* lastStart)
+{
+    uint8_t* frame = findFrame(from, end);
+    if (frame == nullptr || (!firstChain && frame > lastStart))
+        return end;
+    int skipBytes = 0;
+    int skipBeforeBytes = 0;
+    for (int i = 0; i < 5; ++i)
+    {
+        if (decodeFrame(frame, end, skipBytes, skipBeforeBytes) <= 0)
+        {
+            // ** NO FRAME AT OR PAST THE END OF THE DATA. ** A search that does not look at the data, as that of the
+            // DVB subtitle reader, which answers the next byte every time, walked the frame past the end of a file
+            // of a few bytes in these tries. The chain below then read no frame at all, "ran to the end of the data"
+            // and was taken: any file of up to ten bytes, abc or a 1 and a new line, under any name, was listed as
+            // SUP subtitles.
+            if (end - frame <= 2)
+                return end;
+            frame = findFrame(frame + 2, end);
+
+            if (frame == nullptr || frame >= end)
+                return end;
+        }
+        else
+            break;
+    }
+    const int freq = getFreq();
+    bool firstStep = true;
+    int i = 0;
+    for (; i < needFrames && frame < end;)
+    {
+        const int frameLen = decodeFrame(frame, end, skipBytes, skipBeforeBytes);
+        // A file of fewer than ten frames ends inside this check, and its last frame, or the few bytes a reader looks
+        // at behind it, runs past the data: a cut of a third of a second was not recognised at all. Frames that were
+        // read back to back up to the end of the data are enough when there are at least three.
+        //
+        // ** THE LAST FRAME COUNTS WHEN IT IS WHOLE. ** A reader looks behind each frame here, AC-3 at eight bytes for
+        // a TrueHD unit, and behind the last frame of a file there is nothing, so the last frame always came back
+        // NOT_ENOUGH_BUFFER and was never counted: a raw AC-3, E-AC-3 or DTS file of three whole frames gave "Can't
+        // detect stream type", and four were needed. Its header says how long it is, and when that many bytes are
+        // here it is counted like the others. It is decoded as far as the data goes, the AC-3 CRC included, and it
+        // must keep the sample rate, so this takes nothing on trust that the frames before it were not asked for.
+        // Two frames and fewer are still not enough.
+        if (frameLen == NOT_ENOUGH_BUFFER)
+        {
+            const int whole = wholeFrameSizeAt(frame, end);
+            if (whole > 0 && whole <= end - frame && getFreq() == freq && getFrameDuration() > 0)
+                i++;
+            if (i >= MIN_SHORT_FILE_FRAMES)
+                return nullptr;
+        }
+        if (frameLen <= 0 || getFreq() != freq || (firstStep && frameLen > end - frame))
+            return frame;
+        firstStep = false;
+        frame += frameLen + skipBytes + skipBeforeBytes;
+        if (getFrameDuration() > 0)
+            i++;
+    }
+    if (firstChain || i >= needFrames || i >= MIN_SHORT_FILE_FRAMES)
+        return nullptr;
+    return frame < end ? frame : end;
+}

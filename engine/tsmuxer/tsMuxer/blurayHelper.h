@@ -1,0 +1,57 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef BLURAY_HELPER_H_
+#define BLURAY_HELPER_H_
+
+#include <string>
+#include <vector>
+
+#include "fs/file.h"
+#include "vod_common.h"
+
+class IsoWriter;
+struct DiscMeta;
+struct FileEntryInfo;
+class TSMuxer;
+class AbstractOutputStream;
+class MuxerManager;
+
+class BlurayHelper final : public FileFactory
+{
+   public:
+    BlurayHelper();
+    ~BlurayHelper() override;
+
+    bool open(const std::string& dst, DiskType dt, int64_t diskSize = 0, int extraISOBlocks = 0,
+              bool useReproducibleIsoHeader = false, int layerBreakGuardMB = -1,
+              const std::vector<int>& layerBreakLbns = {}, int layerBreakGuardBeforeMB = -1, int64_t discBytes = 0,
+              bool defaultGuard = false);
+    void createBluRayDirs() const;
+    bool writeBluRayFiles(const MuxerManager& muxer, bool usedBlankPL, int mplsNum, int blankNum,
+                          bool stereoMode) const;
+    bool createCLPIFile(TSMuxer* muxer, int clpiNum, bool doLog) const;
+    // The disc's title and pictures into BDMV/META/DL (#30); nothing when meta is empty
+    void writeDiscMeta(const DiscMeta& meta) const;
+    bool createMPLSFile(TSMuxer* mainMuxer, TSMuxer* subMuxer, int autoChapterLen,
+                        const std::vector<double>& customChapters, DiskType dt, int mplsOffset,
+                        bool isMvcBaseViewR) const;
+
+    [[nodiscard]] std::string m2tsFileName(int num) const;
+    [[nodiscard]] std::string ssifFileName(int num) const;
+
+    [[nodiscard]] IsoWriter* isoWriter() const;
+
+    void close();
+    // file factory interface
+
+    AbstractOutputStream* createFile() override;
+    [[nodiscard]] bool isVirtualFS() const override;
+    void setVolumeLabel(const std::string& label) const;
+
+   private:
+    std::string m_dstPath;
+    DiskType m_dt;
+    IsoWriter* m_isoWriter;
+};
+
+#endif  // _BLURAY_HELPER_H_

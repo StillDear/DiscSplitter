@@ -1,0 +1,88 @@
+// Copyright 2026 teaching-droid (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef LIBMEDIATION_DISC_IMAGE_H
+#define LIBMEDIATION_DISC_IMAGE_H
+
+// Reading inside a disc image (.iso) without mounting it: the UDF file system of a DVD (UDF 1.02) and of a Blu-ray or
+// UHD Blu-ray (UDF 2.50 and 2.60, with the metadata partition). A path that goes on after the name of an image file,
+// film.iso/BDMV/PLAYLIST/00001.mpls, names the file inside it. File and the folder functions take such paths and
+// read through the file's places in the image, so a stream file is never copied out.
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace discImage
+{
+// Where a part of a file's bytes is in the image, in the order of the file. A hole is space the file has but no data
+// is written for; it reads as zeros.
+struct Extent
+{
+    uint64_t offset = 0;
+    uint64_t length = 0;
+    bool hole = false;
+    int file = 0;  // which of FileView::files holds it
+};
+
+// A file inside an image as File reads it: its parts in the image, or its bytes when they are kept in its entry.
+struct FileView
+{
+    std::string imageFile;
+    std::vector<std::string> files;  // the files the extents are in: the image file, or those of a virtual file
+    uint64_t size = 0;
+    std::vector<Extent> extents;
+    // its bytes when inEntry, shared: a file built in memory (addMemoryFile) can be large, and every open of it read
+    // the same bytes as a copy of its own
+    std::shared_ptr<const std::vector<uint8_t>> data;
+    bool inEntry = false;
+};
+
+struct Entry
+{
+    std::string name;
+    bool dir = false;
+    uint64_t size = 0;
+};
+
+// Splits a path into the image file and the path inside it ('/' separated, "" for the image's root). False when no
+// part of the path ends with .iso and names an existing file: a plain path, which every function below leaves alone.
+bool split(const std::string& path, std::string* imageFile, std::string* inner);
+
+// True for a path that goes on inside an image (film.iso/BDMV, not film.iso itself).
+bool isInside(const std::string& path);
+
+// Fills `view` for a file inside an image. False when the image has no such file. Throws std::runtime_error with the
+// reason when the image cannot be read: not a UDF image, or damaged where the file is.
+bool openFile(const std::string& path, FileView* view);
+
+// Why an image file cannot be read (not a UDF image, a kind of UDF not read); empty when it can.
+std::string unreadableReason(const std::string& imageFile);
+
+// A file made of parts of other files, as the cells of a DVD title are parts of its VOB files: reading `name` reads
+// the parts one after another. The name is taken as a path by everything that opens files, and names no file on a
+// drive. The parts may be files inside an image.
+struct Piece
+{
+    std::string file;
+    uint64_t offset = 0;
+    uint64_t length = 0;
+};
+void addVirtualFile(const std::string& name, const std::vector<Piece>& pieces);
+
+// A file whose bytes are held in memory: reading `name`, also where a file of that name is on the drive, reads them.
+// A subtitle script is read this way as the Matroska file that holds it (assFile.h).
+void addMemoryFile(const std::string& name, std::vector<uint8_t> bytes);
+
+// For a path inside an image: whether it names a folder or a file there.
+bool isDir(const std::string& path);
+bool exists(const std::string& path);
+
+// The entries of a folder inside an image, by name. False when it is no folder there.
+bool list(const std::string& dir, std::vector<Entry>* entries);
+
+// The file name match of the folder functions on Windows: '*' and '?', not case sensitive.
+bool matchMask(const std::string& name, const std::string& mask);
+}  // namespace discImage
+
+#endif  // LIBMEDIATION_DISC_IMAGE_H

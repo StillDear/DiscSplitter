@@ -1,0 +1,137 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef TRUE_HD_AC3_MERGE_READER_H_
+#define TRUE_HD_AC3_MERGE_READER_H_
+
+#include <cstdint>
+#include <deque>
+#include <map>
+#include <string>
+#include <vector>
+
+#include "abstractDemuxer.h"
+#include "ac3Codec.h"
+#include "avPacket.h"
+#include "mlpStreamReader.h"
+
+// Interleaves a standalone TrueHD (A_MLP) track with a separate AC-3 track from the
+// same MKV for Blu-ray style TrueHD + core muxing (merge-ac3-track meta option).
+
+class TrueHDAC3MergeReader final : public MLPStreamReader
+{
+   public:
+    // The progress figure sums this over every muxed track and divides by the size of the
+    // source files. The AC-3 stream folded in here is part of that size, so if its bytes are
+    // left out the total can never be reached: a mux of a file whose AC-3 track is one
+    // twentieth of a percent of it stopped at 99.4 and stayed there. Measured with and
+    // without the merge on one file: 99.3 against 100.0.
+    int64_t getProcessedSize() override { return MLPStreamReader::getProcessedSize() + m_ac3BytesConsumed; }
+
+    explicit TrueHDAC3MergeReader(const std::map<std::string, std::string>& addParams);
+    TrueHDAC3MergeReader(const TrueHDAC3MergeReader&) = delete;
+    TrueHDAC3MergeReader& operator=(const TrueHDAC3MergeReader&) = delete;
+
+    ~TrueHDAC3MergeReader() override;
+
+    [[nodiscard]] int mergeAc3TrackPid() const { return m_mergeAc3Pid; }
+
+    // The AC-3 companion is a stream in its own right, and a container that cannot carry it inside
+    // the lossless track has to be told what it is. A disc TrueHD track answers the same question
+    // through AC3Codec::isTrueHD, which this reader is not in a position to answer because its two
+    // halves came from two separate sources. These figures describe the CORE, not the lossless
+    // stream the rest of this reader reports on, and they are read from the first core frame that
+    // actually parsed rather than from the meta file.
+    [[nodiscard]] bool hasAc3Core() const { return m_ac3CoreSampleRate > 0; }
+    [[nodiscard]] int ac3CoreSampleRate() const { return m_ac3CoreSampleRate; }
+    [[nodiscard]] uint8_t ac3CoreChannels() const { return m_ac3CoreChannels; }
+    // The playlist and the clip information name the core's rate with the lossless one, as for a TrueHD track
+    // from a disc
+    int getCoreFreq() override { return m_ac3CoreSampleRate; }
+
+    void setNewStyleAudioPES(bool value) { m_useNewStyleAudioPES = value; }
+
+    // Where the core starts against the TrueHD, in the internal clock: the start of the AC-3 track of merge-ac3-track
+    // less that of the TrueHD track, in their Matroska file
+    void setCoreStart(int64_t start);
+
+    void setAc3SideData(const uint8_t* data, uint32_t len);
+    void setAc3SideEof() { m_ac3SideEof = true; }
+    [[nodiscard]] bool ac3SideEof() const { return m_ac3SideEof; }
+
+    const CodecInfo& getCodecInfo() override;
+    int readPacket(AVPacket& avPacket) override;
+    int flushPacket(AVPacket& avPacket) override;
+    void writePESExtension(PESPacket* pesPacket, const AVPacket& avPacket) override;
+    [[nodiscard]] bool needMPLSCorrection() const override;
+    const std::string getStreamInfo() override;
+    int getTSDescriptor(uint8_t* dstBuff, bool blurayMode, bool hdmvDescriptors) override;
+
+   private:
+    struct Ac3QueuedFrame
+    {
+        std::vector<uint8_t> data;
+        int samples = 0;
+        int sample_rate = 0;
+    };
+
+    void extractAc3FramesFromAccum();
+    void fillDelayedFromQueue();
+    void reportCoreCoverage();
+    void checkCoreRate(int coreRate);
+
+    int m_mergeAc3Pid;
+    bool m_useNewStyleAudioPES;
+
+    std::vector<uint8_t> m_ac3Accum;
+    std::deque<Ac3QueuedFrame> m_ac3FrameQueue;
+
+    bool m_thdDemuxWaitAc3;
+    // Whether the AC-3 SIDE has run out, which is not the same question as whether the lossless
+    // stream has. A core frame that is DUE but has none buffered must WAIT for one, because
+    // emitting it late moves it against the lossless frames. The only reason not to wait is that
+    // nothing is coming, and with merge-ac3-file the AC-3 can end while most of the TrueHD
+    // remains: a core cut to a quarter made the lossless stream's own end of data the wrong
+    // question to ask, and waiting on it threw part way through instead of warning.
+    bool m_ac3SideEof = false;
+    MemoryBlock m_delayedAc3Buffer;
+    MemoryBlock m_immediateAc3Buffer;
+    AVPacket m_delayedAc3Packet;
+    // Lossless time since the last core frame was due, in TrueHD samples times the core's sample rate,
+    // so the two clocks are compared exactly (see readPacket).
+    int64_t m_demuxedTHDTimeForAc3;
+    int64_t m_nextAc3Time;
+    int64_t m_coreStart = 0;  // setCoreStart
+    int64_t m_coreDelayLeft =
+        0;  // the TrueHD time still to go out before the first core frame of a core that starts later
+    int m_ac3SamplesPerSyncFrame;
+    int m_pendingEmitSamples;
+    int m_pendingEmitSampleRate;
+
+    // A short AC-3 source used to be merged in silence: the lossless track came out complete, the
+    // core simply stopped part way, and the mux reported success. Nothing in the log said that half
+    // the title had no compatibility core under it. These two count what actually went out so the
+    // gap can be reported at the end, when it is a fact rather than a guess about the meta file.
+    int64_t m_ac3FramesEmitted;
+    // Bytes of the merged AC-3 stream this reader has taken in. They arrive through
+    // setAc3SideData rather than setBuffer, so nothing upstream counts them.
+    int64_t m_ac3BytesConsumed = 0;
+    bool m_coverageReported;
+
+    // Taken from the first AC-3 frame that parsed, so they are a measurement and not a promise.
+    int m_ac3CoreSampleRate;
+    uint8_t m_ac3CoreChannels;
+    uint8_t m_coreHeader[7]{};  // the first 7 bytes of the first core frame, for the AC-3 descriptor (getTSDescriptor)
+    bool m_coreRateChecked = false;
+
+    struct Ac3FrameParser : AC3Codec
+    {
+        int parse(uint8_t* b, uint8_t* e, int& sk) { return decodeFrame(b, e, sk); }
+        uint8_t* findAc3Sync(uint8_t* b, const uint8_t* e) { return findFrame(b, e); }
+        [[nodiscard]] int frameSamples() const { return m_samples; }
+        [[nodiscard]] int frameSampleRate() const { return m_sample_rate; }
+        [[nodiscard]] uint8_t frameChannels() const { return m_channels; }
+    };
+    Ac3FrameParser m_ac3Parser;
+};
+
+#endif

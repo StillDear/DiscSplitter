@@ -92,6 +92,15 @@ class Playlist:
     duration_seconds: float = 0.0
     iso_image: Optional[Path] = None  # ISO playlists use a path relative to the disc root.
     measured: bool = field(default=False, compare=False)   # audio bitrates were looked up (sources.audio_bitrates)
+    # Who read it: "mkvmerge" (track IDs are mkvmerge's numbers) or "engine" (the built-in tsMuxeR; track IDs are
+    # the transport stream PIDs, which the engine also cuts by).
+    reader: str = field(default="mkvmerge", compare=False)
+    marks: Optional[list[float]] = field(default=None, compare=False, repr=False)   # chapter starts, from the engine
+    main_title: bool = field(default=False, compare=False)   # the engine's pick for the disc's main title
+
+    @property
+    def by_engine(self) -> bool:
+        return self.reader == "engine"
 
     @property
     def atmos_track(self) -> Optional[Track]:
@@ -106,6 +115,19 @@ class Playlist:
             if t.kind == "video":
                 return t
         return None
+
+    @property
+    def picture_tracks(self) -> list[Track]:
+        """
+        The video a copy of the picture carries: the main video, plus a Dolby Vision enhancement layer
+        that a disc plays alongside it. Picture-in-picture (secondary) and the 3D right eye are left out.
+        """
+        main = self.video_track
+        if main is None:
+            return []
+        extra = [t for t in self.tracks if t.kind == "video" and t is not main and not t.properties.get("secondary")
+                 and t.codec_id == main.codec_id == "V_MPEGH/ISO/HEVC"]
+        return [main, *extra]
 
     @property
     def has_atmos(self) -> bool:

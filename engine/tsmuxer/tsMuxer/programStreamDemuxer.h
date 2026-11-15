@@ -1,0 +1,173 @@
+// Largely rewritten by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef PROGRAM_STREAM_DEMUXER_H_
+#define PROGRAM_STREAM_DEMUXER_H_
+
+#include <cmath>
+#include <map>
+#include <memory>
+#include <set>
+#include <vector>
+
+#include "abstractDemuxer.h"
+#include "bitmapSubtitles.h"
+#include "bufferedReader.h"
+#include "bufferedReaderManager.h"
+
+class ProgramStreamDemuxer final : public AbstractDemuxer
+{
+   public:
+    // From now on, hand the sub-picture units of stream (0x20 to 0x3F) on as they are (m_rawSubPictures)
+    void setRawSubPictures(const int stream) { m_rawSubPictures.insert(stream); }
+    static constexpr int MAX_PES_HEADER_SIZE = 1018;  // buffer for PES header and program stream map
+
+    ProgramStreamDemuxer(const BufferedReaderManager& readManager);
+    void openFile(const std::string& streamName) override;
+    static int readPacket(AVPacket& avPacket) { return 0; }
+    ~ProgramStreamDemuxer() override;
+    int simpleDemuxBlock(DemuxedData& demuxedData, const PIDSet& acceptedPIDs, int64_t& discardSize) override;
+    void getTrackList(std::map<int32_t, TrackInfo>& trackList) override;
+    void readClose() override;
+    int64_t getDemuxedSize() override;
+    int getLastReadRez() override { return m_lastReadRez; }
+    void setFileIterator(FileNameIterator* itr) override;
+
+    int64_t getTrackDelay(const int32_t pid) override
+    {
+        if (m_firstPtsTime.find(pid) != m_firstPtsTime.end())
+            return llround(
+                static_cast<double>(m_firstPtsTime[pid] - (m_firstVideoPTS != -1 ? m_firstVideoPTS : m_firstPTS)) /
+                90.0);  // convert to ms
+
+        return 0;
+    }
+
+    [[nodiscard]] int64_t getFileDurationNano() const override;
+
+   private:
+    uint32_t m_tmpBufferLen;
+    uint8_t m_tmpBuffer[MAX_PES_HEADER_SIZE];  // TS_FRAME_SIZE
+    uint32_t m_lastPesLen;
+    int32_t m_lastPID;
+    const BufferedReaderManager& m_readManager;
+    int64_t m_dataProcessed;
+    std::string m_streamName;
+    int m_readerID;
+    int m_lastReadRez;
+    AbstractReader* m_bufferedReader;
+    uint8_t m_psm_es_type[256];
+
+    std::map<int, int64_t> m_firstPtsTime;
+    int64_t m_firstVideoPTS;
+    int64_t m_firstPTS;
+    MemoryBlock m_lpcmWaveHeader[16];
+    bool m_lpcpHeaderAdded[16];
+    // ** DVD LPCM IS TURNED ROUND AS IT IS HANDED ON. ** The big endian samples of sub-streams 0xA0 to 0xAF go on as a
+    // WAV, little endian. They were turned round in the read buffer, a whole PES at a time, also the part of a PES past
+    // the end of the read; the next read brought that part in again as it was, and it stayed big endian. They are now
+    // turned round as they are handed on (appendLpcm), and a sample cut by the end of a PES or of a read waits there
+    // for the rest of its bytes.
+    // ** THE SAMPLE GROUPS OF 20 AND 24 BIT. ** 20 and 24 bit samples were turned round as 3 byte big endian samples,
+    // which a DVD does not store: it stores groups of samples (dvdLpcmGroup), and the sound was noise, at 20 bit also a
+    // fifth too short. A group is turned into 24 bit samples, 20 bit ones as the top 20 bits of 24, as the WAV header
+    // says.
+    struct LpcmSubStream
+    {
+        int bits = 0;  // 16, 20 or 24, from the first header of the sub-stream, as its WAV header says
+        int channels = 0;
+        int samples = 1;  // the samples of a group: 1 at 16 bit, 4 at 20 and 24 bit (2 for mono)
+        int in = 2;       // the bytes of a group in the stream
+        int out = 2;      // and as handed on
+        // the bytes of the groups that begin and end on a sample frame, and the bytes taken so far, counted modulo
+        // that: 0 for 16 bit, whose samples are not looked at for a frame
+        int sync = 0;
+        int taken = 0;
+        bool started = false;  // a frame has been looked for at the start of the stream
+        uint8_t part[16]{};    // the bytes of a group cut by the end of a PES or a read
+        int partLen = 0;
+    };
+    LpcmSubStream m_lpcm[16];
+    std::vector<uint8_t> m_lpcmOut;
+    int m_lpcmFrameAt = -1;  // where the first frame of the LPCM PES at hand starts in its samples; -1: none does
+    // Hands on len bytes of the samples of sub-stream 0xA0 + idx, from the start of a PES when frameAt is not -1;
+    // returns the bytes appended to out
+    int appendLpcm(int idx, StreamData& out, const uint8_t* data, int len, int frameAt);
+
+    // ** DVD SUBTITLES. ** The sub-pictures of private stream 1, sub-streams 0x20 to 0x3F, were not read. Each
+    // sub-picture unit is put together from its PES packets (its first two bytes give its size), drawn with the
+    // colours of the IFO file (dvdSubtitleIdx) and handed on as PGS display sets with their own times, as a .sup file
+    // holds them, for the PGS reader.
+    struct SubPicture
+    {
+        std::unique_ptr<VobSubDecoder> decoder;
+        std::vector<uint8_t> unit;   // the unit being put together
+        int64_t pts = -1;            // its time, 90 kHz
+        std::vector<int64_t> times;  // of an .idx file, ms
+        bool timesRead = false;
+        size_t done = 0;  // the units read
+        bool timesRanOut = false;
+    };
+    std::map<int, SubPicture> m_subPictures;
+    bool m_subFlushed = false;
+    int64_t m_subPictureSaved =
+        0;  // bytes of DVD subtitles read that their PGS pictures do not carry (placeSubPicture)
+    // The sub-picture streams handed on as they are, for a Matroska output (S_VOBSUB): each unit a record as a copied
+    // Matroska block is (ParsedCopyTrackData, MatroskaCopyStreamReader), not drawn as PGS
+    std::set<int> m_rawSubPictures;
+    bool m_vobSubPair = false;  // an .idx/.sub pair: the times of its units are those of the .idx file
+    // The time line of the video the units are placed on: the joined parts of a title, or the parts of a VOB between
+    // two jumps of the clock, follow on one after the other, as the video's pictures do. A part begins with the first
+    // picture shown, which is not always the first one coded, and is as long as its pictures (scanVideo).
+    int64_t m_segFirst = -1;     // when the first picture of the part is shown, 90 kHz
+    double m_segBase = 0;        // where the part begins on the time line
+    int64_t m_segFields = 0;     // the fields its pictures show
+    int64_t m_lastDts = -1;      // the decoding time of the last picture: within a part it only goes forward
+    double m_frameTicks = 3003;  // from the frame rate of the sequence header
+    int m_videoHeight = 0;
+    bool m_progressiveSequence = false;
+    int64_t m_pesPts = -1;  // the time of the PES being scanned, for the first picture that starts in it
+    // the start codes of the video, across the packets: the last bytes, and the start code whose bytes are collected
+    uint32_t m_scanShift = 0xffffffff;
+    uint8_t m_scanCode = 0;
+    uint8_t m_scanBytes[8]{};
+    int m_scanHave = 0;
+    int m_scanWant = 0;
+    bool m_lastPesVideo = false;  // the PES cut by the end of a read is video
+    // ** A UNIT WAITS FOR THE NEXT PICTURE. ** The clock of a part starts again in the pack that follows the last of
+    // the part before, and a unit at the start of a part can come ahead of the first picture of its part. Placed on
+    // arrival it was counted from the first picture of the part before, and came minutes too early. A whole unit is
+    // held until the next picture with a time has shown which part it is in (releaseSubPictures).
+    struct HeldUnit
+    {
+        int stream;
+        std::vector<uint8_t> data;
+        int64_t pts;
+        // the part it came in: which one, and its place, for a unit of that part held across the start of the next
+        int64_t part;
+        double base;
+        int64_t first;
+        int64_t lastDts;
+        int64_t lastPts;
+    };
+    std::vector<HeldUnit> m_heldUnits;
+    int64_t m_lastPts = -1;  // the presentation time of the last picture with a time
+    int64_t m_parts = 0;     // the parts begun so far
+    int64_t m_pictures = 0;  // the pictures with a time so far
+    int64_t m_heldAt = 0;    // m_pictures when the units held came
+    void noteVideoTime(int64_t pts, int64_t dts);
+    void scanVideo(const uint8_t* data, int len);
+    void videoStartCode(uint8_t code, const uint8_t* b);
+    void addSubPicture(int stream, const uint8_t* data, int len, int64_t pts, StreamData& out);
+    void placeSubPicture(int stream, const uint8_t* data, size_t size, int64_t at, StreamData& out);
+    void releaseSubPictures(DemuxedData& demuxedData, bool end);
+    void flushSubPictures(DemuxedData& demuxedData, const PIDSet& acceptedPIDs, int64_t& discardSize);
+
+    [[nodiscard]] bool isVideoPID(uint32_t pid) const;
+    int mpegps_psm_parse(const uint8_t* buff, const uint8_t* end);
+    int processPES(uint8_t* buff, uint8_t* end, int headerLen, bool mpeg1, int& afterPesHeader);
+};
+
+// The length of a program stream file in 90 kHz ticks
+int64_t getPSDuration(const char* fileName);
+
+#endif

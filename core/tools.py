@@ -92,6 +92,7 @@ _VERSION_FLAGS = {
     "mkvpropedit": "--version",
     "ffmpeg": "-version",
     "ffprobe": "-version",
+    "tsmuxer": "--version",     # not an option it knows, but it prints its banner first and exits
 }
 
 # Text each tool prints about itself, used to confirm a binary's actual
@@ -102,6 +103,7 @@ _IDENTIFYING_TEXT = {
     "mkvpropedit": "mkvpropedit v",
     "ffmpeg": "ffmpeg version",
     "ffprobe": "ffprobe version",
+    "tsmuxer": "tsmuxer version",
 }
 
 

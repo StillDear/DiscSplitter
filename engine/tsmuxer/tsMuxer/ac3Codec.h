@@ -1,0 +1,201 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef AC3_CODEC_H_
+#define AC3_CODEC_H_
+
+#include "avPacket.h"
+#include "mlpCodec.h"
+
+struct CodecInfo;
+
+class AC3Codec
+{
+   public:
+    static constexpr int AC3_HEADER_SIZE = 7;
+    // The length of the AC-3 or E-AC-3 frame whose sync word is at p, from its header alone; 0 when p does not hold
+    // one or the header is not all there.
+    static int frameSizeAt(const uint8_t* p, const uint8_t* end);
+
+    enum class AC3State
+    {
+        stateDecodeAC3,
+        stateDecodeAC3Plus,
+        stateDecodeTrueHDFirst,
+        stateDecodeTrueHD
+    };
+
+    enum class AC3ParseError
+    {
+        NO_ERROR = 0,
+        SYNC = -1,
+        BSID = -2,
+        SAMPLE_RATE = -3,
+        FRAME_SIZE = -4,
+        CRC2 = -5,
+        NOT_ENOUGH_BUFFER = -10
+    };
+
+    AC3Codec()
+        : m_fscod(0),
+          m_frmsizecod(0),
+          m_bsmod(0),
+          m_acmod(0),
+          m_halfratecod(0),
+          m_sample_rate(0),
+          m_frame_size(0),
+          m_samples(0)
+    {
+        m_downconvertToAC3 = m_true_hd_mode = false;
+        m_state = AC3State::stateDecodeAC3;
+        m_frameIsCore = false;
+        m_waitMoreData = false;
+        AC3Codec::setTestMode(false);
+        m_frameDuration = 0;
+        m_bit_rateExt = 0;
+        m_periodRateSum = 0;
+        m_periodRate = 0;
+        m_nextFrameIsExt = false;
+        m_bit_rate = 0;
+        m_channels = 0;
+        m_lfeon = 0;
+        m_extChannelsExists = false;
+        m_bsid = m_bsidBase = 0;
+        m_strmtyp = 0;
+        m_substreamid = 0;
+        m_firstAc3Channels = 0;
+        m_firstAc3Rate = 0;
+        m_layoutChangeReported = false;
+        m_eac3FirstProgram = false;
+        m_extraProgramReported = false;
+        m_dsurmod = 0;
+        m_mixinfoexists = false;
+        m_isAtmos = false;
+        m_jocObjects = 0;
+        m_atmosHits = 0;
+        m_atmosFramesProbed = 0;
+    }
+
+    virtual ~AC3Codec() = default;
+
+    virtual int getHeaderLen() { return AC3_HEADER_SIZE; }
+    [[nodiscard]] bool isEAC3() const { return m_bsid > 10; }
+    // An AC-3 core with an E-AC-3 part beside it, the Blu-ray DD+ arrangement, as seen so far
+    [[nodiscard]] bool carriesEac3() const { return m_bit_rateExt != 0 || m_nextFrameIsExt || m_bsid > 10; }
+    [[nodiscard]] bool isAC3() const { return m_bsidBase > 0; }
+    // A dependent E-AC-3 substream carries channels beyond the 5.1 of the independent one (the Blu-ray 7.1 layout)
+    [[nodiscard]] bool hasExtChannels() const { return m_extChannelsExists; }
+    void setDownconvertToAC3(const bool value) { m_downconvertToAC3 = value; }
+    [[nodiscard]] bool getDownconvertToAC3() const { return m_downconvertToAC3; }
+    [[nodiscard]] bool isTrueHD() const { return m_true_hd_mode; }
+    virtual void setTestMode(const bool value) { m_testMode = value; }
+    [[nodiscard]] bool getTestMode() const { return m_testMode; }
+
+   protected:
+    int decodeFrame(uint8_t* buf, uint8_t* end, int& skipBytes);
+    static uint8_t* findFrame(uint8_t* buffer, const uint8_t* end);
+    [[nodiscard]] uint64_t getFrameDuration() const;
+    virtual const CodecInfo& getCodecInfo();
+    virtual const std::string getStreamInfo();
+    // The description at the first frame of a mux, at frame, with the rest of the read data behind it to end
+    const std::string describeAt(const uint8_t* frame, const uint8_t* end);
+    // The E-AC-3 rate of the period that begins at frame, from the headers of its frames in [frame, end)
+    static uint32_t periodRateAhead(const uint8_t* frame, const uint8_t* end);
+
+    AC3State m_state;
+    // Set by decodeFrame for the frame it has just sized: true when that frame is an AC-3
+    // core frame braided into a TrueHD track. m_state cannot answer this, because it only moves
+    // to stateDecodeTrueHDFirst when the NEXT frame is not another core frame, so on a disc that
+    // delivers the core in groups, every frame but the last of a group looked like TrueHD.
+    bool m_frameIsCore;
+    bool m_waitMoreData;
+    bool m_downconvertToAC3;
+    bool m_true_hd_mode;
+    uint8_t m_fscod;
+    int m_frmsizecod;
+    uint8_t m_bsid;
+    uint8_t m_bsidBase;
+    uint8_t m_strmtyp;
+    uint8_t m_substreamid;    // the program of an independent E-AC-3 frame
+    bool m_eac3FirstProgram;  // an independent E-AC-3 frame of program 0 was seen
+    // channels and sample rate of the first AC-3 frame muxed
+    uint8_t m_firstAc3Channels;
+    int m_firstAc3Rate;
+    bool m_layoutChangeReported;
+    bool m_extraProgramReported;
+    uint8_t m_bsmod;
+    uint8_t m_acmod;
+    uint8_t m_dsurmod;
+    uint8_t m_lfeon;
+    uint8_t m_halfratecod;
+    int m_sample_rate;
+    int m_bit_rate;
+    uint8_t m_channels;
+    int m_frame_size;
+    bool m_mixinfoexists;
+    bool m_isAtmos;
+
+    // Dolby Atmos carried in E-AC-3 as joint object coding. The marker sits in the addbsi field
+    // and is a Type A extension per ETSI TS 103 420, together with a complexity index that IS the
+    // object count.
+    //
+    // One frame is not enough to say so. The walk to addbsi passes through a dozen variable length
+    // fields, so a single frame landing on the pattern by accident used to latch the flag on for
+    // the whole track and it was never cleared. Agreement across frames is demanded instead, on
+    // the same object count, which is the discipline the DTS:X badge already uses.
+    uint8_t m_jocObjects;     // complexity_index_type_a, the number of objects
+    int m_atmosHits;          // frames agreeing on it
+    int m_atmosFramesProbed;  // frames looked at, so the probe can stop
+    static constexpr int ATMOS_MIN_HITS = 2;
+    static constexpr int ATMOS_PROBE_FRAMES = 10;  // checkStream decodes this many before asking
+
+    MLPCodec mlp;
+
+    int m_samples;
+
+    // The rate of the E-AC-3 frame read last. Besides the listing it says that an AC-3 stream has an E-AC-3 part.
+    uint32_t m_bit_rateExt;
+    // The E-AC-3 rate of a whole period, for the listing: the frames from one AC-3 frame or independent frame of the
+    // first program to the next, so the dependent substream of a 7.1 stream and further programs count as well.
+    // m_periodRate is the last whole period, m_periodRateSum the one being read.
+    uint32_t m_periodRateSum;
+    uint32_t m_periodRate;
+    uint32_t m_periodRateGiven = 0;  // getStreamInfoAt: the rate of the period read ahead, for the description
+    void startRatePeriod()
+    {
+        if (m_periodRateSum)
+            m_periodRate = m_periodRateSum;
+        m_periodRateSum = 0;
+    }
+    bool m_nextFrameIsExt;  // the frame after this AC-3 one is E-AC-3, so this one adds no time
+    bool m_extChannelsExists;
+    bool m_timecodeBlockSaid = false;
+
+    int timecodeBlockAfter(const uint8_t* next, const uint8_t* end);
+    bool trueHDMajorSyncAhead(const uint8_t* p, const uint8_t* end);
+
+    static bool crc32(const uint8_t* buf, int length);
+    AC3ParseError parseHeader(uint8_t* buf, const uint8_t* end);
+
+    AC3ParseError testParseHeader(uint8_t* buf, uint8_t* end) const;
+    bool testDecodeTestFrame(uint8_t* buf, uint8_t* end) const;
+
+    bool m_testMode;
+    int64_t m_frameDuration;
+};
+
+// Is this packet the AC-3 compatibility core of a disc TrueHD track rather than a lossless
+// frame? An MLP frame states its own length in its first two bytes, as a count of 16 bit words,
+// so a genuine lossless frame's length field matches its size. An AC-3 frame read the same way
+// claims something else entirely: a 351 byte core frame reads as 5870. So a packet is the core
+// only when it carries the AC-3 sync word AND fails to describe itself as MLP, which no real
+// lossless frame can do. Two core frames arrive without any flag to help, the first and the
+// last, so position is not a safe test and the bytes are asked instead.
+inline bool isTrueHDCorePacket(const uint8_t* data, const int size)
+{
+    if (size < 2 || data[0] != 0x0B || data[1] != 0x77)
+        return false;
+    const int mlpLength = (((data[0] & 0x0F) << 8) | data[1]) * 2;
+    return mlpLength != size;
+}
+
+#endif

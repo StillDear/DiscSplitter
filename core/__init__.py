@@ -5,7 +5,7 @@ The disc-to-songs engine, without any GUI. Layers (a module imports only from la
        tools                        running external tools
     1  manifest, chapter_marks,     job checkpoint, reading and editing chapters,
        tagging, naming,             tags and covers, output names,
-       bluray_iso, dvd              disc images and DVD titles
+       bluray_iso, dvd, engine      disc images, DVD titles, the built-in Blu-ray engine (tsMuxeR)
     2  sources, tracklist,          scanning sources, track names from files and aligning them,
        musicbrainz, split,          cutting files, disk space, checking results
        space, verify

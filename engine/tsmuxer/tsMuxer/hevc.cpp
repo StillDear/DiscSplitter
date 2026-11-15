@@ -1,0 +1,1131 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#include "hevc.h"
+
+#include <fs/systemlog.h>
+#include <cmath>
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <vector>
+
+#include "tsMuxer.h"
+#include "vodCoreException.h"
+#include "vod_common.h"
+
+using namespace std;
+static constexpr int EXTENDED_SAR = 255;
+
+unsigned ceilDiv(const unsigned a, const unsigned b) { return (a / b) + ((a % b) ? 1 : 0); }
+
+// ------------------------- HevcUnit -------------------
+
+unsigned HevcUnit::extractUEGolombCode()
+{
+    unsigned cnt = 0;
+    for (; !m_reader.getBit(); cnt++);
+    // 31 zeros give the largest number a code can carry; 32 or more are no code, and 1 << 32 is undefined: such a
+    // header was read as a wrong number rather than as damaged
+    if (cnt >= INT_BIT)
+        THROW_BITSTREAM_ERR;
+    return (1u << cnt) - 1 + m_reader.getBits(cnt);
+}
+
+int HevcUnit::extractSEGolombCode()
+{
+    const unsigned rez = extractUEGolombCode();
+    if (rez % 2 == 0)
+        return -static_cast<int>(rez / 2);
+    return static_cast<int>((rez + 1) / 2);
+}
+
+void HevcUnit::decodeBuffer(const uint8_t* buffer, const uint8_t* end)
+{
+    delete[] m_nalBuffer;
+    m_nalBuffer = new uint8_t[end - buffer];
+    m_nalBufferLen = NALUnit::decodeNAL(buffer, end, m_nalBuffer, end - buffer);
+}
+
+int HevcUnit::deserialize()
+{
+    m_reader.setBuffer(m_nalBuffer, m_nalBuffer + m_nalBufferLen);
+    try
+    {
+        m_reader.skipBit();
+        nal_unit_type = static_cast<NalType>(m_reader.getBits(6));
+        nuh_layer_id = m_reader.getBits<uint8_t>(6);
+        nuh_temporal_id_plus1 = m_reader.getBits<uint8_t>(3);
+        if (nuh_temporal_id_plus1 == 0 ||
+            (nuh_temporal_id_plus1 != 1 && (nal_unit_type == NalType::VPS || nal_unit_type == NalType::SPS ||
+                                            nal_unit_type == NalType::EOS || nal_unit_type == NalType::EOB)))
+            return 1;
+        return 0;
+    }
+    catch (BitStreamException&)
+    {
+        return NOT_ENOUGH_BUFFER;
+    }
+}
+
+bool HevcUnit::updateBits(const int bitOffset, const int bitLen, const unsigned value) const
+{
+    // Validate parameters to prevent heap-buffer-overflow (GitHub #897, #898)
+    if (bitOffset < 0 || bitLen <= 0)
+    {
+        LTRACE(LT_WARN, 2,
+               "HEVC updateBits: invalid parameters (bitOffset=" << bitOffset << ", bitLen=" << bitLen << ")");
+        return false;
+    }
+
+    // Only the bytes the field actually occupies have to be inside the NAL. An earlier version
+    // demanded five bytes of slack beyond them, because flushBits() reads and writes a whole
+    // 32 bit word wherever the writer stopped. That is true of flushBits, and it refused every
+    // real stream: the timing fields sit near the end of the VPS, so the word ran past the unit
+    // and the frame rate was silently left alone while the mux reported success.
+    //
+    // The write goes through a scratch buffer with room for that word instead. What belongs to
+    // the NAL is copied back; what flushBits touched beyond it is discarded with the scratch.
+    const int startByte = bitOffset / 8;
+    const int lastByte = (bitOffset + bitLen) / 8;
+    if (lastByte >= m_nalBufferLen)
+    {
+        LTRACE(LT_WARN, 2,
+               "HEVC updateBits: the field at bit " << bitOffset << " ends past the NAL, which is " << m_nalBufferLen
+                                                    << " bytes");
+        return false;
+    }
+
+    const int byteOffset = bitOffset % 8;
+    const int endBitsPostfix = 8 - ((bitOffset + bitLen) % 8);
+    const int touched = lastByte - startByte + 1;
+    if (touched <= 0)  // never, with the checks above; said here so the copy below has a size the compiler can bound
+        return false;
+
+    // Four bytes would do for flushBits. Eight costs nothing and leaves no edge to reason about.
+    std::vector<uint8_t> scratch(static_cast<size_t>(touched) + 8, 0);
+    uint8_t* ptr = m_reader.getBuffer() + startByte;
+    memcpy(scratch.data(), ptr, static_cast<size_t>(touched));
+
+    BitStreamWriter bitWriter{};
+    bitWriter.setBuffer(scratch.data(), scratch.data() + scratch.size());
+
+    if (byteOffset > 0)
+    {
+        const int prefix = scratch[0] >> (8 - byteOffset);
+        bitWriter.putBits(byteOffset, prefix);
+    }
+    bitWriter.putBits(bitLen, value);
+
+    if (endBitsPostfix < 8)
+    {
+        const int postfix = scratch[static_cast<size_t>(touched) - 1] & (1 << endBitsPostfix) - 1;
+        bitWriter.putBits(endBitsPostfix, postfix);
+    }
+    bitWriter.flushBits();
+
+    memcpy(ptr, scratch.data(), static_cast<size_t>(touched));
+    return true;
+}
+
+int HevcUnit::serializeBuffer(uint8_t* dstBuffer, const uint8_t* dstEnd) const
+{
+    if (m_nalBufferLen == 0)
+        return 0;
+    const int encodeRez = NALUnit::encodeNAL(m_nalBuffer, m_nalBuffer + m_nalBufferLen, dstBuffer, dstEnd - dstBuffer);
+    if (encodeRez == -1)
+        return -1;
+    return encodeRez;
+}
+
+// ------------------------- HevcUnitWithProfile  -------------------
+
+HevcUnitWithProfile::HevcUnitWithProfile()
+    : profile_idc(0), level_idc(0), interlaced_source_flag(false), level_idc_bit_pos(-1)
+{
+}
+
+bool HevcUnitWithProfile::setLevel(const uint8_t newLevel)
+{
+    if (level_idc_bit_pos <= 0)
+    {
+        LTRACE(LT_WARN, 2,
+               "HEVC unit does not expose general_level_idc (bit_pos=" << level_idc_bit_pos
+                                                                       << "), cannot change the level");
+        return false;
+    }
+    // general_level_idc is ALWAYS byte aligned, so write the byte directly instead of going through
+    // updateBits. Everything before it inside profile_tier_level is a whole 11 bytes (1 profile, 4
+    // compatibility flags, 6 of source and reserved flags), and the structure itself starts on a
+    // byte boundary in both carriers: 2 bytes of NAL header plus 1 in an SPS, plus 4 in a VPS.
+    //
+    // This is not a micro-optimisation. updateBits needs bitOffset/8 + bitLen/8 + 5 bytes of room
+    // because BitStreamWriter flushes a whole word, a margin added deliberately to stop the
+    // heap overflows in GitHub #897 and #898. A real VPS is 22 bytes unescaped and the level sits at
+    // byte 17, so that check refuses the write and the VPS silently keeps its old level while the
+    // SPS gets the new one. Weakening the guard to reach one aligned byte would be the wrong trade.
+    if (level_idc_bit_pos % 8 != 0)
+    {
+        if (!updateBits(level_idc_bit_pos, 8, newLevel))
+            return false;
+        level_idc = newLevel;
+        return true;
+    }
+
+    const int levelByte = level_idc_bit_pos / 8;
+    if (levelByte >= m_nalBufferLen)
+    {
+        LTRACE(LT_WARN, 2,
+               "HEVC level byte at " << levelByte << " is outside the " << m_nalBufferLen
+                                     << " byte NAL, cannot change the level");
+        return false;
+    }
+    m_nalBuffer[levelByte] = newLevel;
+    level_idc = newLevel;
+    return true;
+}
+
+int HevcUnitWithProfile::profile_tier_level(const int subLayers)
+{
+    try
+    {
+        bool sub_layer_profile_present_flag[7]{false};
+        bool sub_layer_level_present_flag[7]{false};
+
+        m_reader.skipBits(3);  // profile_space, tier_flag
+        profile_idc = m_reader.getBits<uint8_t>(5);
+        m_reader.skipBits(32);  // general_profile_compatibility_flag
+        m_reader.skipBit();     // progressive_source_flag
+        interlaced_source_flag = m_reader.getBit();
+        m_reader.skipBits(32);  // unused flags
+        m_reader.skipBits(14);  // unused flags
+        level_idc_bit_pos = m_reader.getBitsCount();
+        level_idc = m_reader.getBits<uint8_t>(8);
+
+        for (int i = 0; i < subLayers - 1; i++)
+        {
+            sub_layer_profile_present_flag[i] = m_reader.getBit();
+            sub_layer_level_present_flag[i] = m_reader.getBit();
+        }
+        if (subLayers > 1)
+        {
+            for (int i = subLayers - 1; i < 8; i++) m_reader.skipBits(2);  // reserved_zero_2bits
+        }
+
+        for (int i = 0; i < subLayers - 1; i++)
+        {
+            if (sub_layer_profile_present_flag[i])
+            {
+                m_reader.skipBits(32);  // unused flags
+                m_reader.skipBits(32);  // unused flags
+                m_reader.skipBits(24);  // unused flags
+            }
+            if (sub_layer_level_present_flag[i])
+                m_reader.skipBits(8);  // sub_layer_level_idc[ i ]
+        }
+        return 0;
+    }
+    catch (BitStreamException&)
+    {
+        return UNIT_DAMAGED;  // the unit ends inside its profile: damaged or cut (the caller passes this on)
+    }
+}
+
+std::string HevcUnitWithProfile::getProfileString() const
+{
+    string rez("Profile: ");
+    if (profile_idc == 1)
+        rez += string("Main");
+    else if (profile_idc == 2)
+        rez += string("Main10");
+    else if (profile_idc == 3)
+        rez += string("MainStillPicture");
+    else if (profile_idc == 0)
+        rez += string("Not defined");
+    else
+        rez += "Unknown";
+    if (level_idc)
+    {
+        rez += string("@");
+        rez += int32ToStr(level_idc / 30);
+        rez += string(".");
+        rez += int32ToStr((level_idc % 30) / 3);
+    }
+    return rez;
+}
+
+// ------------------------- HevcVpsUnit -------------------
+
+HevcVpsUnit::HevcVpsUnit() : vps_id(0), num_units_in_tick(0), time_scale(0), num_units_in_tick_bit_pos(-1) {}
+
+int HevcVpsUnit::deserialize()
+{
+    const int rez = HevcUnit::deserialize();
+    if (rez)
+        return rez;
+
+    try
+    {
+        m_reader.skipBits(12);  // vps_id, reserved, vps_max_layers
+        const uint8_t vps_max_sub_layers = m_reader.getBits<uint8_t>(3) + 1;
+        if (vps_max_sub_layers > 7)
+            return 1;
+        m_reader.skipBits(17);  // vps_temporal_id_nesting_flag, vps_reserved_0xffff_16bits
+        if (const int r = profile_tier_level(vps_max_sub_layers); r != 0)
+            return r == UNIT_DAMAGED ? UNIT_DAMAGED : 1;
+
+        const bool vps_sub_layer_ordering_info_present_flag = m_reader.getBit();
+        for (int i = (vps_sub_layer_ordering_info_present_flag ? 0 : vps_max_sub_layers - 1);
+             i <= vps_max_sub_layers - 1; i++)
+        {
+            const unsigned vps_max_dec_pic_buffering_minus1 = extractUEGolombCode();
+            if (extractUEGolombCode() > vps_max_dec_pic_buffering_minus1)  // vps_max_num_reorder_pics
+                return 1;
+            if (extractUEGolombCode() == UINT_MAX)  // vps_max_latency_increase_plus1
+                return 1;
+        }
+        const auto vps_max_layer_id = m_reader.getBits<uint8_t>(6);
+        const unsigned vps_num_layer_sets_minus1 = extractUEGolombCode();
+        if (vps_num_layer_sets_minus1 > 1023)
+            return 1;
+        for (unsigned i = 1; i <= vps_num_layer_sets_minus1; i++)
+        {
+            for (int j = 0; j <= vps_max_layer_id; j++) m_reader.skipBit();  // layer_id_included_flag[ i ][ j ] u(1)
+        }
+        if (m_reader.getBit())  // vps_timing_info_present_flag
+        {
+            num_units_in_tick_bit_pos = m_reader.getBitsCount();
+            num_units_in_tick = m_reader.getBits(32);
+            time_scale = m_reader.getBits(32);
+        }
+
+        return rez;
+    }
+    catch (VodCoreException&)
+    {
+        return NOT_ENOUGH_BUFFER;
+    }
+    catch (BitStreamException&)
+    {
+        return UNIT_DAMAGED;  // the unit ends before its fields do: a damaged or cut unit, not missing data
+    }
+}
+
+bool HevcVpsUnit::setFPS(const double fps)
+{
+    time_scale = lround(fps) * 1000000;
+    num_units_in_tick = lround(time_scale / fps);
+
+    // Guard against missing timing info instead of asserting (GitHub #808, #897, #898)
+    if (num_units_in_tick_bit_pos <= 0)
+    {
+        LTRACE(LT_WARN, 2,
+               "HEVC VPS does not contain timing info (bit_pos=" << num_units_in_tick_bit_pos
+                                                                 << "), cannot override FPS in stream");
+        return false;
+    }
+
+    if (!updateBits(num_units_in_tick_bit_pos, 32, num_units_in_tick))
+        return false;
+    if (!updateBits(num_units_in_tick_bit_pos + 32, 32, time_scale))
+        return false;
+
+    return true;
+}
+
+double HevcVpsUnit::getFPS() const
+{
+    return num_units_in_tick ? static_cast<double>(time_scale) / num_units_in_tick : 0;
+}
+
+string HevcVpsUnit::getDescription() const
+{
+    string rez("Frame rate: ");
+    const double fps = getFPS();
+    if (fps != 0.0)
+        rez += doubleToStr(fps);
+    else
+        rez += string("not found");
+
+    return rez;
+}
+
+// ------------------------- HevcSpsUnit ------------------------------
+
+HevcSpsUnit::HevcSpsUnit()
+    : vps_id(0),
+      max_sub_layers(0),
+      sps_id(0),
+      chromaFormat(0),
+      separate_colour_plane_flag(false),
+      pic_width_in_luma_samples(0),
+      pic_height_in_luma_samples(0),
+      bit_depth_luma_minus8(0),
+      bit_depth_chroma_minus8(0),
+      log2_max_pic_order_cnt_lsb(0),
+      nal_hrd_parameters_present_flag(false),
+      vcl_hrd_parameters_present_flag(false),
+      sub_pic_hrd_params_present_flag(false),
+      conf_win_left_offset(0),
+      conf_win_right_offset(0),
+      conf_win_top_offset(0),
+      conf_win_bottom_offset(0),
+      colour_primaries(2),
+      transfer_characteristics(2),
+      matrix_coeffs(2),
+      chroma_sample_loc_type_top_field(0),
+      chroma_sample_loc_type_bottom_field(0),
+      num_short_term_ref_pic_sets(0),
+      num_units_in_tick(0),
+      time_scale(0),
+      num_units_in_tick_bit_pos(-1),
+      PicSizeInCtbsY_bits(0)
+{
+}
+
+// returns 0 on parse success, 1 on error
+int HevcSpsUnit::hrd_parameters(const bool commonInfPresentFlag, const int maxNumSubLayersMinus1)
+{
+    if (commonInfPresentFlag)
+    {
+        nal_hrd_parameters_present_flag = m_reader.getBit();
+        vcl_hrd_parameters_present_flag = m_reader.getBit();
+        if (nal_hrd_parameters_present_flag || vcl_hrd_parameters_present_flag)
+        {
+            sub_pic_hrd_params_present_flag = m_reader.getBit();
+            if (sub_pic_hrd_params_present_flag)
+            {
+                m_reader.skipBits(19);
+            }
+            m_reader.skipBits(8);  // bit_rate_scale, cpb_size_scale
+            if (sub_pic_hrd_params_present_flag)
+                m_reader.skipBits(4);  // cpb_size_du_scale u(4)
+            m_reader.skipBits(15);
+        }
+    }
+
+    for (int i = 0; i <= maxNumSubLayersMinus1; i++)
+    {
+        bool low_delay_hrd_flag = false;
+        unsigned cpb_cnt_minus1 = 0;
+        const bool fixed_pic_rate_within_cvs_flag = m_reader.getBit() ? true : m_reader.getBit();
+        if (fixed_pic_rate_within_cvs_flag)
+        {
+            if (extractUEGolombCode() > 2047)  // elemental_duration_in_tc_minus1
+                return 1;
+        }
+        else
+            low_delay_hrd_flag = m_reader.getBit();
+        if (!low_delay_hrd_flag)
+        {
+            cpb_cnt_minus1 = extractUEGolombCode();
+            if (cpb_cnt_minus1 > 32)
+                return 1;
+        }
+        if (nal_hrd_parameters_present_flag)
+            if (sub_layer_hrd_parameters(cpb_cnt_minus1) != 0)
+                return 1;
+        if (vcl_hrd_parameters_present_flag)
+            if (sub_layer_hrd_parameters(cpb_cnt_minus1) != 0)
+                return 1;
+    }
+    return 0;
+}
+
+// returns 0 on parse success, 1 on error
+int HevcSpsUnit::sub_layer_hrd_parameters(const unsigned cpb_cnt_minus1)
+{
+    for (unsigned i = 0; i <= cpb_cnt_minus1; i++)
+    {
+        if (extractUEGolombCode() == UINT32_MAX)  // bit_rate_value_minus1[i]
+            return 1;
+        if (extractUEGolombCode() == UINT32_MAX)  // cpb_size_value_minus1[i]
+            return 1;
+        if (sub_pic_hrd_params_present_flag)
+        {
+            if (extractUEGolombCode() == UINT32_MAX)  // cpb_size_du_value_minus1[i]
+                return 1;
+            if (extractUEGolombCode() == UINT32_MAX)  // bit_rate_du_value_minus1[i]
+                return 1;
+        }
+        m_reader.skipBit();  // cbr_flag[i]
+    }
+    return 0;
+}
+
+int HevcSpsUnit::vui_parameters()
+{
+    const bool aspect_ratio_info_present_flag = m_reader.getBit();
+    if (aspect_ratio_info_present_flag)
+    {
+        // Table E-1 is the one of H.264
+        const unsigned aspect_ratio_idc = m_reader.getBits(8);
+        if (aspect_ratio_idc == EXTENDED_SAR)
+        {
+            const unsigned sar_width = m_reader.getBits(16);
+            const unsigned sar_height = m_reader.getBits(16);
+            if (sar_width && sar_height)
+                sar = sar_width / static_cast<double>(sar_height);
+        }
+        else if (aspect_ratio_idc >= 1 && aspect_ratio_idc < std::size(h264_ar_coeff))
+            sar = h264_ar_coeff[aspect_ratio_idc];
+    }
+
+    if (m_reader.getBit())   // overscan_info_present_flag
+        m_reader.skipBit();  // overscan_appropriate_flag u(1)
+    if (m_reader.getBit())   // video_signal_type_present_flag
+    {
+        m_reader.skipBits(4);   // video_format, video_full_range_flag
+        if (m_reader.getBit())  // colour_description_present_flag
+        {
+            colour_primaries = m_reader.getBits<uint8_t>(8);
+            transfer_characteristics = m_reader.getBits<uint8_t>(8);
+            matrix_coeffs = m_reader.getBits<uint8_t>(8);
+        }
+    }
+
+    if (m_reader.getBit())  // chroma_loc_info_present_flag
+    {
+        chroma_sample_loc_type_top_field = extractUEGolombCode();
+        if (chroma_sample_loc_type_top_field > 5)
+            return 1;
+        chroma_sample_loc_type_bottom_field = extractUEGolombCode();
+        if (chroma_sample_loc_type_bottom_field > 5)
+            return 1;
+    }
+
+    m_reader.skipBit();                  // neutral_chroma_indication_flag
+    field_seq_flag = m_reader.getBit();  // each picture is a field
+    m_reader.skipBit();                  // frame_field_info_present_flag
+
+    if (m_reader.getBit())  // default_display_window_flag
+    {
+        extractUEGolombCode();  // def_disp_win_left_offset ue(v)
+        extractUEGolombCode();  // def_disp_win_right_offset ue(v)
+        extractUEGolombCode();  // def_disp_win_top_offset ue(v)
+        extractUEGolombCode();  // def_disp_win_bottom_offset ue(v)
+    }
+
+    if (m_reader.getBit())  // vui_timing_info_present_flag
+    {
+        num_units_in_tick_bit_pos = m_reader.getBitsCount();
+        num_units_in_tick = m_reader.getBits(32);
+        time_scale = m_reader.getBits(32);
+
+        if (m_reader.getBit())  // vui_poc_proportional_to_timing_flag
+        {
+            if (extractUEGolombCode() == UINT_MAX)  // vui_num_ticks_poc_diff_one_minus1
+                return 1;
+        }
+        if (m_reader.getBit())  // vui_hrd_parameters_present_flag
+        {
+            if (hrd_parameters(true, max_sub_layers - 1) != 0)
+                return 1;
+        }
+    }
+    if (m_reader.getBit())  // bitstream_restriction_flag
+    {
+        m_reader.skipBits(3);  //  unused flags
+
+        if (extractUEGolombCode() > 4095)  // min_spatial_segmentation_idc
+            return 1;
+        if (extractUEGolombCode() > 16)  // max_bytes_per_pic_denom
+            return 1;
+        if (extractUEGolombCode() > 16)  // max_bits_per_min_cu_denom
+            return 1;
+        if (extractUEGolombCode() > 15)  // log2_max_mv_length_horizontal
+            return 1;
+        if (extractUEGolombCode() > 15)  // log2_max_mv_length_vertical
+            return 1;
+    }
+    return 0;
+}
+
+int HevcSpsUnit::short_term_ref_pic_set(const unsigned stRpsIdx)
+{
+    unsigned numDeltaPocs = 0;
+    const bool inter_ref_pic_set_prediction_flag = stRpsIdx && m_reader.getBit();
+
+    if (inter_ref_pic_set_prediction_flag)
+    {
+        unsigned refRpsIdx = stRpsIdx - 1;
+
+        if (stRpsIdx == num_short_term_ref_pic_sets)
+        {
+            const unsigned delta_idx_minus1 = extractUEGolombCode();
+            if (delta_idx_minus1 >= stRpsIdx)
+                return 1;
+            refRpsIdx -= delta_idx_minus1;
+        }
+
+        m_reader.skipBit();     // delta_rps_sign
+        extractUEGolombCode();  // abs_delta_rps_minus1
+
+        for (unsigned j = 0; j <= num_delta_pocs[refRpsIdx]; j++)
+        {
+            const bool used = m_reader.getBit();                          // used_by_curr_pic_flag[j]
+            const bool use_delta_flag = used ? true : m_reader.getBit();  // use_delta_flag[j]
+            if (use_delta_flag)
+                numDeltaPocs++;
+        }
+    }
+    else
+    {
+        // numDeltaPocs = num_negative_pics + num_positive_pics
+        numDeltaPocs = extractUEGolombCode() + extractUEGolombCode();
+        if (numDeltaPocs > 64)
+            return 1;
+
+        for (unsigned i = 0; i < numDeltaPocs; i++)
+        {
+            if (extractUEGolombCode() >= 0x8000)  // delta_poc_minus1[i]
+                return 1;
+            m_reader.skipBit();  // used_by_curr_pic_flag[i]
+        }
+    }
+    num_delta_pocs[stRpsIdx] = numDeltaPocs;
+
+    return 0;
+}
+
+int HevcSpsUnit::scaling_list_data()
+{
+    for (int sizeId = 0; sizeId < 4; sizeId++)
+    {
+        for (int matrixId = 0; matrixId < 6; matrixId += (sizeId == 3) ? 3 : 1)
+        {
+            if (!m_reader.getBit())
+            {
+                if (extractUEGolombCode() > 5)  // scaling_list_pred_matrix_id_delta
+                    return 1;
+            }
+            else
+            {
+                const int coefNum = FFMIN(64, (1 << (4 + (sizeId << 1))));
+                if (sizeId > 1)
+                {
+                    const int scaling_list_dc_coef = extractSEGolombCode() + 8;
+                    if (scaling_list_dc_coef < 1 || scaling_list_dc_coef > 255)
+                        return 1;
+                }
+                for (int i = 0; i < coefNum; i++)
+                {
+                    const int scaling_list_delta_coef = extractSEGolombCode();
+                    if (scaling_list_delta_coef < -128 || scaling_list_delta_coef > 127)
+                        return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+int HevcSpsUnit::deserialize()
+{
+    const int rez = HevcUnit::deserialize();
+    if (rez)
+        return rez;
+    try
+    {
+        vps_id = m_reader.getBits<uint8_t>(4);
+        max_sub_layers = m_reader.getBits<uint8_t>(3) + 1;
+        if (max_sub_layers > 7)
+            return 1;
+        m_reader.skipBit();  // temporal_id_nesting_flag
+        if (const int r = profile_tier_level(max_sub_layers); r != 0)
+            return r == UNIT_DAMAGED ? UNIT_DAMAGED : 1;
+        sps_id = extractUEGolombCode();
+        if (sps_id > 15)
+            return 1;
+        chromaFormat = extractUEGolombCode();
+        if (chromaFormat > 3)
+            return 1;
+        if (chromaFormat == 3)
+            separate_colour_plane_flag = m_reader.getBit();
+        pic_width_in_luma_samples = extractUEGolombCode();
+        if (pic_width_in_luma_samples == 0)
+            return 1;
+        pic_height_in_luma_samples = extractUEGolombCode();
+        if (pic_height_in_luma_samples == 0)
+            return 1;
+        if (pic_width_in_luma_samples >= 3840)
+            V3_flags |= FOUR_K;
+
+        // Without a conformance window the offsets are 0 (7.4.3.2.1). The unit is read again for each SPS of the
+        // stream, so a 720p SPS after a 1080p one kept the 1080p crop and was taken for 1280x712.
+        conf_win_left_offset = conf_win_right_offset = conf_win_top_offset = conf_win_bottom_offset = 0;
+        if (m_reader.getBit())  // conformance_window_flag
+        {
+            conf_win_left_offset = extractUEGolombCode();
+            conf_win_right_offset = extractUEGolombCode();
+            conf_win_top_offset = extractUEGolombCode();
+            conf_win_bottom_offset = extractUEGolombCode();
+        }
+
+        bit_depth_luma_minus8 = extractUEGolombCode();
+        if (bit_depth_luma_minus8 > 8)
+            return 1;
+        bit_depth_chroma_minus8 = extractUEGolombCode();
+        if (bit_depth_chroma_minus8 > 8)
+            return 1;
+        log2_max_pic_order_cnt_lsb = extractUEGolombCode() + 4;
+        if (log2_max_pic_order_cnt_lsb > 16)
+            return 1;
+        const bool sps_sub_layer_ordering_info_present_flag = m_reader.getBit();
+        for (int i = (sps_sub_layer_ordering_info_present_flag ? 0 : max_sub_layers - 1); i <= max_sub_layers - 1; i++)
+        {
+            const unsigned sps_max_dec_pic_buffering_minus1 = extractUEGolombCode();
+            const unsigned sps_max_num_reorder_pics = extractUEGolombCode();
+            if (sps_max_num_reorder_pics > sps_max_dec_pic_buffering_minus1)
+                return 1;
+            const unsigned sps_max_latency_increase_plus1 = extractUEGolombCode();
+            if (sps_max_latency_increase_plus1 == UINT_MAX)
+                return 1;
+        }
+
+        const unsigned log2_min_luma_coding_block_size_minus3 = extractUEGolombCode();
+        const unsigned log2_diff_max_min_luma_coding_block_size = extractUEGolombCode();
+        extractUEGolombCode();  // log2_min_luma_transform_block_size_minus2 ue(v)
+        extractUEGolombCode();  // log2_diff_max_min_luma_transform_block_size ue(v)
+        extractUEGolombCode();  // max_transform_hierarchy_depth_inter ue(v)
+        extractUEGolombCode();  // max_transform_hierarchy_depth_intra ue(v)
+
+        const unsigned MinCbLog2SizeY = log2_min_luma_coding_block_size_minus3 + 3;
+        const unsigned CtbLog2SizeY = MinCbLog2SizeY + log2_diff_max_min_luma_coding_block_size;
+        const unsigned CtbSizeY = 1 << CtbLog2SizeY;
+        const unsigned PicWidthInCtbsY = ceilDiv(pic_width_in_luma_samples, CtbSizeY);
+        const unsigned PicHeightInCtbsY = ceilDiv(pic_height_in_luma_samples, CtbSizeY);
+        unsigned PicSizeInCtbsY = PicWidthInCtbsY * PicHeightInCtbsY;
+        PicSizeInCtbsY_bits = 0;
+        unsigned count1bits = 0;
+
+        // Ceil( Log2( PicSizeInCtbsY ))
+        while (PicSizeInCtbsY)
+        {
+            count1bits += PicSizeInCtbsY & 1;
+            PicSizeInCtbsY_bits++;
+            PicSizeInCtbsY >>= 1;
+        }
+        if (count1bits == 1)
+            PicSizeInCtbsY_bits -= 1;  // in case PicSizeInCtbsY is power of 2
+
+        if (m_reader.getBit())  // scaling_list_enabled_flag
+        {
+            if (m_reader.getBit())  // sps_scaling_list_data_present_flag
+            {
+                if (scaling_list_data())
+                    return 1;
+            }
+        }
+
+        m_reader.skipBits(2);   // amp_enabled_flag, sample_adaptive_offset_enabled_flag
+        if (m_reader.getBit())  // pcm_enabled_flag
+        {
+            m_reader.skipBits(8);           // pcm_sample_bit_depth_luma_minus1, pcm_sample_bit_depth_chroma_minus1
+            if (extractUEGolombCode() > 2)  // log2_min_pcm_luma_coding_block_size_minus3
+                return 1;
+            if (extractUEGolombCode() > 2)  // log2_diff_max_min_pcm_luma_coding_block_size
+                return 1;
+            m_reader.skipBit();  // m_rpcm_loop_filter_disabled_flag
+        }
+        num_short_term_ref_pic_sets = extractUEGolombCode();
+        if (num_short_term_ref_pic_sets > 64)
+            return 1;
+
+        num_delta_pocs.resize(num_short_term_ref_pic_sets);
+
+        for (unsigned i = 0; i < num_short_term_ref_pic_sets; i++)
+        {
+            if (short_term_ref_pic_set(i) != 0)
+                return 1;
+        }
+        if (m_reader.getBit())  // long_term_ref_pics_present_flag
+        {
+            const unsigned num_long_term_ref_pics_sps = extractUEGolombCode();
+            if (num_long_term_ref_pics_sps > 32)
+                return 1;
+            for (unsigned i = 0; i < num_long_term_ref_pics_sps; i++)
+            {
+                m_reader.skipBits(log2_max_pic_order_cnt_lsb + 1);  // lt_ref_pic_poc_lsb_sps[i]
+            }
+        }
+        m_reader.skipBits(2);   // sps_temporal_mvp_enabled_flag, strong_intra_smoothing_enabled_flag
+        if (m_reader.getBit())  // vui_parameters_present_flag
+        {
+            if (vui_parameters())
+                return 1;
+        }
+
+        return 0;
+    }
+    catch (VodCoreException&)
+    {
+        return NOT_ENOUGH_BUFFER;
+    }
+    catch (BitStreamException&)
+    {
+        return UNIT_DAMAGED;  // the unit ends before its fields do: a damaged or cut unit, not missing data
+    }
+}
+
+double HevcSpsUnit::getFPS() const
+{
+    return num_units_in_tick ? static_cast<double>(time_scale) / num_units_in_tick : 0;
+}
+
+// The same rewrite HevcVpsUnit::setFPS does, for the copy of the timing the SPS carries in its VUI.
+// There was no such function at all until now, so a stream whose VPS declares no timing kept its
+// original rate in the bitstream whatever fps= asked for. Only the units the parse actually found
+// can be rewritten: -1 means this SPS has no timing to change, and saying so is the whole point.
+bool HevcSpsUnit::setFPS(const double fps)
+{
+    time_scale = lround(fps) * 1000000;
+    num_units_in_tick = lround(time_scale / fps);
+
+    if (num_units_in_tick_bit_pos <= 0)
+        return false;
+
+    if (!updateBits(num_units_in_tick_bit_pos, 32, num_units_in_tick))
+        return false;
+    if (!updateBits(num_units_in_tick_bit_pos + 32, 32, time_scale))
+        return false;
+
+    return true;
+}
+
+string HevcSpsUnit::getDescription() const
+{
+    string result = getProfileString();
+    // The DISPLAYED size, not the coded one. An encoder pads the coded picture up to a coding
+    // block multiple and the conformance window says how much of that is not shown, so a 2160
+    // line picture is often coded as 2176. Reporting the coded size told the user the wrong
+    // resolution.
+    result += string(" Resolution: ") + int32uToStr(getDisplayWidth()) + string(":") + int32uToStr(getDisplayHeight());
+    result += interlaced_source_flag ? string("i") : string("p");
+
+    const double fps = getFPS();
+    result += "  Frame rate: ";
+    result += fps != 0.0 ? doubleToStr(fps) : string("not found");
+    return result;
+}
+
+// ----------------------- HevcPpsUnit ------------------------
+HevcPpsUnit::HevcPpsUnit()
+    : pps_id(0),
+      sps_id(0),
+      dependent_slice_segments_enabled_flag(false),
+      output_flag_present_flag(false),
+      num_extra_slice_header_bits(0)
+{
+}
+
+int HevcPpsUnit::deserialize()
+{
+    const int rez = HevcUnit::deserialize();
+    if (rez)
+        return rez;
+
+    try
+    {
+        pps_id = extractUEGolombCode();
+        if (pps_id > 63)
+            return 1;
+        sps_id = extractUEGolombCode();
+        if (sps_id > 15)
+            return 1;
+        dependent_slice_segments_enabled_flag = m_reader.getBit();
+        output_flag_present_flag = m_reader.getBit();
+        num_extra_slice_header_bits = m_reader.getBits<uint8_t>(3);
+
+        return 0;
+    }
+    catch (VodCoreException&)
+    {
+        return NOT_ENOUGH_BUFFER;
+    }
+    catch (BitStreamException&)
+    {
+        return UNIT_DAMAGED;  // the unit ends before its fields do: a damaged or cut unit, not missing data
+    }
+}
+
+// ----------------------- HevcHdrUnit ------------------------
+HevcHdrUnit::HevcHdrUnit()
+    : isHDR10(false), hasMasteringDisplay(false), isHDR10plus(false), isDVRPU(false), isDVEL(false)
+{
+}
+
+int HevcHdrUnit::deserialize()
+{
+    const int rez = HevcUnit::deserialize();
+    if (rez)
+        return rez;
+    try
+    {
+        do
+        {
+            int payloadType = 0;
+            unsigned payloadSize = 0;
+            uint8_t nbyte = 0xff;
+            while (nbyte == 0xff)
+            {
+                nbyte = m_reader.getBits<uint8_t>(8);
+                payloadType += nbyte;
+            }
+            nbyte = 0xff;
+            while (nbyte == 0xff)
+            {
+                nbyte = m_reader.getBits<uint8_t>(8);
+                payloadSize += nbyte;
+            }
+            if (m_reader.getBitsLeft() < payloadSize * 8)
+            {
+                LTRACE(LT_WARN, 2, "Bad SEI detected. SEI too short");
+                return 1;
+            }
+            if (payloadType == 137 && !isHDR10 && !hasMasteringDisplay)  // mastering_display_colour_volume
+            {
+                // SDR and HLG streams carry one too: HEVCStreamReader::markHdr10ByMasteringSei decides with the SPS
+                hasMasteringDisplay = true;
+                // SEI 137 sends the display primaries in the order GREEN, BLUE, RED, not RGB.
+                // Two of these three comments used to name the wrong colour. The values were
+                // always right, because they are read and written positionally, but anyone
+                // reading the old comments would have "corrected" working code. Confirmed
+                // against a UHD disc stream: index 0 is (8500, 39850) BT.2020 green, index 1 is
+                // (6550, 2300) blue and index 2 is (35400, 14600) red.
+                HDR10_metadata[0] = m_reader.getBits(32);  // display_primaries Green
+                HDR10_metadata[1] = m_reader.getBits(32);  // display_primaries Blue
+                HDR10_metadata[2] = m_reader.getBits(32);  // display_primaries Red
+                HDR10_metadata[3] = m_reader.getBits(32);  // White Point
+                // These two reads MUST stay in separate statements. As operands of '+' the two
+                // getBits(32) calls are only indeterminately sequenced, so the compiler may read
+                // them in either order. MSVC x64 evaluates the right operand first, which fed max
+                // in as min and min in as max: a 4000 nit master was written as 610 nits.
+                // H.265 SEI 137 sends max_display_mastering_luminance first, then min.
+                const unsigned maxDisplayMasteringLuminance = m_reader.getBits(32);
+                const unsigned minDisplayMasteringLuminance = m_reader.getBits(32);
+                HDR10_metadata[4] = ((maxDisplayMasteringLuminance / 10000) << 16) + minDisplayMasteringLuminance;
+                for (int i = 0; i < 5; ++i) hdr10Metadata[i] = HDR10_metadata[i];
+            }
+            else if (payloadType == 144)  // content_light_level_info
+            {
+                auto maxCLL = m_reader.getBits<uint32_t>(16);
+                auto maxFALL = m_reader.getBits<uint32_t>(16);
+                // the largest of this stream, as the global one keeps the largest of all
+                hdr10Metadata[5] =
+                    ((std::max)(maxCLL, hdr10Metadata[5] >> 16) << 16) + (std::max)(maxFALL, hdr10Metadata[5] & 0xffff);
+                if (maxCLL > (HDR10_metadata[5] >> 16) || maxFALL > (HDR10_metadata[5] & 0x0000ffff))
+                {
+                    maxCLL = (std::max)(maxCLL, HDR10_metadata[5] >> 16);
+                    maxFALL = (std::max)(maxFALL, HDR10_metadata[5] & 0xffff);
+                    HDR10_metadata[5] = (maxCLL << 16) + maxFALL;
+                }
+            }
+            else if (payloadType == 4 && payloadSize >= 8 && !isHDR10plus)
+            {                           // HDR10Plus Metadata
+                m_reader.skipBits(8);   // country_code
+                m_reader.skipBits(32);  // terminal_provider
+                const auto application_identifier = m_reader.getBits<uint8_t>(8);
+                const auto application_version = m_reader.getBits<uint8_t>(8);
+                const auto num_windows = m_reader.getBits<uint8_t>(2);
+                m_reader.skipBits(6);
+                if (application_identifier == 4 && application_version == 1 && num_windows == 1)
+                {
+                    isHDR10plus = true;
+                    V3_flags |= HDR10PLUS;
+                }
+                payloadSize -= 8;
+                for (unsigned i = 0; i < payloadSize; i++) m_reader.skipBits(8);
+            }
+            else
+                for (unsigned i = 0; i < payloadSize; i++) m_reader.skipBits(8);
+        } while (m_reader.getBitsLeft() > 16);
+
+        return 0;
+    }
+    catch (VodCoreException&)
+    {
+        return NOT_ENOUGH_BUFFER;
+    }
+}
+
+// -----------------------  HevcDvRpuUnit() -------------------------------------
+
+// rpu_data_header up to disable_residual_flag. Returns 0 when it was read, 1 when the unit is no RPU of the kind that
+// has these fields (rpu_type 2 with its sequence info), NOT_ENOUGH_BUFFER when it ends early.
+int HevcDvRpuUnit::deserialize()
+{
+    const int rez = HevcUnit::deserialize();
+    if (rez)
+        return rez;
+    try
+    {
+        if (m_reader.getBits(8) != 0x19)  // rpu_nal_prefix
+            return 1;
+        const unsigned rpuType = m_reader.getBits(6);
+        const unsigned rpuFormat = m_reader.getBits(11);
+        if (rpuType != 2)
+            return 1;
+        const unsigned vdrRpuProfile = m_reader.getBits(4);
+        m_reader.skipBits(4);    // vdr_rpu_level
+        if (!m_reader.getBit())  // vdr_seq_info_present_flag
+            return 1;
+        m_reader.skipBits(1);          // chroma_resampling_explicit_filter_flag
+        if (m_reader.getBits(2) == 0)  // coefficient_data_type 0: fixed point
+            extractUEGolombCode();     // coefficient_log2_denom
+        m_reader.skipBits(3);          // vdr_rpu_normalized_idc, bl_video_full_range_flag
+        if ((rpuFormat & 0x700) != 0)
+            return 1;
+        extractUEGolombCode();  // bl_bit_depth_minus8
+        extractUEGolombCode();  // el_bit_depth_minus8
+        extractUEGolombCode();  // vdr_bit_depth_minus8
+        m_reader.skipBits(4);   // spatial_resampling_filter_flag, reserved_zero_3bits
+        const bool elSpatialResampling = m_reader.getBit();
+        const bool disableResidual = m_reader.getBit();
+        elPresent = vdrRpuProfile == 1 && elSpatialResampling && !disableResidual;
+        return 0;
+    }
+    catch (BitStreamException&)
+    {
+        return NOT_ENOUGH_BUFFER;
+    }
+}
+
+// -----------------------  HevcSliceHeader() -------------------------------------
+
+HevcSliceHeader::HevcSliceHeader() : first_slice(false), pps_id(-1), slice_type(-1), pic_order_cnt_lsb(0) {}
+
+int HevcSliceHeader::deserialize(const HevcSpsUnit* sps, const HevcPpsUnit* pps)
+{
+    const int rez = HevcUnit::deserialize();
+    if (rez)
+        return rez;
+    if (!sps || !pps)
+        return UNIT_DAMAGED;  // no whole parameter set yet to read it with (the first one was damaged)
+
+    try
+    {
+        pic_order_cnt_lsb = 0;
+        first_slice = m_reader.getBit();
+        if (nal_unit_type >= NalType::BLA_W_LP && nal_unit_type <= NalType::RSV_IRAP_VCL23)
+            m_reader.skipBit();  // no_output_of_prior_pics_flag u(1)
+        pps_id = extractUEGolombCode();
+        if (pps_id > 63)
+            return 1;
+        bool dependent_slice_segment_flag = false;
+        if (!first_slice)
+        {
+            if (pps->dependent_slice_segments_enabled_flag)
+                dependent_slice_segment_flag = m_reader.getBit();
+            m_reader.skipBits(sps->PicSizeInCtbsY_bits);  // slice_segment_address
+        }
+        if (!dependent_slice_segment_flag)
+        {
+            for (int i = 0; i < pps->num_extra_slice_header_bits; i++)
+                m_reader.skipBit();  // slice_reserved_flag[ i ] u(1)
+            slice_type = extractUEGolombCode();
+            if (slice_type > 2)
+                return 1;
+            if (pps->output_flag_present_flag)
+                m_reader.skipBit();  // pic_output_flag u(1)
+            if (sps->separate_colour_plane_flag == 1)
+            {
+                if (m_reader.getBits(2) > 2)  // colour_plane_id
+                    return 1;
+            }
+            if (!isIDR())
+            {
+                pic_order_cnt_lsb = m_reader.getBits<uint16_t>(sps->log2_max_pic_order_cnt_lsb);
+            }
+        }
+
+        return 0;
+    }
+    catch (VodCoreException&)
+    {
+        return NOT_ENOUGH_BUFFER;
+    }
+    catch (BitStreamException&)
+    {
+        return UNIT_DAMAGED;  // the unit ends before its fields do: a damaged or cut unit, not missing data
+    }
+}
+
+bool HevcSliceHeader::isIDR() const
+{
+    return nal_unit_type == NalType::IDR_W_RADL || nal_unit_type == NalType::IDR_N_LP;
+}
+
+vector<vector<uint8_t>> hevc_extract_priv_data(const uint8_t* buff, int size, uint8_t* nal_size)
+{
+    *nal_size = 4;
+
+    vector<vector<uint8_t>> spsPps;
+    if (size < 23)
+    {
+        LTRACE(LT_WARN, 2, "HEVC extra data too short: " << size << " bytes");
+        return spsPps;
+    }
+
+    *nal_size = (buff[21] & 3) + 1;
+
+    int num_arrays = buff[22];
+    if (num_arrays <= 0)
+        return spsPps;
+    if (num_arrays > 64)
+    {
+        LTRACE(LT_WARN, 2, "Suspicious HEVC num_arrays value: " << num_arrays << ", clamping to 64");
+        num_arrays = 64;
+    }
+
+    const uint8_t* src = buff + 23;
+    const uint8_t* end = buff + size;
+    for (int i = 0; i < num_arrays; ++i)
+    {
+        if (src + 3 > end)
+        {
+            LTRACE(LT_WARN, 2, "Buffer overrun at HEVC param array " << i << " of " << num_arrays);
+            break;
+        }
+        src++;  // type
+        int cnt = AV_RB16(src);
+        src += 2;
+
+        if (cnt < 0 || cnt > 256)
+        {
+            LTRACE(LT_WARN, 2, "Suspicious HEVC NAL count: " << cnt << " in array " << i);
+            if (cnt < 0)
+                continue;
+            cnt = std::min(cnt, 256);
+        }
+
+        for (int j = 0; j < cnt; ++j)
+        {
+            if (src + 2 > end)
+            {
+                LTRACE(LT_WARN, 2, "Buffer overrun reading HEVC NAL size in array " << i);
+                break;
+            }
+            int nalSize = (src[0] << 8) + src[1];
+            src += 2;
+
+            if (nalSize <= 0)
+                continue;
+
+            if (src + nalSize > end)
+            {
+                LTRACE(LT_WARN, 2, "HEVC NAL size " << nalSize << " exceeds remaining buffer, truncating");
+                nalSize = static_cast<int>(end - src);
+                if (nalSize <= 0)
+                    break;
+            }
+
+            spsPps.emplace_back();
+            auto& nal = spsPps.back();
+            nal.reserve(nalSize);
+            for (int k = 0; k < nalSize; ++k, ++src) nal.push_back(*src);
+        }
+    }
+
+    return spsPps;
+}

@@ -10,7 +10,7 @@ Item {
     readonly property var presets: ["#F2A33A", "#60CDFF", "#B9A5FF", "#4FD1C5"]
     // Example filename for the selected preset, e.g. "03 - Song Title.flac".
     function example(key) {
-        const title = win.tr("tplSongTitle"), ext = win.discView.outputFormat === "flac" ? ".flac" : ".mkv"
+        const title = win.tr("tplSongTitle"), ext = "." + win.discView.outputFormat
         const name = key === "nn_title" ? "03 - " + title : key === "nn_dot_title" ? "03. " + title
                    : key === "artist_title" ? win.tr("tplSongArtist") + " - " + title : title
         return name + ext

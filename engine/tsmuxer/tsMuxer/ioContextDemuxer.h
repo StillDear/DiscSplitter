@@ -1,0 +1,172 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef IO_CONTEXT_DEMUXER_H_
+#define IO_CONTEXT_DEMUXER_H_
+
+#include <string>
+#include <vector>
+
+#include "abstractDemuxer.h"
+#include "bufferedReader.h"
+#include "bufferedReaderManager.h"
+
+static constexpr int TRACKTYPE_PCM = 0x080;
+static constexpr int TRACKTYPE_PGS = 0x090;
+static constexpr int TRACKTYPE_SRT = 0x190;
+static constexpr int TRACKTYPE_ARIB = 0x191;  // ISDB captions of a transport stream
+static constexpr int TRACKTYPE_WAV = 0x180;
+// VP8 and VP9, which only a Matroska source names: their data has nothing another probe could recognise them by.
+static constexpr int TRACKTYPE_VP8 = 0x1A8;
+static constexpr int TRACKTYPE_VP9 = 0x1A9;
+// Vorbis and ALAC, framed by length only (ParsedMarkedTrackData)
+static constexpr int TRACKTYPE_VORBIS = 0x1AA;
+static constexpr int TRACKTYPE_ALAC = 0x1AB;
+// MPEG-4 Part 2 and ProRes from an MP4 file, copied into a Matroska output only (VideoCopyStreamReader)
+static constexpr int TRACKTYPE_MP4V = 0x1AC;
+static constexpr int TRACKTYPE_PRORES = 0x1AD;
+static constexpr int TRACKTYPE_WAVPACK = 0x1AE;
+
+class ParsedTrackPrivData
+{
+   public:
+    ParsedTrackPrivData(uint8_t* buff, int size) {}
+    ParsedTrackPrivData() = default;
+    virtual ~ParsedTrackPrivData() = default;
+
+    virtual void setPrivData(uint8_t* buff, int size) {}
+    virtual void extractData(AVPacket* pkt, uint8_t* buff, int size) = 0;
+    // What the converter still holds when its track ends, as one more packet: true when it filled pkt.
+    virtual bool finish(AVPacket* pkt) { return false; }
+    virtual unsigned newBufferSize(uint8_t* buff, unsigned size) { return 0; }
+    // How the source framed its start codes, for the track types that rebuild Annex-B. Everything
+    // else has no start codes to write and ignores it. See parseStartCodeRule in nalUnits.h.
+    virtual void setStartCodeRule(const std::string& rule) {}
+    // The BlockAdditions of the block extractData gets next (the body of the element, its BlockMore elements), for the
+    // tracks that keep them. Called only for a block that has them.
+    virtual void setBlockAdditions(const uint8_t* body, int size) {}
+};
+
+enum class IOContextTrackType
+{
+    UNDEFINED = 0x0,
+    VIDEO = 0x1,
+    AUDIO = 0x2,
+    COMPLEX = 0x3,
+    LOGO = 0x10,
+    SUBTITLE = 0x11,
+    CONTROL = 0x20,
+    DATA = 0x40
+};
+
+double av_int2dbl(uint64_t v);
+float av_int2flt(uint32_t v);
+
+struct Track
+{
+    Track() : num(0), uid(0), stream_index(0), codec_priv_size(0), flags(0)
+    {
+        name = codec_id = codec_name = nullptr;
+        parsed_priv_data = nullptr;
+        codec_priv = nullptr;
+        memset(language, 0, sizeof(language));
+        memset(languageBCP47, 0, sizeof(languageBCP47));
+        hasLanguageElement = false;
+        default_duration = 0;
+        codecDelayNs = 0;
+        timestampScale = 0;
+        encodingAlgo = 0;
+        type = IOContextTrackType::UNDEFINED;
+    }
+
+    ~Track()
+    {
+        delete[] name;
+        delete[] codec_id;
+        delete[] codec_name;
+        // codec_priv was left out of this list. Every mp4 with a glbl or an avcC atom leaked it,
+        // and it is allocated with new[] at all four sites that set it.
+        delete[] codec_priv;
+        delete parsed_priv_data;
+    }
+
+    IOContextTrackType type;
+    /* Unique track number and track ID. stream_index is the index that
+     * the calling app uses for this track. */
+    int64_t num;
+    uint64_t uid;
+    int stream_index;
+
+    char* name;
+    char language[4];
+    // The Matroska LanguageBCP47 element as it stands (pt-BR, es-419, zh-Hant), empty without one. Plain arrays and no
+    // std::string, because a Matroska track is zeroed memory that no constructor ever runs on.
+    // 40 characters held a tag such as de-CH, but a tag with its extensions and private parts can be longer, and one
+    // of 40 or more was dropped without a word.
+    char languageBCP47[256];
+    bool hasLanguageElement;  // the Language element was there, rather than its default
+
+    char* codec_id;
+    char* codec_name;
+
+    unsigned char* codec_priv;
+    int codec_priv_size;
+    ParsedTrackPrivData* parsed_priv_data;
+    uint64_t default_duration;
+    int64_t codecDelayNs;   // Matroska CodecDelay: the samples of a block begin that much before its time
+    double timestampScale;  // Matroska TrackTimestampScale; 0 when the track has none (as 1)
+
+    int32_t encodingAlgo;                   // compression algorithm
+    std::vector<uint8_t> encodingAlgoPriv;  // compression parameters
+    // MatroskaTrackFlags flags;
+    int flags;
+};
+
+class IOContextDemuxer : public AbstractDemuxer
+{
+   public:
+    IOContextDemuxer(const BufferedReaderManager& readManager);
+    ~IOContextDemuxer() override;
+    void setFileIterator(FileNameIterator* itr) override;
+    int64_t getDemuxedSize() override;
+    int getLastReadRez() override { return m_lastReadRez; }
+    [[nodiscard]] int64_t getProcessedBytes() const { return m_processedBytes; }
+
+   protected:
+    // How many tracks a source may contain. Not a format limit: a Blu-ray allocates each kind of
+    // stream from its own 32 wide block of PIDs, so no disc can carry this many whatever we do.
+    // This is the ceiling on READING a source and on writing TS or Matroska, where there is no
+    // such limit, and 64 was simply the size of the array below. A release carrying every language
+    // runs past it: one report had 1 video, 22 audio and 47 subtitle tracks and could not be
+    // opened at all. The array holds pointers, so the cost of raising it is eight bytes a slot.
+    static constexpr int MAX_STREAMS = 256;
+    Track* tracks[MAX_STREAMS];
+    int num_tracks;
+
+    const BufferedReaderManager& m_readManager;
+    AbstractReader* m_bufferedReader;
+    int m_readerID;
+    int m_lastReadRez;
+    uint8_t* m_curPos;
+    uint8_t* m_bufEnd;
+    // Reading from memory only (a compressed MOV header): at the end of m_curPos..m_bufEnd there is nothing more, and
+    // the file is not read to fill it
+    bool m_memoryOnly = false;
+    bool m_isEOF;
+    int64_t m_processedBytes;
+    int64_t m_lastProcessedBytes;
+
+    void skip_bytes(uint64_t size);
+    unsigned get_buffer(uint8_t* binary, unsigned size);
+    bool url_fseek(int64_t offset);
+    int64_t get_be64();
+    unsigned int get_be32();
+    uint16_t get_be16();
+    int get_be24();
+    int get_byte();
+
+    unsigned int get_le16();
+    unsigned int get_le24();
+    unsigned int get_le32();
+};
+
+#endif

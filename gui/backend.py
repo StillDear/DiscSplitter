@@ -17,7 +17,7 @@ import time
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
-from core import appinfo, jobs, metadata_sources, naming, preview, tools
+from core import appinfo, engine, jobs, metadata_sources, naming, preview, tools
 from . import settings
 from . import logic
 from .controllers.base import View, local_path
@@ -78,7 +78,7 @@ class Backend(View):
         atexit.register(shutil.rmtree, self.preview_dir, True)
         if not smoke:
             threading.Thread(target=self.clear_stale_previews, args=(self.preview_dir,), daemon=True).start()
-        self.tool_model = Rows(['tool', 'path', 'available'], self)
+        self.tool_model = Rows(['tool', 'path', 'available', 'builtin', 'optional'], self)
 
         self._disc = DiscController(self)
         self._preview = PreviewController(self)
@@ -377,13 +377,22 @@ class Backend(View):
 
     @Slot()
     def checkTools(self):
+        def work(p):
+            engine._available.clear()           # look again: it may have been built meanwhile
+            return {'tsMuxeR': engine.available(), **tools.check_tools()}
         def done(found):
-            paths = tools.tool_paths()
-            self.tool_model.replace([dict(tool=t, path=paths.get(t, t), available=ok) for t, ok in found.items()])
-            self.put(toolMissing=not all(found.values()))
-            if not all(found.values()):
+            paths = {**tools.tool_paths(), 'tsMuxeR': engine.version() or engine.path()}
+            self.tool_model.replace([dict(tool=t, path=paths.get(t, t), available=ok, builtin=t == 'tsMuxeR',
+                                          optional=t in self.OPTIONAL_TOOLS and found.get('tsMuxeR', False))
+                                     for t, ok in found.items()])
+            # MKVToolNix only makes MKV files (and reads MKV sources) once the engine reads Blu-rays.
+            needed = [ok for t, ok in found.items() if not (t in self.OPTIONAL_TOOLS and found.get('tsMuxeR'))]
+            self.put(toolMissing=not all(needed))
+            if not all(needed):
                 self.dialogRequested.emit('tools', self.tr('toolsHint'))
-        self.task(lambda p: tools.check_tools(), done)
+        self.task(work, done)
+
+    OPTIONAL_TOOLS = ('mkvmerge', 'mkvextract', 'mkvpropedit')
 
     @Slot(str, str)
     def locateTool(self, tool, path):

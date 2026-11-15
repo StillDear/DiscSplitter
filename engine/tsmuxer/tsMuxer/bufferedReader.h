@@ -1,0 +1,131 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef BUFFERED_READER_H_
+#define BUFFERED_READER_H_
+
+#include <containers/safequeue.h>
+#include <system/terminatablethread.h>
+
+#include <atomic>
+#include <map>
+#include <string>
+
+#include "abstractDemuxer.h"
+#include "abstractReader.h"
+
+struct ReaderData
+{
+    ReaderData()
+        : m_bufferIndex(0),
+          m_notified(false),
+          m_nextBlockSize(0),
+          m_deleted(false),
+          m_firstBlock(false),
+          m_lastBlock(false),
+          m_eof(false),
+          m_atQueue(0),
+          itr(nullptr),
+          m_blockSize(0),
+          m_allocSize(0),
+          m_readOffset(0)
+    {
+        m_nextBlock[0] = nullptr;
+        m_nextBlock[1] = nullptr;
+    }
+
+    virtual ~ReaderData()
+    {
+        // deleteNextBlocks();
+        delete[] m_nextBlock[0];
+        delete[] m_nextBlock[1];
+    }
+    /*
+virtual void deleteNextBlocks()
+{
+    delete [] m_nextBlock[0];
+    delete [] m_nextBlock[1];
+}
+    */
+    virtual bool incSeek(int64_t offset) { return true; }
+
+    virtual void init()
+    {
+        // deleteNextBlocks();
+        if (m_nextBlock[0] == nullptr)
+            m_nextBlock[0] = new uint8_t[m_allocSize];
+        if (m_nextBlock[1] == nullptr)
+            m_nextBlock[1] = new uint8_t[m_allocSize];
+    }
+
+    virtual bool openStream()
+    {
+        init();
+        return false;
+    }
+
+    virtual int readBlock(uint8_t* buffer, uint32_t max_size) = 0;
+
+    virtual bool closeStream() = 0;
+
+    // Shared with the reading thread. The block, its size and the facts set with it (m_firstBlock, the end of the
+    // stream) are handed over under BufferedReader::m_readMtx, and m_bufferIndex is changed and read under it; the
+    // flags read without it are atomic.
+    uint8_t m_bufferIndex;
+    std::atomic<bool> m_notified;
+    std::atomic<int> m_nextBlockSize;
+    bool m_deleted;
+    bool m_firstBlock;
+    bool m_lastBlock;
+    std::atomic<bool> m_eof;
+    int m_atQueue;
+    FileNameIterator* itr;
+    uint8_t* m_nextBlock[2];
+    uint32_t m_blockSize;
+    uint32_t m_allocSize;
+    std::string m_streamName;
+    int m_readOffset;
+};
+
+class BufferedReader : public AbstractReader, TerminatableThread
+{
+   public:
+    static constexpr int UNKNOWN_READERID = 3;
+    BufferedReader(uint32_t blockSize, uint32_t allocSize = 0, uint32_t prereadThreshold = 0);
+    ~BufferedReader() override;
+    int createReader(int readBuffOffset = 0) override;
+    void deleteReader(int readerID) override;  // unregister readed
+    uint8_t* readBlock(int readerID, uint32_t& readCnt, int& rez, bool* firstBlockVar = nullptr) override;
+    void notify(int readerID,
+                uint32_t dataReaded) override;  // reader must call notificate when part of data handled
+    uint32_t getReaderCount();
+    void terminate();
+    void stop();  // ends the thread; the owner calls it before it deletes the reader
+    void setFileIterator(FileNameIterator* itr, int readerID);
+    bool seek(int readerID, int64_t offset) override;
+    bool incSeek(int readerID, int64_t offset) override;
+    bool gotoByte(int readerID, int64_t seekDist) override { return false; }
+
+    void setId(const uint32_t value) { m_id = value; }
+
+   protected:
+    virtual ReaderData* intCreateReader() = 0;
+    void thread_main() override;
+
+    bool m_started;
+    std::atomic<bool> m_terminated;
+    WaitableSafeQueue<int> m_readQueue;
+    ReaderData* getReader(int readerID);
+    std::condition_variable m_readCond;
+    std::mutex m_readMtx;
+
+   private:
+    uint32_t m_id;
+    std::mutex m_readersMtx;
+    std::mutex m_processMtx;  // held by the reading thread while it reads a reader's block (see deleteReader)
+    std::map<int, ReaderData*> m_readers;
+    static int m_newReaderID;
+    static int createNewReaderID();
+    static std::mutex m_genReaderMtx;
+};
+
+#endif

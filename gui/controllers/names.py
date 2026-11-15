@@ -454,7 +454,7 @@ class NamesController(SetlistSources, ReleaseSearch, Controller):
                 metadata = self.app.metadata.export_metadata() if self.disc.state['outputFormat'] == 'flac' else None
                 base = naming.sanitize_filename(naming.render_filename(template, position, base,
                                                                        tagging.artist_for(metadata, number)))
-            return base + ('.flac' if self.disc.state['outputFormat'] == 'flac' else '.mkv')
+            return base + '.' + self.disc.state['outputFormat']
         except Exception:      # a preview only: never break the table
             return ''
 

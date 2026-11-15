@@ -125,7 +125,7 @@ def test_folder_matroska_sources_are_sorted_and_top_level_only(tmp_path, monkeyp
     (tmp_path / 'nested' / 'hidden.mkv').touch()
     (tmp_path / 'not-a-file.mk3d').mkdir()
     (tmp_path / 'notes.txt').touch()
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: core.models.Playlist(p))
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p, **_: core.models.Playlist(p))
     assert core.sources.find_sources(tmp_path) == sorted(files)
     assert [p.path for p in core.sources.scan_source(tmp_path)] == sorted(files)
 
@@ -140,7 +140,7 @@ def test_bdmv_takes_precedence_even_without_playlists(tmp_path, monkeypatch, wit
         playlist.touch()
         expected = [playlist]
     (tmp_path / 'title_t00.mkv').touch()
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: core.models.Playlist(p))
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p, **_: core.models.Playlist(p))
     assert core.sources.find_sources(tmp_path) == expected
     assert [p.path for p in core.sources.scan_source(tmp_path)] == expected
 
@@ -188,7 +188,7 @@ def test_backend_mkv_scan_uses_parent_sidecars_and_filename(backend, qt_app, tmp
     source.touch()
     sidecar = tmp_path / 'tracks.txt'
     sidecar.write_text('One\nTwo', encoding='utf-8')
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: core.models.Playlist(p, chapter_count=2))
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p, **_: core.models.Playlist(p, chapter_count=2))
     monkeypatch.setattr(core.chapter_marks, 'read_chapters_from_source', lambda p, **kw: [core.models.Chapter(1, 0), core.models.Chapter(2, 60)])
     backend.disc.setSource(str(source))
     wait_idle(backend, qt_app)
@@ -203,7 +203,7 @@ def test_backend_scores_multiple_mkv_candidates(backend, qt_app, tmp_path, monke
     short, concert = tmp_path / 'title_t00.mkv', tmp_path / 'title_t01.mkv'
     short.touch()
     concert.touch()
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p: core.models.Playlist(
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda p, **_: core.models.Playlist(
         p, chapter_count=12 if p == concert else 1, duration_seconds=3600 if p == concert else 30))
     monkeypatch.setattr(core.chapter_marks, 'read_chapters_from_source', lambda p, **kw: [])
     backend.disc.setSource(str(tmp_path))

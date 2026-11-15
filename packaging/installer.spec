@@ -8,10 +8,15 @@ ROOT = os.path.dirname(SPECPATH)
 ONEFILE = os.environ.get('DISCSPLITTER_ONEFILE') == '1'
 ICON = os.path.join(ROOT, 'disc_splitter.ico')
 
+# The built-in Blu-ray engine (python engine/build_engine.py), unpacked to tools/ beside the app's own files.
+ENGINE = os.path.join(ROOT, 'engine', 'bin', 'tsMuxeR.exe')
+if not os.path.isfile(ENGINE):
+    raise SystemExit('The Blu-ray engine is not built: run python engine/build_engine.py first')
+
 a = Analysis(
     [os.path.join(ROOT, 'app.py')],
     pathex=[ROOT],
-    binaries=[],
+    binaries=[(ENGINE, 'tools')],
     datas=[(os.path.join(ROOT, 'qml'), 'qml'), (ICON, '.')],
     hiddenimports=['PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtQuickControls2', 'PySide6.QtWidgets',
                    'PySide6.QtMultimedia'],

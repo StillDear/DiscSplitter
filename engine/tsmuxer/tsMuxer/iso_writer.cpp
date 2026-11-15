@@ -1,0 +1,2363 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+// ReSharper disable CppExpressionWithoutSideEffects
+
+#include "iso_writer.h"
+
+#include <algorithm>
+#include <cassert>
+#include <climits>
+#include <cstring>
+#include <ctime>
+#include <iterator>
+#include <sstream>
+
+#include <fs/systemlog.h>
+
+#include "convertUTF.h"
+#include "utf8Converter.h"
+#include "vod_common.h"
+
+// ----------- routines --------------
+
+namespace
+{
+/*
+  Name  : CRC-16 CCITT
+  Poly  : 0x1021    x^16 + x^12 + x^5 + 1
+*/
+
+const uint16_t Crc16Table[256] = {
+    0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7, 0x8108, 0x9129, 0xA14A, 0xB16B, 0xC18C, 0xD1AD,
+    0xE1CE, 0xF1EF, 0x1231, 0x0210, 0x3273, 0x2252, 0x52B5, 0x4294, 0x72F7, 0x62D6, 0x9339, 0x8318, 0xB37B, 0xA35A,
+    0xD3BD, 0xC39C, 0xF3FF, 0xE3DE, 0x2462, 0x3443, 0x0420, 0x1401, 0x64E6, 0x74C7, 0x44A4, 0x5485, 0xA56A, 0xB54B,
+    0x8528, 0x9509, 0xE5EE, 0xF5CF, 0xC5AC, 0xD58D, 0x3653, 0x2672, 0x1611, 0x0630, 0x76D7, 0x66F6, 0x5695, 0x46B4,
+    0xB75B, 0xA77A, 0x9719, 0x8738, 0xF7DF, 0xE7FE, 0xD79D, 0xC7BC, 0x48C4, 0x58E5, 0x6886, 0x78A7, 0x0840, 0x1861,
+    0x2802, 0x3823, 0xC9CC, 0xD9ED, 0xE98E, 0xF9AF, 0x8948, 0x9969, 0xA90A, 0xB92B, 0x5AF5, 0x4AD4, 0x7AB7, 0x6A96,
+    0x1A71, 0x0A50, 0x3A33, 0x2A12, 0xDBFD, 0xCBDC, 0xFBBF, 0xEB9E, 0x9B79, 0x8B58, 0xBB3B, 0xAB1A, 0x6CA6, 0x7C87,
+    0x4CE4, 0x5CC5, 0x2C22, 0x3C03, 0x0C60, 0x1C41, 0xEDAE, 0xFD8F, 0xCDEC, 0xDDCD, 0xAD2A, 0xBD0B, 0x8D68, 0x9D49,
+    0x7E97, 0x6EB6, 0x5ED5, 0x4EF4, 0x3E13, 0x2E32, 0x1E51, 0x0E70, 0xFF9F, 0xEFBE, 0xDFDD, 0xCFFC, 0xBF1B, 0xAF3A,
+    0x9F59, 0x8F78, 0x9188, 0x81A9, 0xB1CA, 0xA1EB, 0xD10C, 0xC12D, 0xF14E, 0xE16F, 0x1080, 0x00A1, 0x30C2, 0x20E3,
+    0x5004, 0x4025, 0x7046, 0x6067, 0x83B9, 0x9398, 0xA3FB, 0xB3DA, 0xC33D, 0xD31C, 0xE37F, 0xF35E, 0x02B1, 0x1290,
+    0x22F3, 0x32D2, 0x4235, 0x5214, 0x6277, 0x7256, 0xB5EA, 0xA5CB, 0x95A8, 0x8589, 0xF56E, 0xE54F, 0xD52C, 0xC50D,
+    0x34E2, 0x24C3, 0x14A0, 0x0481, 0x7466, 0x6447, 0x5424, 0x4405, 0xA7DB, 0xB7FA, 0x8799, 0x97B8, 0xE75F, 0xF77E,
+    0xC71D, 0xD73C, 0x26D3, 0x36F2, 0x0691, 0x16B0, 0x6657, 0x7676, 0x4615, 0x5634, 0xD94C, 0xC96D, 0xF90E, 0xE92F,
+    0x99C8, 0x89E9, 0xB98A, 0xA9AB, 0x5844, 0x4865, 0x7806, 0x6827, 0x18C0, 0x08E1, 0x3882, 0x28A3, 0xCB7D, 0xDB5C,
+    0xEB3F, 0xFB1E, 0x8BF9, 0x9BD8, 0xABBB, 0xBB9A, 0x4A75, 0x5A54, 0x6A37, 0x7A16, 0x0AF1, 0x1AD0, 0x2AB3, 0x3A92,
+    0xFD2E, 0xED0F, 0xDD6C, 0xCD4D, 0xBDAA, 0xAD8B, 0x9DE8, 0x8DC9, 0x7C26, 0x6C07, 0x5C64, 0x4C45, 0x3CA2, 0x2C83,
+    0x1CE0, 0x0CC1, 0xEF1F, 0xFF3E, 0xCF5D, 0xDF7C, 0xAF9B, 0xBFBA, 0x8FD9, 0x9FF8, 0x6E17, 0x7E36, 0x4E55, 0x5E74,
+    0x2E93, 0x3EB2, 0x0ED1, 0x1EF0};
+
+unsigned short crc16(const unsigned char* pcBlock, unsigned short len)
+{
+    unsigned short crc = 0;
+
+    while (len--) crc = static_cast<uint16_t>(crc << 8) ^ Crc16Table[(crc >> 8) ^ *pcBlock++];
+
+    return crc;
+}
+
+void writeDescriptorTag(uint8_t* buffer, DescriptorTag tag, const uint32_t tagLocation)
+{
+    const auto buff16 = UnalignedPtr<uint16_t>(buffer);
+    const auto buff32 = UnalignedPtr<uint32_t>(buffer);
+    buff16[0] = static_cast<uint16_t>(tag);
+    buff16[1] = 0x03;  // version
+    // skip check sum and reserved byte here
+    buff16[3] = 0x03;  // Tag Serial Number
+    // skip Descriptor CRC
+    // Descriptor CRC Length
+
+    buff32[3] = tagLocation;  // tag location
+}
+
+std::string toIsoSeparator(const std::string& path)
+{
+    std::string result = path;
+    for (auto& i : result)
+    {
+        if (i == '\\')
+            i = '/';
+    }
+    return result;
+}
+
+void calcDescriptorCRC(uint8_t* buffer, const uint16_t len)
+{
+    const auto buff16 = UnalignedPtr<uint16_t>(buffer);
+
+    // calc crc
+    buff16[4] = crc16(buffer + 16, len - 16);
+    buff16[5] = len - 16;
+
+    // calc tag checksum
+    uint8_t sum = 0;
+    for (int i = 0; i < 16; ++i) sum += buffer[i];
+    buffer[4] = sum;
+}
+
+// The local time of the machine with its offset from UTC in minutes (ECMA-167 1/7.3, type 1 = local time), or with utc
+// the time in UTC with an offset of 0, which is the same in every time zone (--constant-iso-hdr). The fields were read
+// from the struct tm of localtime(), which gmtime() had overwritten by then, as the two share it: every time had the
+// clock of UTC and the offset of the zone, so it was wrong by that offset anywhere but in UTC, and the constant header
+// changed with the zone.
+void writeTimestamp(uint8_t* buffer, const time_t time, const bool utc)
+{
+    const auto buff16 = UnalignedPtr<uint16_t>(buffer);
+
+    tm universal{};
+    tm parts{};
+#ifdef _WIN32
+    gmtime_s(&universal, &time);
+    if (!utc)
+        localtime_s(&parts, &time);
+#else
+    gmtime_r(&time, &universal);
+    if (!utc)
+        localtime_r(&time, &parts);
+#endif
+    if (utc)
+        parts = universal;
+    // The two clocks apart, with the day between them when the dates differ
+    int days = parts.tm_yday - universal.tm_yday;
+    if (parts.tm_year != universal.tm_year)
+        days = parts.tm_year > universal.tm_year ? 1 : -1;
+    const auto timeZone =
+        static_cast<int16_t>((days * 24 + parts.tm_hour - universal.tm_hour) * 60 + parts.tm_min - universal.tm_min);
+
+    buff16[0] = (1 << 12) + (timeZone & 0x0fff);
+    buff16[1] = static_cast<int16_t>(parts.tm_year + 1900);
+    buffer[4] = static_cast<uint8_t>(parts.tm_mon + 1);
+    buffer[5] = static_cast<uint8_t>(parts.tm_mday);
+    buffer[6] = static_cast<uint8_t>(parts.tm_hour);
+    buffer[7] = static_cast<uint8_t>(parts.tm_min);
+    buffer[8] = static_cast<uint8_t>(parts.tm_sec);
+    buffer[9] = 0;  // ms parts
+    buffer[10] = 0;
+    buffer[11] = 0;
+}
+
+bool canUse8BitUnicode(const std::string& utf8Str)
+{
+    bool rv = true;
+    convertUTF::IterateUTF8Chars(utf8Str,
+                                 [&](auto c)
+                                 {
+                                     rv = (c < 0x100);
+                                     return rv;
+                                 });
+    return rv;
+}
+
+std::vector<std::uint8_t> serializeDString(const std::string& str, const size_t fieldLen)
+{
+    if (str.empty())
+    {
+        return {};
+    }
+    std::vector<std::uint8_t> rv;
+#ifdef _WIN32
+    const auto str_u8 = reinterpret_cast<const std::uint8_t*>(str.c_str());
+    std::string utf8Str = convertUTF::isLegalUTF8String(str_u8, static_cast<int>(str.length()))
+                              ? str
+                              : UtfConverter::toUtf8(str_u8, str.length(), UtfConverter::SourceFormat::sfANSI);
+#else
+    auto& utf8Str = str;
+#endif
+    using namespace convertUTF;
+    const size_t maxHeaderAndContentLength = fieldLen - 1;
+    rv.reserve(fieldLen);
+    if (canUse8BitUnicode(utf8Str))
+    {
+        rv.push_back(8);
+        IterateUTF8Chars(utf8Str,
+                         [&](const uint8_t c)
+                         {
+                             rv.push_back(c);
+                             return rv.size() < maxHeaderAndContentLength;
+                         });
+    }
+    else
+    {
+        rv.push_back(16);
+        IterateUTF8Chars(utf8Str,
+                         [&](auto c)
+                         {
+                             UTF16 high_surrogate, low_surrogate;
+                             std::tie(high_surrogate, low_surrogate) = ConvertUTF32toUTF16(c);
+                             const auto spaceLeft = maxHeaderAndContentLength - rv.size();
+                             if ((spaceLeft < 2) || (low_surrogate && spaceLeft < 4))
+                             {
+                                 return false;
+                             }
+                             rv.push_back(static_cast<uint8_t>(high_surrogate >> 8));
+                             rv.push_back(static_cast<uint8_t>(high_surrogate));
+                             if (low_surrogate)
+                             {
+                                 rv.push_back(static_cast<uint8_t>(low_surrogate >> 8));
+                                 rv.push_back(static_cast<uint8_t>(low_surrogate));
+                             }
+                             return true;
+                         });
+    }
+    const auto contentLength = static_cast<uint8_t>(rv.size());
+    const auto paddingSize = maxHeaderAndContentLength - rv.size();
+    std::fill_n(std::back_inserter(rv), paddingSize, 0);
+    rv.push_back(contentLength);
+    return rv;
+}
+
+/*
+ * A UDF File Identifier is NOT a dstring. It is a compression byte followed by the name itself,
+ * one byte per character in the 8 bit form and TWO in the 16 bit one, and L_FI counts exactly
+ * those bytes with no padding and no trailing length byte.
+ *
+ * The old route through serializeDString sized the field from the name's UTF-8 byte count. For a
+ * name that needs the 16 bit form that is the wrong number: every ASCII character in it costs one
+ * byte in UTF-8 and two in UTF-16, so the budget ran out and the name was cut short in silence.
+ * "abv_document_v1.txt" with three Cyrillic letters at the front came out as eleven characters of
+ * nineteen, and a v2 beside it came out with the SAME name, so one of the two files was lost.
+ *
+ * L_FI is a single byte, so a 16 bit name cannot exceed 127 characters. A longer one is cut on a
+ * character boundary and said out loud where the name is set, rather than wrapping the length.
+ */
+constexpr size_t MAX_FILE_IDENTIFIER = 255;
+
+std::vector<std::uint8_t> serializeFileIdentifier(const std::string& str, int* charsKept)
+{
+    int kept = 0;
+    if (charsKept)
+        *charsKept = 0;
+    if (str.empty())
+        return {};
+
+    std::vector<std::uint8_t> rv;
+#ifdef _WIN32
+    const auto str_u8 = reinterpret_cast<const std::uint8_t*>(str.c_str());
+    std::string utf8Str = convertUTF::isLegalUTF8String(str_u8, static_cast<int>(str.length()))
+                              ? str
+                              : UtfConverter::toUtf8(str_u8, str.length(), UtfConverter::SourceFormat::sfANSI);
+#else
+    auto& utf8Str = str;
+#endif
+    using namespace convertUTF;
+    rv.reserve(MAX_FILE_IDENTIFIER);
+    if (canUse8BitUnicode(utf8Str))
+    {
+        rv.push_back(8);
+        IterateUTF8Chars(utf8Str,
+                         [&](const uint8_t c)
+                         {
+                             if (rv.size() + 1 > MAX_FILE_IDENTIFIER)
+                                 return false;
+                             rv.push_back(c);
+                             ++kept;
+                             return true;
+                         });
+    }
+    else
+    {
+        rv.push_back(16);
+        IterateUTF8Chars(utf8Str,
+                         [&](auto c)
+                         {
+                             UTF16 high_surrogate, low_surrogate;
+                             std::tie(high_surrogate, low_surrogate) = ConvertUTF32toUTF16(c);
+                             const size_t need = low_surrogate ? 4 : 2;
+                             if (rv.size() + need > MAX_FILE_IDENTIFIER)
+                                 return false;
+                             rv.push_back(static_cast<uint8_t>(high_surrogate >> 8));
+                             rv.push_back(static_cast<uint8_t>(high_surrogate));
+                             if (low_surrogate)
+                             {
+                                 rv.push_back(static_cast<uint8_t>(low_surrogate >> 8));
+                                 rv.push_back(static_cast<uint8_t>(low_surrogate));
+                             }
+                             ++kept;
+                             return true;
+                         });
+    }
+    if (charsKept)
+        *charsKept = kept;
+    return rv;
+}
+
+void writeDString(uint8_t* buffer, const char* value, const size_t fieldLen)
+{
+    auto content = serializeDString(value, fieldLen);
+    assert(content.size() == fieldLen);
+    std::copy(std::begin(content), std::end(content), buffer);
+}
+
+void writeUDFString(uint8_t* buffer, const char* str, const int len)
+{
+    strcpy(reinterpret_cast<char*>(buffer) + 1, str);
+    buffer[len - 8] = 0x50;  // UDF suffix
+    buffer[len - 7] = 0x02;  // UDF suffix
+}
+
+void writeLongAD(uint8_t* buffer, const uint32_t lenBytes, const uint32_t pos, const uint16_t partition,
+                 const uint32_t id)
+{
+    const auto buff32 = UnalignedPtr<uint32_t>(buffer);
+    const auto buff16 = UnalignedPtr<uint16_t>(buffer);
+
+    buff32[0] = lenBytes;   // len
+    buff32[1] = pos;        // location, block number
+    buff16[4] = partition;  // location, partition number
+    buff32[3] = id;
+}
+
+}  // namespace
+
+std::vector<std::uint8_t> udfFileIdentifier(const std::string& name) { return serializeFileIdentifier(name, nullptr); }
+
+// --------------------- ByteFileWriter ---------------------
+
+ByteFileWriter::ByteFileWriter() : m_buffer(nullptr), m_bufferEnd(nullptr), m_curPos(nullptr), m_tagPos(nullptr) {}
+
+void ByteFileWriter::setBuffer(uint8_t* buffer, const int len)
+{
+    m_buffer = buffer;
+    m_bufferEnd = buffer + len;
+    m_curPos = buffer;
+}
+
+// m_bufferEnd was recorded and never read, so every writer here ran off the end of its buffer in
+// silence. Refusing is the only safe answer: a caller that has run out of room cannot produce a
+// usable image, and carrying on writes over whatever the heap put next.
+void ByteFileWriter::checkRoom(const size_t bytes) const
+{
+    if (m_curPos + bytes > m_bufferEnd)
+        throw std::runtime_error("ISO error: the UDF writer ran out of buffer");
+}
+
+void ByteFileWriter::writeLE8(const uint8_t value)
+{
+    checkRoom(1);
+    *m_curPos++ = value;
+}
+
+void ByteFileWriter::writeLE16(const uint16_t value)
+{
+    checkRoom(2);
+    const auto pos16 = UnalignedPtr<uint16_t>(m_curPos);
+    *pos16 = value;
+    m_curPos += 2;
+}
+
+void ByteFileWriter::writeLE32(const uint32_t value)
+{
+    checkRoom(4);
+    const auto pos32 = UnalignedPtr<uint32_t>(m_curPos);
+    *pos32 = value;
+    m_curPos += 4;
+}
+
+void ByteFileWriter::writeDescriptorTag(const DescriptorTag tag, const uint32_t tagLocation)
+{
+    ::writeDescriptorTag(m_curPos, tag, tagLocation);
+    m_tagPos = m_curPos;
+    m_curPos += 16;
+}
+
+void ByteFileWriter::closeDescriptorTag(const int dataSize) const
+{
+    const uint16_t size = dataSize == -1 ? static_cast<uint16_t>(m_curPos - m_tagPos) : static_cast<uint16_t>(dataSize);
+    calcDescriptorCRC(m_tagPos, size);
+}
+
+void ByteFileWriter::writeIcbTag(const uint8_t fileType)
+{
+    const auto buff32 = UnalignedPtr<uint32_t>(m_curPos);
+    const auto buff16 = UnalignedPtr<uint16_t>(m_curPos);
+
+    // icb tag
+    buff32[0] = 0;  // Prior Recorded Number of Direct Entries
+    buff16[2] = 4;  // Strategy Type
+    buff16[3] = 0;  // Strategy parameters
+    buff16[4] = 1;  // Maximum Number of Entries
+    // skip reserved byte
+    m_curPos[11] = fileType;  // metadata file type
+    // skip 6 byte zero Parent ICB Location
+    buff16[18 / 2] = 0x20;  // flags. Archive: This bit shall be set to ONE when the file is created or is written.
+
+    m_curPos += 20;
+}
+
+void ByteFileWriter::writeLongAD(const uint32_t lenBytes, const uint32_t pos, const uint16_t partition,
+                                 const uint32_t id)
+{
+    ::writeLongAD(m_curPos, lenBytes, pos, partition, id);
+    m_curPos += 16;
+}
+
+void ByteFileWriter::writeDString(const char* value, const int64_t len)
+{
+    const size_t writeLen = (len == -1) ? strlen(value) + 2 : static_cast<size_t>(len);
+    ::writeDString(m_curPos, value, writeLen);
+    m_curPos += writeLen;
+}
+
+void ByteFileWriter::writeDString(const std::string& value, const int64_t len) { writeDString(value.c_str(), len); }
+
+void ByteFileWriter::writeBytes(const uint8_t* data, const size_t len)
+{
+    checkRoom(len);
+    memcpy(m_curPos, data, len);
+    m_curPos += len;
+}
+
+void ByteFileWriter::doPadding(const int padSize)
+{
+    // It used to step back one byte here, to drop the trailing length byte a dstring carries. The
+    // only caller writes a File Identifier now, which has no such byte, so there is nothing to undo.
+    auto rest = static_cast<int>((m_curPos - m_buffer) % padSize);
+    if (rest)
+    {
+        rest = padSize - rest;
+        for (int i = 0; i < rest; ++i) *m_curPos++ = 0;
+    }
+}
+
+void ByteFileWriter::writeCharSpecString(const char* value, const int len)
+{
+    // The text and its terminating zero after the first byte of the field, as strcpy wrote them, but never past the
+    // end of the field
+    const size_t room = len > 1 ? static_cast<size_t>(len - 1) : 0;
+    memcpy(m_curPos + 1, value, (std::min)(strlen(value) + 1, room));
+    m_curPos += len;
+}
+
+void ByteFileWriter::writeUDFString(const char* value, const int len)
+{
+    ::writeUDFString(m_curPos, value, len);
+    m_curPos += len;
+}
+
+void ByteFileWriter::skipBytes(const int value) { m_curPos += value; }
+
+void ByteFileWriter::writeTimestamp(const time_t time, const bool utc)
+{
+    ::writeTimestamp(m_curPos, time, utc);
+    m_curPos += 12;
+};
+
+int64_t ByteFileWriter::size() const { return m_curPos - m_buffer; }
+
+// ------------------------------ FileEntryInfo ------------------------------------
+
+FileEntryInfo::FileEntryInfo(IsoWriter* owner, FileEntryInfo* parent, const uint32_t objectId, const FileTypes fileType)
+    : m_owner(owner),
+      m_parent(parent),
+      m_sectorNum(0),
+      m_sectorsUsed(0),
+      m_objectId(objectId),
+      m_fileType(fileType),
+      m_fileSize(0),
+      m_sectorBufferSize(0),
+      m_subMode(false)
+{
+    if (isFile())
+        m_sectorBuffer = new uint8_t[SECTOR_SIZE];
+    else
+        m_sectorBuffer = nullptr;
+}
+
+bool FileEntryInfo::isFile() const { return m_fileType == FileTypes::File || m_fileType == FileTypes::RealtimeFile; }
+
+FileEntryInfo::~FileEntryInfo()
+{
+    delete[] m_sectorBuffer;
+    for (const auto& m_file : m_files) delete m_file;
+    for (const auto& m_subDir : m_subDirs) delete m_subDir;
+}
+
+bool FileEntryInfo::setName(const std::string& name)
+{
+    m_name = name;
+    int charsKept = 0;
+    serializeFileIdentifier(name, &charsKept);
+    int charsTotal = 0;
+    convertUTF::IterateUTF8Chars(name,
+                                 [&](auto)
+                                 {
+                                     ++charsTotal;
+                                     return true;
+                                 });
+    if (charsKept > 0 && charsKept < charsTotal)
+        LTRACE(LT_WARN, 2,
+               "ISO: the name \"" << name << "\" is longer than a UDF file identifier holds, so only its first "
+                                  << charsKept << " characters go on the image");
+    return true;
+}
+
+// Two names in one folder that are the same as far as a UDF file identifier holds them (setName shortens a longer one)
+// would be two entries of one name on the image, and a reader finds only one of them: refused, with both names.
+void FileEntryInfo::claimIdentifier(const FileEntryInfo* entry)
+{
+    const auto [it, isNew] = m_childIdentifiers.emplace(serializeFileIdentifier(entry->name(), nullptr), entry->name());
+    if (!isNew)
+        throw std::runtime_error("ISO: the names \"" + it->second + "\" and \"" + entry->name() +
+                                 "\" in one folder are the same as far as a UDF file identifier holds a name. "
+                                 "Shorten one of them.");
+}
+
+void FileEntryInfo::addSubDir(FileEntryInfo* dir)
+{
+    claimIdentifier(dir);
+    m_subDirs.push_back(dir);
+}
+
+void FileEntryInfo::addFile(FileEntryInfo* file) { m_files.push_back(file); }
+
+// A file is named after it is added (createFileEntry), so its name is checked here, once it has one
+void FileEntryInfo::checkNameIsUnique(const FileEntryInfo* entry) { claimIdentifier(entry); }
+
+void FileEntryInfo::writeEntity(ByteFileWriter& writer, const FileEntryInfo* subDir) const
+{
+    // The metadata bit belongs to the CHILD being described, not to the directory describing it.
+    // It used to read m_objectId, this directory's own id, which is 0 for the system stream
+    // directory AND for the root directory alike, because both are constructed with id 0. So every
+    // ordinary file placed at the root of the image was marked as a UDF metadata stream: it listed
+    // with the right name and size and then refused to open, "access denied", while the same file
+    // one directory down was fine. Only the unique id mapping file is built with id 0; everything a
+    // user contributes is numbered from 16 up, so the child's own id is the discriminator that was
+    // meant here.
+    const bool isSystemFile = (subDir->m_objectId == 0);
+
+    // The tag location is the block the identifier starts in. A folder of more entries than one block holds goes on in
+    // the blocks after the first, and every identifier used to name the first.
+    writer.writeDescriptorTag(DescriptorTag::FileId,
+                              m_owner->absoluteSectorNum() + 1 + static_cast<int32_t>(writer.size() / SECTOR_SIZE));
+    writer.writeLE16(0x01);  // File Version Number
+    writer.writeLE8(!subDir->isFile() ? 0x02
+                                      : (isSystemFile ? 0x10 : 0));  // File Characteristics, 'directory' bit (1-th)
+    // L_FI is the length of what is actually written, so the name is encoded FIRST and its own
+    // size used. Deriving it from the UTF-8 byte count is what cut 16 bit names short.
+    const auto identifier = serializeFileIdentifier(subDir->m_name, nullptr);
+    writer.writeLE8(static_cast<uint8_t>(identifier.size()));                  // Length of File Identifier (=L_FI)
+    writer.writeLongAD(0x800, subDir->m_sectorNum, 0x01, subDir->m_objectId);  // ICB
+    writer.writeLE16(0);                                                       // Length of Implementation Use
+    writer.writeBytes(identifier.data(), identifier.size());
+    writer.doPadding(4);
+    writer.closeDescriptorTag();
+}
+
+void FileEntryInfo::serialize() const
+{
+    m_owner->sectorSeek(IsoWriter::Partition::MetadataPartition, m_sectorNum);
+
+    if (isFile())
+        serializeFile();
+    else
+        serializeDir();
+}
+
+int FileEntryInfo::allocateEntity(const int sectorNum)
+{
+    m_sectorNum = sectorNum;
+    if (!isFile())
+        m_sectorsUsed = 1 + dirContentSectors();  // 1 File Entry + N content sectors (multi-sector dirs)
+    else if (m_extents.size() <= MAX_EXTENTS_IN_EXTFILE)
+        m_sectorsUsed = 1;
+    else
+    {
+        const int sz = static_cast<int>(m_extents.size() - 1 - MAX_EXTENTS_IN_EXTFILE);
+        m_sectorsUsed = 1 + (sz + MAX_EXTENTS_IN_EXTCONT - 1) / MAX_EXTENTS_IN_EXTCONT;
+    }
+    return m_sectorsUsed;
+}
+
+void FileEntryInfo::serializeFile() const
+{
+    const int writed = m_owner->writeExtendedFileEntryDescriptor(m_name == "*UDF Unique ID Mapping Data", m_objectId,
+                                                                 m_fileType, m_fileSize, m_sectorNum, 1, &m_extents);
+    assert(writed == m_sectorsUsed);
+}
+
+void FileEntryInfo::fillDirContent(ByteFileWriter& writer) const
+{
+    // ------------ 1 (parent entry) ---------------
+    writer.writeDescriptorTag(DescriptorTag::FileId, m_owner->absoluteSectorNum() + 1);
+    writer.writeLE16(0x01);  // File Version Number
+    writer.writeLE8(0x0A);   // File Characteristics, parent flag (3-th bit) and  'directory' bit (1-th)
+    writer.writeLE8(0x00);   // Length of File Identifier (=L_FI)
+
+    const uint32_t parentId = m_parent ? m_parent->m_objectId : 0;
+    writer.writeLongAD(0x800, m_parent ? m_parent->m_sectorNum : m_owner->absoluteSectorNum(), 0x01,
+                       parentId);  // parent entry ICB
+    writer.writeLE16(0);           // Length of Implementation Use
+    writer.writeLE16(0);           // zero d-string for parent FID
+    writer.closeDescriptorTag();
+
+    // ------------ 2 (entries) ---------------
+    for (const auto& i : m_files) writeEntity(writer, i);
+    for (const auto& i : m_subDirs) writeEntity(writer, i);
+}
+
+int FileEntryInfo::dirContentSectors() const
+{
+    // Size the FID stream by building it into a scratch buffer (exact - avoids fragile hand-counting of
+    // FID + padding sizes). Tag-location values differ from serialize time, but the byte SIZE is identical.
+    const size_t bound = (m_files.size() + m_subDirs.size() + 1) * 320 + SECTOR_SIZE;
+    std::vector<uint8_t> scratch(bound, 0);
+    ByteFileWriter writer;
+    writer.setBuffer(scratch.data(), static_cast<int>(scratch.size()));
+    fillDirContent(writer);
+    const int sectors = static_cast<int>(roundUp64(writer.size(), SECTOR_SIZE) / SECTOR_SIZE);
+    return sectors < 1 ? 1 : sectors;
+}
+
+void FileEntryInfo::serializeDir() const
+{
+    // The FID stream (parent + file/subdir entries) may span MULTIPLE sectors - BD discs routinely have
+    // 40-55 entries in STREAM/CLIPINF/PLAYLIST, past the ~38 that fit one sector. The File Entry's
+    // short_ad describes it as one contiguous extent of writer.size() bytes at m_sectorNum+1 covering
+    // contentSectors blocks (short_ad length is 30-bit, so a multi-sector directory needs no new logic).
+    const int contentSectors = m_sectorsUsed - 1;  // reserved by allocateEntity via dirContentSectors()
+    std::vector<uint8_t> buffer(static_cast<size_t>(contentSectors) * SECTOR_SIZE, 0);
+
+    ByteFileWriter writer;
+    writer.setBuffer(buffer.data(), static_cast<int>(buffer.size()));
+    fillDirContent(writer);
+    assert(writer.size() <= static_cast<int64_t>(buffer.size()));  // must fit the sectors allocateEntity reserved
+
+    m_owner->writeExtendedFileEntryDescriptor(false, m_objectId, m_fileType, writer.size(), m_sectorNum + 1,
+                                              static_cast<uint16_t>(m_subDirs.size() + 1));
+    for (int s = 0; s < contentSectors; ++s) m_owner->writeSector(buffer.data() + static_cast<size_t>(s) * SECTOR_SIZE);
+}
+
+void FileEntryInfo::addExtent(const Extent& extent)
+{
+    if (m_extents.empty())
+    {
+        m_extents.push_back(extent);
+    }
+    else
+    {
+        const int lastLBN = m_extents.rbegin()->lbnPos + static_cast<int>(m_extents.rbegin()->size / SECTOR_SIZE);
+        if (lastLBN == extent.lbnPos && m_extents.rbegin()->size + extent.size <= MAX_EXTENT_SIZE)
+            m_extents.rbegin()->size += extent.size;
+        else
+            m_extents.push_back(extent);
+    }
+    m_fileSize += extent.size;
+}
+
+int32_t FileEntryInfo::write(const uint8_t* data, const int32_t len)
+{
+    if (m_deferred)
+    {
+        if (m_owner->m_deferredBytes + len <= MAX_DEFERRED_BYTES)
+        {
+            m_deferredData.insert(m_deferredData.end(), data, data + len);
+            m_owner->m_deferredBytes += len;
+            return len;
+        }
+        // No more room to hold it back: what is held is written now, and the rest follows it
+        m_deferred = false;
+        std::vector<uint8_t> held;
+        held.swap(m_deferredData);
+        m_owner->m_deferredBytes -= static_cast<int64_t>(held.size());
+        if (!held.empty())
+            write(held.data(), static_cast<int32_t>(held.size()));
+    }
+    if (len > 0 && m_sectorBufferSize == 0 && m_owner->m_lastWritedObjectID != static_cast<int>(m_objectId))
+        m_owner->beforePiece(this);
+    // Dual-layer guard band: if this write would reach the zero-fill zone around the BD-R DL
+    // layer break, cut the file at a sector-aligned file offset (UDF allocation descriptors
+    // only allow non-final extents to be whole sectors), pad the zone, and continue the file
+    // in a new extent behind it. m2ts data arrives in 6144-byte Aligned Units (= 3 sectors),
+    // so for the main stream the cut lands exactly between write calls (head == 0).
+    if (len > 0 && m_owner->nearLayerBreak(len))
+    {
+        const int head = (SECTOR_SIZE - m_sectorBufferSize) % SECTOR_SIZE;
+        if (head < len)
+        {
+            int32_t done = head;
+            if (head > 0)
+                writeImpl(data, head);  // fill the current sector to reach alignment
+            // The data runs on up to the place of the metadata mirror, so that the mirror ends layer 0
+            const int64_t room = m_owner->bytesBeforeMirror();
+            if (room > 0 && room < len - done)
+            {
+                writeImpl(data + done, static_cast<int32_t>(room));
+                done += static_cast<int32_t>(room);
+            }
+            m_owner->checkLayerBreakPoint(len - done);
+            writeImpl(data + done, len - done);
+            return len;
+        }
+        // write too small to reach a sector boundary: defer, a later write re-tests
+    }
+    return writeImpl(data, len);
+}
+
+int32_t FileEntryInfo::writeImpl(const uint8_t* data, const int32_t len)
+{
+    // An extent is filled up to MAX_EXTENT_SIZE exactly, and the rest of the write begins the next one. A write that
+    // would have passed it used to begin the next extent itself, so the extents of a large file came out one write
+    // short of the size: 0x3FE00000 with the writes of a mux.
+    if (m_owner->m_lastWritedObjectID == m_objectId && !m_extents.empty())
+    {
+        const int64_t room = MAX_EXTENT_SIZE - m_extents.rbegin()->size;
+        if (room > 0 && len > room)
+        {
+            const auto head = static_cast<int32_t>(room);
+            writeImpl(data, head);
+            return head + writeImpl(data + head, len - head);
+        }
+    }
+    if (m_owner->m_lastWritedObjectID != m_objectId)
+    {
+        m_extents.emplace_back(m_owner->absoluteSectorNum(), len);
+    }
+    else
+    {
+        if (m_extents.rbegin()->size + len <= MAX_EXTENT_SIZE)
+            m_extents.rbegin()->size += len;
+        else
+        {
+            assert(m_extents.rbegin()->size % SECTOR_SIZE == 0);
+            m_extents.emplace_back(m_owner->absoluteSectorNum(), len);
+        }
+    }
+    m_owner->m_lastWritedObjectID = m_objectId;
+    m_owner->m_lastWritedEntry = this;
+    m_fileSize += len;
+    int32_t writeLen = len;
+
+    if (m_sectorBufferSize)
+    {
+        const int toCopy = FFMIN(SECTOR_SIZE - m_sectorBufferSize, writeLen);
+        memcpy(m_sectorBuffer + m_sectorBufferSize, data, toCopy);
+        m_sectorBufferSize += toCopy;
+        if (m_sectorBufferSize == SECTOR_SIZE)
+        {
+            m_owner->writeRawData(m_sectorBuffer, SECTOR_SIZE);
+            m_sectorBufferSize = 0;
+            data += toCopy;
+            writeLen -= toCopy;
+        }
+        else
+        {
+            return len;
+        }
+    }
+    const int dataRest = writeLen % SECTOR_SIZE;
+    if (writeLen - dataRest > 0)
+        m_owner->writeRawData(data, writeLen - dataRest);
+    if (dataRest)
+    {
+        memcpy(m_sectorBuffer, data + writeLen - dataRest, dataRest);
+        m_sectorBufferSize += dataRest;
+    }
+
+    return len;
+}
+
+void FileEntryInfo::close()
+{
+    if (m_deferred)
+        return;  // closed when it is written, by IsoWriter::writeDeferredFiles
+    if (m_sectorBufferSize)
+    {
+        // The tail of a file that does not end on a sector boundary is buffered and written here.
+        // It belongs at the end of the LAST extent, so the offset has to be measured inside that
+        // extent: lbnPos is where the last extent starts, not where the file starts. Using the whole
+        // file's length seeks past the end of the image by everything the earlier extents hold, and
+        // writing there stretches the image by exactly that much. A file only grows a second extent
+        // past MAX_EXTENT_SIZE or at a layer break guard, and only an unaligned length reaches this
+        // branch at all, which is why a real .m2ts (always a multiple of its 6144 byte aligned unit)
+        // never showed it. Measured before the fix: a 3 GB source produced a 6.4 GB image, and a
+        // 50 GB source a 99.7 GB one. For a single extent the two are the same value.
+        const auto delta = static_cast<int>(m_extents.rbegin()->size / SECTOR_SIZE);
+        m_owner->sectorSeek(IsoWriter::Partition::MainPartition, m_extents.rbegin()->lbnPos + delta);
+        memset(m_sectorBuffer + m_sectorBufferSize, 0, SECTOR_SIZE - m_sectorBufferSize);
+        m_owner->writeRawData(m_sectorBuffer, SECTOR_SIZE);
+        m_sectorBufferSize = 0;
+    }
+    m_closed = true;
+}
+
+void FileEntryInfo::setSubMode(const bool value) { m_subMode = value; }
+
+FileEntryInfo* FileEntryInfo::subDirByName(const std::string& name) const
+{
+    for (auto& i : m_subDirs)
+    {
+        if (i->m_name == name)
+            return i;
+    }
+    return nullptr;
+}
+
+FileEntryInfo* FileEntryInfo::fileByName(const std::string& name) const
+{
+    for (auto& i : m_files)
+    {
+        if (i->m_name == name)
+            return i;
+    }
+    return nullptr;
+}
+
+// --------------------------------- ISOFile -----------------------------------
+
+int ISOFile::write(const void* data, const uint32_t len)
+{
+    if (m_entry)
+        return m_entry->write(static_cast<const uint8_t*>(data), static_cast<int32_t>(len));
+    return -1;
+}
+
+bool ISOFile::open(const char* name, unsigned int oflag, unsigned int systemDependentFlags)
+{
+    FileTypes fileType = FileTypes::File;
+    if (strEndWith(name, ".m2ts") || strEndWith(name, ".ssif"))
+        fileType = FileTypes::RealtimeFile;
+    const std::string isoName = toIsoSeparator(name);
+    m_entry = m_owner->getEntryByName(isoName, fileType);
+    if (m_entry && m_entry->m_fileSize == 0 && m_entry->m_extents.empty() && !m_entry->m_deferred)
+    {
+        // A copy in BDMV/BACKUP is written with the other copies, behind all the data, so that one damaged place of a
+        // disc cannot take a file and its copy. They used to be written right after the file they copy.
+        if (strStartWith(strToUpperCase(isoName), "BDMV/BACKUP/"))
+        {
+            m_entry->m_deferred = true;
+            m_owner->m_deferredFiles.push_back(m_entry);
+        }
+        else if (fileType == FileTypes::RealtimeFile)
+            m_owner->alignForStream();
+    }
+    return true;
+}
+
+void ISOFile::sync() { m_owner->m_file.sync(); }
+
+bool ISOFile::close()
+{
+    if (m_entry)
+        m_entry->close();
+    m_entry = nullptr;
+    return true;
+}
+
+void ISOFile::setSubMode(const bool value) const
+{
+    if (m_entry)
+        m_entry->setSubMode(value);
+}
+
+int64_t ISOFile::size() const
+{
+    return m_entry ? m_entry->m_fileSize + static_cast<int64_t>(m_entry->m_deferredData.size()) : -1;
+}
+
+// ------------------------------ IsoWriter ----------------------------------
+
+IsoWriter::IsoWriter(const IsoHeaderData& hdrData)
+    : m_impId(hdrData.impId),
+      m_appId(hdrData.appId),
+      m_volumeId(hdrData.volumeId),
+      m_buffer{},
+      m_currentTime(hdrData.fileTime),
+      m_utcTime(hdrData.utcTime),
+      m_metadataMappingFile(nullptr),
+      m_partitionStartAddress(0),
+      m_partitionEndAddress(0),
+      m_metadataLBN(0),
+      m_curMetadataPos(0)
+{
+    m_objectUniqId = 16;
+    m_totalFiles = 0;
+    m_totalDirectories = 0;
+    m_volumeSize = 0;
+    // m_sectorNum = 0;
+    m_rootDirInfo = nullptr;
+    m_systemStreamDir = nullptr;
+
+    m_layerBreakSuppressed = false;
+    m_metadataFileLen = 0x30000;
+    m_systemStreamLBN = 0;
+    m_metadataMirrorLBN = 0;
+    m_tagLocationBaseAddr = 0;
+    m_lastWritedObjectID = -1;
+    m_opened = false;
+    m_volumeLabel = " ";
+    m_layerBreakPoints.clear();
+    m_layerBreakGuardBeforeSectors = 0;
+    m_layerBreakGuardAfterSectors = 0;
+}
+
+IsoWriter::~IsoWriter()
+{
+    try
+    {
+        close();
+    }
+    catch (...)
+    {
+        // A destructor must not throw. close() refuses when the metadata partition is too small,
+        // and when it is running here it is usually because that same refusal is already unwinding
+        // the stack: a second throw out of a destructor ends the process on the spot, with the
+        // message never printed and nothing on stdout or stderr at all. The first one is the one
+        // that matters, and close() already gives up on its second entry.
+    }
+    delete m_rootDirInfo;
+    delete m_systemStreamDir;
+}
+
+void IsoWriter::setMetaPartitionSize(const int size) { m_metadataFileLen = roundUp(size, ALLOC_BLOCK_SIZE); }
+
+// Two blocks, the extra asked for, and one for every 16 GB of data. With the size unknown, open() keeps the three
+// blocks the constructor starts from, and the extra is not used.
+int64_t IsoWriter::metadataBlocks(const int64_t diskSize, const int64_t extraISOBlocks)
+{
+    if (diskSize <= 0)
+        return 0x30000 / ALLOC_BLOCK_SIZE;
+    return 2 + extraISOBlocks + roundUp64(diskSize, META_BLOCK_PER_DATA) / META_BLOCK_PER_DATA;
+}
+
+// The area was reckoned in a 32-bit int of bytes, which wrapped: --extra-iso-space=999999 to --bdmv-to-iso wrote a
+// 2.2 GB image with a wrong area, 65536 on a mux gave no extra room at all, 32765 a negative room and the job was
+// refused after the mux, and 99999999999 was cut to another number. Each is refused before the image is opened now.
+std::string IsoWriter::tooManyExtraBlocks(const int64_t extraISOBlocks)
+{
+    if (extraISOBlocks <= MAX_META_BLOCKS - 3)
+        return {};
+    return "--extra-iso-space=" + std::to_string(extraISOBlocks) +
+           " is more than an image can hold: its metadata area is at most " + std::to_string(MAX_META_BLOCKS) +
+           " blocks of 64K (about 2 GB), and " + std::to_string(MAX_META_BLOCKS - 3) +
+           " is the most that can be asked for on top of the estimate.";
+}
+
+void IsoWriter::setVolumeLabel(const std::string& value)
+{
+    m_volumeLabel = value;
+    if (m_volumeLabel.empty())
+        m_volumeLabel = "Blu-Ray";
+    // The image keeps 126 characters of the label, or 63 of one with a character outside Latin-1, and a longer one
+    // was cut there without a word
+    const std::vector<std::uint8_t> field = serializeDString(m_volumeLabel.c_str(), 128);
+    const int used = field.empty() ? 0 : field.back();
+    const int kept = used <= 1 ? 0 : field[0] == 16 ? (used - 1) / 2 : used - 1;
+    const auto characters = static_cast<int>(
+        std::count_if(m_volumeLabel.begin(), m_volumeLabel.end(), [](const char c) { return (c & 0xC0) != 0x80; }));
+    if (kept < characters)
+        LTRACE(LT_WARN, 2,
+               "Warning: the ISO label has " << characters << " characters, and an image keeps " << kept
+                                             << " of them. The rest is left out.");
+}
+
+bool IsoWriter::open(const std::string& fileName, const int64_t diskSize, const int64_t extraISOBlocks)
+{
+    if (const std::string why = tooManyExtraBlocks(extraISOBlocks); !why.empty())
+        throw std::runtime_error(why);
+    const int64_t metaBlocks = diskSize > 0 ? metadataBlocks(diskSize, extraISOBlocks) : 0;
+    if (metaBlocks > MAX_META_BLOCKS)
+        throw std::runtime_error("The metadata area of this image would be " + std::to_string(metaBlocks) +
+                                 " blocks of 64K, and an image holds at most " + std::to_string(MAX_META_BLOCKS) +
+                                 ". Give a smaller --extra-iso-space.");
+    // Sequential hint: the image is written front-to-back with only a few descriptor seeks at finalize,
+    // so FILE_FLAG_SEQUENTIAL_SCAN suits it better than the default random-access flag.
+    if (!m_file.open(fileName.c_str(), File::ofWrite | File::ofSequential))
+        return false;
+    // Mark the image sparse so the multi-GB layer-break / inner-only guard pads are stored as holes
+    // (they read back as zeros for burning) instead of being physically written. Falls back to real zero
+    // writes in writeZeroPad() when the target filesystem has no sparse support (FAT/exFAT, some shares).
+    m_sparseOk = m_file.setSparse();
+
+    if (diskSize > 0)
+        setMetaPartitionSize(ALLOC_BLOCK_SIZE * static_cast<int>(metaBlocks));
+
+    // 1. write 32K empty space
+    memset(m_buffer, 0, sizeof(m_buffer));
+    for (int i = 0; i < 32768 / SECTOR_SIZE; ++i) m_file.write(m_buffer, SECTOR_SIZE);
+
+    // 2. write Beginning Extended Area Descriptor
+    m_buffer[0] = 0;  // Structure Type
+    m_buffer[1] = 'B';
+    m_buffer[2] = 'E';
+    m_buffer[3] = 'A';
+    m_buffer[4] = '0';
+    m_buffer[5] = '1';
+    m_buffer[6] = 1;  // Structure Version
+    m_file.write(m_buffer, SECTOR_SIZE);
+
+    // 3. Volume recognition structures. NSR Descriptor
+    m_buffer[0] = 0;  // Structure Type
+    m_buffer[1] = 'N';
+    m_buffer[2] = 'S';
+    m_buffer[3] = 'R';
+    m_buffer[4] = '0';
+    m_buffer[5] = '3';
+    m_buffer[6] = 1;  // Structure Version
+    m_file.write(m_buffer, SECTOR_SIZE);
+
+    // 4. Terminating Extended Area Descriptor
+    m_buffer[0] = 0;  // Structure Type
+    m_buffer[1] = 'T';
+    m_buffer[2] = 'E';
+    m_buffer[3] = 'A';
+    m_buffer[4] = '0';
+    m_buffer[5] = '1';
+    m_buffer[6] = 1;  // Structure Version
+    m_file.write(m_buffer, SECTOR_SIZE);
+
+    // 576K align
+
+    memset(m_buffer, 0, SECTOR_SIZE);
+    while (m_file.size() < 1024LL * 576) m_file.write(m_buffer, SECTOR_SIZE);
+
+    m_partitionStartAddress = static_cast<int>(m_file.size() / SECTOR_SIZE);
+    m_tagLocationBaseAddr = m_partitionStartAddress;
+    m_partitionEndAddress = 0;
+
+    // Align to 64K (640K total)
+    memset(m_buffer, 0, sizeof(m_buffer));
+    for (int i = 0; i < 64 / 2; ++i) m_file.write(m_buffer, SECTOR_SIZE);
+
+    // -------------- start main volume --------------------------
+    m_metadataLBN = static_cast<int>(m_file.size() / SECTOR_SIZE);
+
+    // create root
+    m_rootDirInfo = new FileEntryInfo(this, nullptr, 0, FileTypes::Directory);
+
+    // create system stream dir
+    m_systemStreamDir = new FileEntryInfo(this, nullptr, 0, FileTypes::SystemStreamDirectory);
+    m_metadataMappingFile = new FileEntryInfo(this, m_systemStreamDir, 0, FileTypes::File);
+    m_metadataMappingFile->setName("*UDF Unique ID Mapping Data");
+    m_systemStreamDir->addFile(m_metadataMappingFile);
+
+    // reserve space for metadata area
+
+    memset(m_buffer, 0, sizeof(m_buffer));
+    const int64_t requiredFileSizeLBN = METADATA_START_ADDR + m_metadataFileLen / SECTOR_SIZE;
+    const int64_t currentFileSizeLBN = m_file.size() / SECTOR_SIZE;
+    for (int64_t i = currentFileSizeLBN; i < requiredFileSizeLBN; ++i) m_file.write(m_buffer, SECTOR_SIZE);
+
+    // reserve space for metadata mapping file: 48 bytes and 16 for every file and folder. It was always one 64 KB
+    // block, which holds 4093 entries; the mapping of a larger tree was written over the start of the first file of
+    // the image. Every entry takes at least a sector of the metadata partition, which is sized for the tree, so the
+    // partition bounds the mapping. One block remains for every image up to 8 MB of metadata, as before.
+    m_mappingReserve =
+        (std::max)(ALLOC_BLOCK_SIZE, static_cast<int>(roundUp64(48 + 16LL * (m_metadataFileLen / SECTOR_SIZE),
+                                                                static_cast<uint64_t>(ALLOC_BLOCK_SIZE))));
+    for (int i = 0; i < m_mappingReserve / SECTOR_SIZE; ++i) m_file.write(m_buffer, SECTOR_SIZE);
+    m_dataStartLbn = imageLBA();
+
+    m_opened = true;
+    return true;
+}
+
+// ----------- descriptors --------------
+
+FileEntryInfo* IsoWriter::mkdir(const char* name, FileEntryInfo* parent)
+{
+    if (!m_rootDirInfo)
+        return nullptr;
+    if (parent == nullptr)
+        parent = m_rootDirInfo;
+
+    const auto dir = new FileEntryInfo(this, parent, m_objectUniqId++, FileTypes::Directory);
+    dir->setName(name);
+    parent->addSubDir(dir);
+    // m_sectorNum += 2;
+    // m_systemStreamLBN = m_sectorNum; // last allocated sector
+    return dir;
+}
+
+bool IsoWriter::createDir(const std::string& dir)
+{
+    getEntryByName(toIsoSeparator(dir), FileTypes::Directory);
+    return true;
+}
+
+ISOFile* IsoWriter::createFile() { return new ISOFile(this); }
+
+bool IsoWriter::createInterleavedFile(const std::string& inFile1, const std::string& inFile2,
+                                      const std::string& outFile)
+{
+    const FileEntryInfo* inEntry1 = getEntryByName(toIsoSeparator(inFile1), FileTypes::RealtimeFile);
+    if (!inEntry1)
+        return false;
+
+    const FileEntryInfo* inEntry2 = getEntryByName(toIsoSeparator(inFile2), FileTypes::RealtimeFile);
+    if (!inEntry2)
+        return false;
+
+    FileEntryInfo* outEntry = getEntryByName(toIsoSeparator(outFile), FileTypes::RealtimeFile);
+    if (!outEntry)
+        return false;
+
+    // These two conditions used to be assertions, which a release build removes. Both of them mean
+    // the interleave cannot be described: unequal extent counts leave chunks with no partner, and a
+    // part-sector extent cannot be addressed by a non-final allocation descriptor at all. Building
+    // the alias anyway yields a file of exactly the right length with its halves out of step, which
+    // is the worst way to be wrong, so say what is wrong and refuse.
+    if (inEntry1->m_extents.size() != inEntry2->m_extents.size())
+    {
+        LTRACE(LT_ERROR, 2,
+               "Can't interleave " << outFile << ": " << inEntry1->m_extents.size() << " pieces against "
+                                   << inEntry2->m_extents.size() << ", so the two views are not cut the same way");
+        return false;
+    }
+    for (size_t i = 0; i < inEntry1->m_extents.size(); ++i)
+    {
+        if (inEntry1->m_extents[i].size % SECTOR_SIZE != 0 || inEntry2->m_extents[i].size % SECTOR_SIZE != 0)
+        {
+            LTRACE(LT_ERROR, 2, "Can't interleave " << outFile << ": piece " << i << " is not a whole sector count");
+            return false;
+        }
+        outEntry->addExtent(inEntry2->m_extents[i]);
+        outEntry->addExtent(inEntry1->m_extents[i]);
+    }
+    // outEntry->m_fileSize = inEntry1->m_fileSize + inEntry2->m_fileSize;
+
+    return true;
+}
+
+FileEntryInfo* IsoWriter::createFileEntry(FileEntryInfo* parent, const FileTypes fileType)
+{
+    if (!m_rootDirInfo)
+        return nullptr;
+    if (parent == nullptr)
+        parent = m_rootDirInfo;
+
+    const auto file = new FileEntryInfo(this, parent, m_objectUniqId++, fileType);
+    parent->addFile(file);
+    return file;
+}
+
+FileEntryInfo* IsoWriter::getEntryByName(const std::string& name, const FileTypes fileType)
+{
+    const std::vector<std::string> parts = splitStr(name.c_str(), '/');
+    FileEntryInfo* entry = m_rootDirInfo;
+    if (!entry)
+        return nullptr;
+    const bool isDir = fileType == FileTypes::Directory || fileType == FileTypes::SystemStreamDirectory;
+    const size_t idxMax = isDir ? parts.size() : parts.size() - 1;
+    for (size_t i = 0; i < idxMax; ++i)
+    {
+        FileEntryInfo* nextEntry = entry->subDirByName(parts[i]);
+        if (!nextEntry)
+            nextEntry = mkdir(parts[i].c_str(), entry);
+        entry = nextEntry;
+    }
+    if (isDir)
+        return nullptr;
+
+    const std::string fileName = *parts.rbegin();
+    if (fileName.empty())
+        return entry;
+    FileEntryInfo* fileEntry = entry->fileByName(fileName);
+    if (!fileEntry)
+    {
+        fileEntry = createFileEntry(entry, fileType);
+        if (!fileEntry)
+            return nullptr;
+        fileEntry->setName(fileName);
+        entry->checkNameIsUnique(fileEntry);
+    }
+
+    return fileEntry;
+}
+
+void IsoWriter::writeMetadata(const int lbn)
+{
+    m_file.seek(static_cast<int64_t>(lbn) * SECTOR_SIZE);
+    m_curMetadataPos = lbn;
+    // The file set descriptor is one block, and the extent the logical volume gives it is one block long, which ends
+    // the sequence: no terminating descriptor follows, and the root directory is the next block
+    writeFileSetDescriptor();
+    writeEntity(m_rootDirInfo);
+
+    // write system stream file
+    writeEntity(m_systemStreamDir);
+}
+
+// The entries of BDMV and of BDMV/BACKUP are listed in one fixed order: index.bdmv and MovieObject.bdmv,
+// then PLAYLIST, CLIPINF, STREAM, AUXDATA, META, BDJO, JAR and BACKUP. They were listed in the order the folders were
+// made, which depends on the job. Any other entry keeps its place after these. A reader looks a name up, so this
+// changes no file, only the order of the listing and of the entries behind it.
+void IsoWriter::orderBdmvFolders() const
+{
+    static const char* const fileOrder[] = {"INDEX.BDMV", "MOVIEOBJECT.BDMV"};
+    static const char* const folderOrder[] = {"PLAYLIST", "CLIPINF", "STREAM", "AUXDATA",
+                                              "META",     "BDJO",    "JAR",    "BACKUP"};
+    auto rank = [](const FileEntryInfo* entry, const char* const* order, const size_t count)
+    {
+        const std::string name = strToUpperCase(entry->name());
+        for (size_t i = 0; i < count; ++i)
+            if (name == order[i])
+                return i;
+        return count;
+    };
+    auto order = [&](FileEntryInfo* folder)
+    {
+        std::stable_sort(
+            folder->m_files.begin(), folder->m_files.end(), [&](const FileEntryInfo* a, const FileEntryInfo* b)
+            { return rank(a, fileOrder, std::size(fileOrder)) < rank(b, fileOrder, std::size(fileOrder)); });
+        std::stable_sort(
+            folder->m_subDirs.begin(), folder->m_subDirs.end(), [&](const FileEntryInfo* a, const FileEntryInfo* b)
+            { return rank(a, folderOrder, std::size(folderOrder)) < rank(b, folderOrder, std::size(folderOrder)); });
+    };
+    for (FileEntryInfo* bdmv : m_rootDirInfo->m_subDirs)
+    {
+        if (strToUpperCase(bdmv->name()) != "BDMV")
+            continue;
+        order(bdmv);
+        for (FileEntryInfo* backup : bdmv->m_subDirs)
+            if (strToUpperCase(backup->name()) == "BACKUP")
+                order(backup);
+    }
+}
+
+void IsoWriter::allocateMetadata()
+{
+    orderBdmvFolders();
+    constexpr int sectorNum = 1;  // the file set descriptor is block 0
+    m_systemStreamLBN = allocateEntity(m_rootDirInfo, sectorNum);
+    allocateEntity(m_systemStreamDir, m_systemStreamLBN);
+
+    if (m_systemStreamLBN + 3 > m_metadataFileLen / SECTOR_SIZE)
+    {
+        std::ostringstream msg;
+        msg << "ISO error: not enough space in the metadata partition. It holds " << m_metadataFileLen / SECTOR_SIZE
+            << " sectors and " << m_systemStreamLBN + 3 << " are needed for " << m_mappingEntries.size()
+            << " files and directories. Use --extra-iso-space to enlarge it, in units of 64K.";
+        throw std::runtime_error(msg.str());
+    }
+
+    // write udf unique id mapping file
+    m_file.seek(static_cast<int64_t>(METADATA_START_ADDR) * SECTOR_SIZE + m_metadataFileLen);
+
+    // One entry per file and per directory, sixteen bytes each, behind a forty eight byte header.
+    // This used to be written into a fixed 64 KB block, which holds (65536 - 48) / 16 = 4093
+    // entries and not one more, and nothing in ByteFileWriter looked at where the buffer ended. So
+    // entry 4094 wrote past a heap allocation: a segmentation fault with nothing on stdout or
+    // stderr, and an unusable image left behind at the output path. The size is computed now, and
+    // the writer refuses to run off the end of any buffer rather than corrupting the heap.
+    constexpr size_t MAPPING_HEADER_SIZE = 48;
+    constexpr size_t MAPPING_ENTRY_SIZE = 16;
+    const size_t mappingSize = MAPPING_HEADER_SIZE + MAPPING_ENTRY_SIZE * m_mappingEntries.size();
+    // At least one block, which the rounding always gives: said so the compiler can see the strings below fit
+    std::vector<uint8_t> buffer((std::max)(static_cast<size_t>(roundUp64(mappingSize, ALLOC_BLOCK_SIZE)),
+                                           static_cast<size_t>(ALLOC_BLOCK_SIZE)),
+                                0);
+    if (mappingSize > static_cast<size_t>(m_mappingReserve))
+        throw std::runtime_error("ISO error: the UDF ID mapping of " + std::to_string(m_mappingEntries.size()) +
+                                 " files and folders does not fit the space reserved for it. Use --extra-iso-space "
+                                 "to enlarge the metadata, in units of 64K.");
+    ByteFileWriter writer;
+    writer.setBuffer(buffer.data(), static_cast<int>(buffer.size()));
+
+    writer.writeCharSpecString(m_impId.c_str(), 32);
+    writer.writeLE32(0);  // flags
+    // The count is a four byte field. Casting it through uint16_t first threw away everything past
+    // 65,535 entries, which no image could reach while the write above crashed at 4,094.
+    writer.writeLE32(static_cast<uint32_t>(m_mappingEntries.size()));
+    writer.writeLE32(0);  // reserved
+    writer.writeLE32(0);  // reserved
+
+    for (const auto& mappingEntry : m_mappingEntries)
+    {
+        writer.writeLE32(mappingEntry.first);  // unique ID
+        writer.writeLE32(mappingEntry.second.parentLBN);
+        writer.writeLE32(mappingEntry.second.LBN);
+        writer.writeLE16(1);  // parent partition
+        writer.writeLE16(1);  // object partition
+    }
+
+    // The mapping file lives at a fixed address just past the metadata partition, and it is written
+    // here, long after the file data, by seeking BACK to it. That seek lands on a low sector, and
+    // FileEntryInfo::write consults the layer break guard on every write, so a guard zone reaching
+    // that far back would pad the mapping file FORWARD out of its own home and into the data.
+    //
+    // Measured before this: a 12,005 file tree with --inner-only put the mapping file's home at
+    // sector 12,928 and the guard's before-zone began at 8,704, so the structure was written at
+    // sector 24,429,792, about 24 million sectors from where UDF expects it, and four navigation
+    // files came back wrong. The guard is there to move file data off the sectors around a break;
+    // this is not file data and has nowhere else it may go.
+    m_layerBreakSuppressed = true;
+    m_metadataMappingFile->write(buffer.data(), static_cast<int32_t>(writer.size()));
+    m_metadataMappingFile->close();
+    m_layerBreakSuppressed = false;
+}
+
+void IsoWriter::close()
+{
+    if (!m_opened)
+        return;
+    // Cleared before anything below can refuse, so the destructor's call does not run all this a
+    // second time while the first refusal is on its way out.
+    m_opened = false;
+
+    moveBackLookAhead();
+    writeDeferredFiles();
+
+    memset(m_buffer, 0, sizeof(m_buffer));
+    if (m_mirrorPlaced)
+    {
+        // The mirror is inside the data, at the end of layer 0 (placeMirrorHere), and its sectors are kept: its file
+        // entry goes in front of them. The partition ends on a 64 KB boundary.
+        while (m_file.size() % ALLOC_BLOCK_SIZE != 0) m_file.write(m_buffer, SECTOR_SIZE);
+        const int64_t endPos = m_file.size();
+        m_file.seek(static_cast<int64_t>(m_metadataMirrorLBN - 1) * SECTOR_SIZE);
+        m_tagLocationBaseAddr = m_partitionStartAddress;
+        writeExtendedFileEntryDescriptor(false, 0, FileTypes::MetadataMirror, m_metadataFileLen,
+                                         m_metadataMirrorLBN - m_partitionStartAddress, 0);
+        m_file.seek(endPos);
+    }
+    else
+    {
+        while (m_file.size() % ALLOC_BLOCK_SIZE != 1024LL * 62) m_file.write(m_buffer, SECTOR_SIZE);
+
+        // mirror metadata file location and length
+        m_metadataMirrorLBN = static_cast<int>(m_file.size() / SECTOR_SIZE + 1);
+        m_tagLocationBaseAddr = m_partitionStartAddress;
+        writeExtendedFileEntryDescriptor(false, 0, FileTypes::MetadataMirror, m_metadataFileLen,
+                                         m_metadataMirrorLBN - m_partitionStartAddress, 0);
+
+        // allocate space for metadata mirror file
+        memset(m_buffer, 0, sizeof(m_buffer));
+        for (int i = 0; i < m_metadataFileLen / SECTOR_SIZE; ++i) m_file.write(m_buffer, SECTOR_SIZE);
+    }
+
+    m_partitionEndAddress = static_cast<int>(m_file.size() / SECTOR_SIZE);
+
+    // reserve 64K for EOF anchor volume
+    memset(m_buffer, 0, sizeof(m_buffer));
+    for (int i = 0; i < 32; ++i) m_file.write(m_buffer, SECTOR_SIZE);
+
+    allocateMetadata();
+
+    m_tagLocationBaseAddr = m_metadataMirrorLBN;
+    writeMetadata(m_metadataMirrorLBN);  // write metadata mirror file
+
+    m_file.seek(1024LL * 576);
+    // metadata file location and length (located at 576K, point to 640K address)
+    m_tagLocationBaseAddr = m_partitionStartAddress;
+    writeExtendedFileEntryDescriptor(false, 0, FileTypes::Metadata, m_metadataFileLen,
+                                     m_metadataLBN - m_partitionStartAddress, 0);
+    m_tagLocationBaseAddr = m_metadataLBN;  // Don't know why. Doing just as scenarist does
+    writeMetadata(m_metadataLBN);
+
+    writeDescriptors();
+
+    // A guard that was asked for and never written is the same silence 2.18.0 went through the rest
+    // of this file removing. It happens when the break falls past the end of the image, which is the
+    // normal outcome of leaving the disc unset: with no disc, the break defaults to half a BD50, so
+    // anything smaller than about 25 GB never reaches it. The image then comes out byte for byte the
+    // size it would have been without the option, which is exactly what it looks like from outside.
+    // The guard given by default is said once, where it was written; an image that ends before the break is one
+    // that never needed it, and is not warned about.
+    if (m_defaultGuard && !m_layerBreakPads.empty())
+        LTRACE(LT_INFO, 2,
+               "Layer break guard: " << (static_cast<int64_t>(m_layerBreakGuardBeforeSectors) +
+                                         m_layerBreakGuardAfterSectors) *
+                                            SECTOR_SIZE / (1024 * 1024)
+                                     << (m_layerBreakPads.size() > 1 ? " MB at each layer change"
+                                                                     : " MB at the layer change")
+                                     << " are left empty, as a burnt dual-layer disc often reads badly there "
+                                        "and a player then stalls. --no-layer-break-guard leaves it out.");
+    if (!m_defaultGuard && (m_layerBreakGuardAfterSectors > 0 || m_layerBreakGuardBeforeSectors > 0) &&
+        m_layerBreakPads.empty() && !m_layerBreakPoints.empty())
+    {
+        const int64_t imageSectors = m_file.size() / SECTOR_SIZE;
+        const int64_t firstBreak = m_layerBreakPoints.front();
+        if (imageSectors <= firstBreak)
+            LTRACE(LT_WARN, 2,
+                   "Warning: no layer break guard was written, because the image ends before the break. The "
+                       << "image is " << imageSectors << " sectors (" << imageSectors * SECTOR_SIZE / 1000000000.0
+                       << " GB) and the first break is at sector " << firstBreak << " ("
+                       << firstBreak * static_cast<int64_t>(SECTOR_SIZE) / 1000000000.0
+                       << " GB). Choose the disc you are burning to, so the break is worked out from it, or "
+                          "give the break directly with --layer-break-lbn.");
+    }
+}
+
+// A stream file starts on a 64 KB boundary (32 sectors): the zeros before it belong to no file. The second view of a
+// 3D pair opened right after the first adds nothing, as nothing has been written in between.
+void IsoWriter::alignForStream()
+{
+    constexpr int64_t SECTORS_PER_BLOCK = ALLOC_BLOCK_SIZE / SECTOR_SIZE;
+    const int64_t rest = imageLBA() % SECTORS_PER_BLOCK;
+    if (rest == 0)
+        return;
+    memset(m_buffer, 0, sizeof(m_buffer));
+    for (int64_t i = rest; i < SECTORS_PER_BLOCK; ++i) m_file.write(m_buffer, SECTOR_SIZE);
+    m_lastWritedObjectID = -1;
+}
+
+// The copies are written in the order of the BACKUP folder: BDJO, index.bdmv, MovieObject.bdmv, PLAYLIST, CLIPINF,
+// JAR, then anything else, each part in the order its files were opened
+void IsoWriter::writeDeferredFiles()
+{
+    if (m_deferredFiles.empty())
+        return;
+    auto rank = [](const FileEntryInfo* entry)
+    {
+        // the entry directly inside BACKUP that this one is, or is under
+        const FileEntryInfo* top = entry;
+        while (top->m_parent && strToUpperCase(top->m_parent->name()) != "BACKUP") top = top->m_parent;
+        const std::string name = strToUpperCase(top->name());
+        static const char* const order[] = {"BDJO", "INDEX.BDMV", "MOVIEOBJECT.BDMV", "PLAYLIST", "CLIPINF", "JAR"};
+        for (size_t i = 0; i < std::size(order); ++i)
+            if (name == order[i])
+                return i;
+        return std::size(order);
+    };
+    std::vector<FileEntryInfo*> files;
+    files.swap(m_deferredFiles);
+    std::stable_sort(files.begin(), files.end(),
+                     [&](const FileEntryInfo* a, const FileEntryInfo* b) { return rank(a) < rank(b); });
+    for (FileEntryInfo* entry : files)
+    {
+        if (!entry->m_deferred)
+            continue;  // written where it stood, when there was no more room to hold it
+        entry->m_deferred = false;
+        std::vector<uint8_t> data;
+        data.swap(entry->m_deferredData);
+        m_deferredBytes -= static_cast<int64_t>(data.size());
+        if (!data.empty())
+            entry->write(data.data(), static_cast<int32_t>(data.size()));
+        entry->close();
+    }
+}
+
+void IsoWriter::writeDescriptors()
+{
+    m_tagLocationBaseAddr = 0;
+    // descriptors in a beginning of a file
+    m_file.seek(1024LL * 64);
+
+    writePrimaryVolumeDescriptor();
+    writeImpUseDescriptor();
+    writePartitionDescriptor();
+    writeLogicalVolumeDescriptor();
+    writeUnallocatedSpaceDescriptor();
+    writeTerminationDescriptor();
+
+    m_file.seek(1024LL * 128);
+
+    writeLogicalVolumeIntegrityDescriptor();
+    writeTerminationDescriptor();
+
+    m_file.seek(1024LL * 512);
+
+    writeAnchorVolumeDescriptor(m_partitionEndAddress +
+                                ALLOC_BLOCK_SIZE / SECTOR_SIZE);  // add space for last 64K anchor volume
+
+    // descriptors in a end of a file
+
+    const int64_t eofPos = m_partitionEndAddress * static_cast<int64_t>(SECTOR_SIZE);
+    m_file.seek(eofPos + ALLOC_BLOCK_SIZE - SECTOR_SIZE);
+    // Per ECMA-167 / UDF 2.50 (section 2.2.3), the AVDP at sector (N - 256) is required for
+    // rewritable media but optional for write-once media. We always write it here for maximum
+    // compatibility; omitting it for write-once media (as DVDFab and ImgBurn do) is acceptable.
+    writeAnchorVolumeDescriptor(m_partitionEndAddress + ALLOC_BLOCK_SIZE / SECTOR_SIZE);
+
+    writePrimaryVolumeDescriptor();
+    writeImpUseDescriptor();
+    writePartitionDescriptor();
+    writeLogicalVolumeDescriptor();
+    writeUnallocatedSpaceDescriptor();
+    writeTerminationDescriptor();
+
+    memset(m_buffer, 0, sizeof(m_buffer));
+    const int64_t fullFileSize = eofPos + static_cast<int64_t>(1024 * 512) + ALLOC_BLOCK_SIZE;
+    while (m_file.size() < fullFileSize - SECTOR_SIZE) m_file.write(m_buffer, SECTOR_SIZE);
+    writeAnchorVolumeDescriptor(m_partitionEndAddress + ALLOC_BLOCK_SIZE / SECTOR_SIZE);
+}
+
+int32_t IsoWriter::absoluteSectorNum() const
+{
+    return static_cast<int32_t>(m_file.pos() / SECTOR_SIZE - m_tagLocationBaseAddr);
+}
+
+void IsoWriter::sectorSeek(const Partition partition, const int pos) const
+{
+    const int64_t offset = (partition == Partition::MetadataPartition) ? m_curMetadataPos : m_partitionStartAddress;
+    m_file.seek((offset + pos) * SECTOR_SIZE, File::SeekMethod::smBegin);
+}
+
+void IsoWriter::writeEntity(const FileEntryInfo* dir)
+{
+    dir->serialize();
+    for (const auto& i : dir->m_files) writeEntity(i);
+    for (const auto& i : dir->m_subDirs) writeEntity(i);
+}
+
+int IsoWriter::allocateEntity(FileEntryInfo* entity, int sectorNum)
+{
+    if ((entity->m_fileType == FileTypes::File || entity->m_fileType == FileTypes::RealtimeFile) && entity->m_objectId)
+        m_totalFiles++;
+    else if (entity->m_fileType == FileTypes::Directory)
+        m_totalDirectories++;
+
+    sectorNum += entity->allocateEntity(sectorNum);
+    if (entity->m_objectId)
+        m_mappingEntries[entity->m_objectId] = MappingEntry(entity->m_parent->m_sectorNum, entity->m_sectorNum);
+
+    for (const auto& i : entity->m_files) sectorNum = allocateEntity(i, sectorNum);
+    for (const auto& i : entity->m_subDirs) sectorNum = allocateEntity(i, sectorNum);
+    return sectorNum;
+}
+
+void IsoWriter::writeAllocationExtentDescriptor(const ExtentList* extents, const size_t start, const size_t indexEnd)
+{
+    const auto buff32 = UnalignedPtr<uint32_t>(m_buffer);
+    memset(m_buffer, 0, sizeof(m_buffer));
+    writeDescriptorTag(m_buffer, DescriptorTag::AllocationExtent, absoluteSectorNum());
+
+    uint8_t* curPos = m_buffer + 24;
+    for (size_t i = start; i < indexEnd; ++i)
+    {
+        writeLongAD(curPos, static_cast<uint32_t>(extents->at(i).size), extents->at(i).lbnPos, 0, 0);
+        curPos += 16;
+    }
+    if (indexEnd < extents->size())
+    {
+        buff32[212 / 4] += 0x10;
+        writeLongAD(curPos, SECTOR_SIZE + NEXT_EXTENT, absoluteSectorNum() + 1, 1, 0);
+        curPos += 16;
+    }
+    buff32[5] = static_cast<uint32_t>(curPos - m_buffer - 24);  // length
+    calcDescriptorCRC(m_buffer, static_cast<uint16_t>(curPos - m_buffer));
+    m_file.write(m_buffer, SECTOR_SIZE);
+}
+
+int IsoWriter::writeExtendedFileEntryDescriptor(const bool namedStream, const uint32_t objectId,
+                                                const FileTypes fileType, const uint64_t len, const uint32_t pos,
+                                                const uint16_t linkCount, const ExtentList* extents)
+{
+    int sectorsWrited = 0;
+
+    memset(m_buffer, 0, sizeof(m_buffer));
+    writeDescriptorTag(m_buffer, DescriptorTag::ExtendedFileEntry, absoluteSectorNum());
+
+    const auto buff32 = UnalignedPtr<uint32_t>(m_buffer);
+    const auto buff16 = UnalignedPtr<uint16_t>(m_buffer);
+    const auto buff64 = UnalignedPtr<uint64_t>(m_buffer);
+
+    writeIcbTag(namedStream, m_buffer + 16, fileType);
+
+    buff32[36 / 4] = UINT_MAX;  // uid
+    buff32[40 / 4] = UINT_MAX;  // guid
+    // zero Permissions, File Link Count, Record Format, Record Display Attributes
+    if (fileType >= FileTypes::Metadata)
+    {
+        buff32[44 / 4] = 0x000000;  // Permissions
+        assert(linkCount == 0);
+        buff16[48 / 2] = linkCount;  // File Link Count
+    }
+    else if (namedStream || fileType == FileTypes::SystemStreamDirectory)
+    {
+        // The unique ID mapping stream and the system stream folder that holds it belong to the file system, not to
+        // a user: no permissions
+        buff32[44 / 4] = 0x000000;   // Permissions
+        buff16[48 / 2] = linkCount;  // File Link Count
+    }
+    else if (fileType == FileTypes::File || fileType == FileTypes::RealtimeFile)
+    {
+        buff32[44 / 4] = 0x1084;  // Permissions
+        assert(linkCount == 1);
+        buff16[48 / 2] = linkCount;  // File Link Count
+    }
+    else
+    {
+        buff32[44 / 4] = 0x14A5;     // Permissions
+        buff16[48 / 2] = linkCount;  // File Link Count
+    }
+
+    m_buffer[50] = 0x0;  // Record Format
+    m_buffer[51] = 0x0;  // Record Display Attributes
+
+    buff32[52 / 4] = 0x00;  // Record Length
+    buff64[56 / 8] = len;   // Information Length
+    buff64[64 / 8] = len;   // Object Size
+
+    buff32[72 / 4] =
+        static_cast<uint32_t>(roundUp64(len, SECTOR_SIZE) / SECTOR_SIZE);  // blocks recorded (matched to bytes)
+    buff32[76 / 4] = 0x00;                                                 // high part of blocks recorded
+
+    writeTimestamp(m_buffer + 80, m_currentTime, m_utcTime);   // access datetime
+    writeTimestamp(m_buffer + 92, m_currentTime, m_utcTime);   // modification datetime
+    writeTimestamp(m_buffer + 104, m_currentTime, m_utcTime);  // creation datetime
+    writeTimestamp(m_buffer + 116, m_currentTime, m_utcTime);  // attributes datetime
+    buff32[128 / 4] = 0x01;                                    // Checkpoint
+    // skip Extended Attribute ICB
+    // skip Stream Directory ICB
+
+    strcpy(reinterpret_cast<char*>(m_buffer) + 169, m_impId.c_str());  // Implementation Identifier
+    buff32[200 / 4] = objectId;  // Unique ID (32-bit LE; was 1 byte -> 255-file cap)
+
+    // skip Length of Extended Attributes
+    if (fileType != FileTypes::File && fileType != FileTypes::RealtimeFile)
+    {
+        // metadata object (metadata file, directory e.t.c). Using short extent
+        buff32[212 / 4] = 0x08;                        // Length of Allocation Descriptors
+        buff32[216 / 4] = static_cast<uint32_t>(len);  // Allocation descriptors, data len in bytes
+        buff32[220 / 4] = pos;  // Allocation descriptors, start logical block number inside volume
+        calcDescriptorCRC(m_buffer, 224);
+        m_file.write(m_buffer, SECTOR_SIZE);
+        sectorsWrited++;
+    }
+    else if (extents == nullptr)
+    {
+        // file object. using long AD
+        buff32[212 / 4] = 0x10;  // long AD size
+        writeLongAD(m_buffer + 216, static_cast<uint32_t>(len), pos, 0, 0);
+        calcDescriptorCRC(m_buffer, 232);
+        m_file.write(m_buffer, SECTOR_SIZE);
+        sectorsWrited++;
+    }
+    else
+    {
+        size_t indexEnd = FFMIN(MAX_EXTENTS_IN_EXTFILE, extents->size());
+        if (extents->size() - indexEnd == 1)
+            indexEnd++;  // continue record may be replaced by payload data
+        buff32[212 / 4] = static_cast<uint32_t>(0x10 * indexEnd);
+        uint8_t* curPos = m_buffer + 216;
+        for (size_t i = 0; i < indexEnd; ++i)
+        {
+            writeLongAD(curPos, static_cast<uint32_t>(extents->at(i).size), extents->at(i).lbnPos, 0, 0);
+            curPos += 16;
+        }
+        if (indexEnd < extents->size())
+        {
+            buff32[212 / 4] += 0x10;
+            writeLongAD(curPos, SECTOR_SIZE + NEXT_EXTENT, absoluteSectorNum() + 1, 1, 0);  // continue expected
+            curPos += 16;
+        }
+        calcDescriptorCRC(m_buffer, static_cast<uint16_t>(curPos - m_buffer));
+        m_file.write(m_buffer, SECTOR_SIZE);
+        sectorsWrited++;
+
+        size_t indexStart = indexEnd;
+        while (indexStart < extents->size())
+        {
+            indexEnd = FFMIN(indexStart + MAX_EXTENTS_IN_EXTCONT, extents->size());
+            if (extents->size() - indexEnd == 1)
+                indexEnd++;  // continue record may be replaced by payload data
+            writeAllocationExtentDescriptor(extents, indexStart, indexEnd);
+            sectorsWrited++;
+            indexStart = indexEnd;
+        }
+    }
+
+    return sectorsWrited;
+}
+
+void IsoWriter::writeIcbTag(const bool namedStream, uint8_t* buffer, FileTypes fileType)
+{
+    const auto buff32 = UnalignedPtr<uint32_t>(buffer);
+    const auto buff16 = UnalignedPtr<uint16_t>(buffer);
+
+    // icb tag
+    buff32[0] = 0;  // Prior Recorded Number of Direct Entries
+    buff16[2] = 4;  // Strategy Type
+    buff16[3] = 0;  // Strategy parameters
+    buff16[4] = 1;  // Maximum Number of Entries
+    // skip reserved byte
+    buffer[11] = static_cast<uint8_t>(fileType);  // metadata file type
+    // skip 6 byte zero Parent ICB Location
+    if (fileType == FileTypes::File || fileType == FileTypes::RealtimeFile)
+        buff16[18 / 2] = 0x0021;  // flags: archive + long AD
+    else
+        buff16[18 / 2] = 0x0020;  // flags: archive
+    if (namedStream)
+        buff16[18 / 2] += 0x2400;  // flags: stream and system (the unique ID mapping stream)
+}
+
+void IsoWriter::writeFileSetDescriptor()
+{
+    memset(m_buffer, 0, sizeof(m_buffer));
+
+    ByteFileWriter writer;
+    writer.setBuffer(m_buffer, sizeof(m_buffer));
+    writer.writeDescriptorTag(DescriptorTag::FileSet, absoluteSectorNum());
+
+    writer.writeTimestamp(m_currentTime, m_utcTime);  // Recording Date and Time
+    writer.writeLE16(0x03);                           // Interchange Level
+    writer.writeLE16(0x03);                           // Maximum Interchange Level
+    writer.writeLE32(0x01);                           // Character Set List
+    writer.writeLE32(0x01);                           // Maximum Character Set List
+    writer.writeLE32(0x00);                           // File Set Number
+    writer.writeLE32(0x00);                           // File Set Descriptor Number
+    writer.writeCharSpecString("OSTA Compressed Unicode", 64);
+    writer.writeDString(m_volumeLabel, 128);                    // Logical Volume Identifier
+    writer.writeCharSpecString("OSTA Compressed Unicode", 64);  // File Set Character Set
+    writer.writeDString(m_volumeLabel, 32);                     // File Set Identifier
+    writer.skipBytes(32);                                       // Copyright File Identifier
+    writer.skipBytes(32);                                       // Abstract File Identifier
+    writer.writeLongAD(0x0800, 1, 1, 0);                        // Root Directory ICB
+    writer.writeUDFString("*OSTA UDF Compliant", 32);           // Domain Identifier
+    m_buffer[442] = 0x03;                                       // Domain Flags: Hard and Soft Write-Protect
+    writer.writeLongAD(0, 0, 0, 0);                             // Next Extent
+    writer.writeLongAD(0x0800, m_systemStreamLBN, 1, 0);
+
+    calcDescriptorCRC(m_buffer, 512);
+    m_file.write(m_buffer, SECTOR_SIZE);
+}
+
+void IsoWriter::writePrimaryVolumeDescriptor()
+{
+    memset(m_buffer, 0, sizeof(m_buffer));
+
+    ByteFileWriter writer;
+    writer.setBuffer(m_buffer, sizeof(m_buffer));
+    writer.writeDescriptorTag(DescriptorTag::PrimVol, absoluteSectorNum());
+
+    // The descriptors of the sequence are numbered 1 to 5 in the order they are written: PVD, IUVD, PD, LVD and USD
+    writer.writeLE32(0x01);  // Volume Descriptor Sequence Number
+    writer.writeLE32(0x00);  // Primary Volume Descriptor Number
+    writer.writeDString(m_volumeLabel, 32);
+
+    writer.writeLE16(0x01);  // Volume Sequence Number
+    writer.writeLE16(0x01);  // Maximum Volume Sequence Number
+    writer.writeLE16(0x02);  // Interchange Level
+    writer.writeLE16(0x02);  // Maximum Interchange Level
+    writer.writeLE32(0x01);  // Character Set List
+    writer.writeLE32(0x01);  // Maximum Character Set List
+
+    std::string volId = strToUpperCase(int32uToHex(m_volumeId));
+    volId = strPadLeft(volId, 8, '0');
+    const std::string volumeSetIdentifier = volId + std::string("        ") + m_volumeLabel;
+    writer.writeDString(volumeSetIdentifier.c_str(), 128);
+
+    // Descriptor Character Set
+    m_buffer[200] = 0x00;  // CS0 coded character set
+    strcpy(reinterpret_cast<char*>(m_buffer) + 201, "OSTA Compressed Unicode");
+
+    // Explanatory Character Set
+    m_buffer[264] = 0x00;  // CS0 coded character set
+    strcpy(reinterpret_cast<char*>(m_buffer) + 265, "OSTA Compressed Unicode");
+
+    // skip Volume Abstract
+    // skip Volume Copyright Notice
+
+    // Application Identifier
+    m_buffer[344] = 0x00;  // CS0 coded character set
+    strcpy(reinterpret_cast<char*>(m_buffer) + 345, m_appId.c_str());
+
+    writeTimestamp(m_buffer + 376, m_currentTime, m_utcTime);  // timestamp
+
+    // Implementation Identifier
+    m_buffer[388] = 0x00;  // CS0 coded character set
+    strcpy(reinterpret_cast<char*>(m_buffer) + 389, m_impId.c_str());
+
+    strcpy(reinterpret_cast<char*>(m_buffer) + 420, m_appId.c_str());
+
+    // skip Predecessor Volume Descriptor Sequence Location (BP 484) = 0L
+    m_buffer[488] = 1;  // Flags (BP 488)
+
+    // 490..511 Reserved
+
+    calcDescriptorCRC(m_buffer, 512);
+    m_file.write(m_buffer, SECTOR_SIZE);
+}
+
+void IsoWriter::writeImpUseDescriptor()
+{
+    memset(m_buffer, 0, sizeof(m_buffer));
+    writeDescriptorTag(m_buffer, DescriptorTag::ImplUseVol, absoluteSectorNum());
+
+    const auto buff32 = UnalignedPtr<uint32_t>(m_buffer);
+    buff32[4] = 0x02;  // Volume Descriptor Sequence Number
+
+    const std::string impId = std::string("*UDF LV Info");
+    m_buffer[20] = 0x00;
+    writeUDFString(m_buffer + 20, impId.c_str(), 32);
+
+    // Explanatory Character Set
+    m_buffer[52] = 0x00;  // CS0 coded character set
+    strcpy(reinterpret_cast<char*>(m_buffer) + 53, "OSTA Compressed Unicode");
+
+    // logical volume identifier
+    writeDString(m_buffer + 116, m_volumeLabel.c_str(), 128);
+
+    strcpy(reinterpret_cast<char*>(m_buffer) + 0x161, m_impId.c_str());  // ImplementationID
+    strcpy(reinterpret_cast<char*>(m_buffer) + 0x180, m_appId.c_str());  // ImplementationUse
+
+    calcDescriptorCRC(m_buffer, 512);
+    m_file.write(m_buffer, SECTOR_SIZE);
+}
+
+void IsoWriter::writePartitionDescriptor()
+{
+    memset(m_buffer, 0, sizeof(m_buffer));
+    writeDescriptorTag(m_buffer, DescriptorTag::Partition, absoluteSectorNum());
+
+    const auto buff32 = UnalignedPtr<uint32_t>(m_buffer);
+    const auto buff16 = UnalignedPtr<uint16_t>(m_buffer);
+    buff32[4] = 0x03;                                          // Volume Descriptor Sequence Number
+    buff16[10] = 0x01;                                         // partition flags
+    buff16[11] = 0x00;                                         // Partition Number
+    strcpy(reinterpret_cast<char*>(m_buffer) + 25, "+NSR03");  // Partition Contents
+    // skip Partition Header Descriptor (all zero)
+    buff32[184 / 4] = 0x01;                                             // Access Type
+    buff32[188 / 4] = m_partitionStartAddress;                          // Partition Starting Location (576K address )
+    buff32[192 / 4] = m_partitionEndAddress - m_partitionStartAddress;  // Partition Length field
+
+    strcpy(reinterpret_cast<char*>(m_buffer) + 0xc5, m_impId.c_str());  // ImplementationID
+    strcpy(reinterpret_cast<char*>(m_buffer) + 0xe4, m_appId.c_str());  // ImplementationUse
+
+    calcDescriptorCRC(m_buffer, 512);
+    m_file.write(m_buffer, SECTOR_SIZE);
+}
+
+void IsoWriter::writeLogicalVolumeDescriptor()
+{
+    memset(m_buffer, 0, sizeof(m_buffer));
+    writeDescriptorTag(m_buffer, DescriptorTag::LogicalVol, absoluteSectorNum());
+    const auto buff32 = UnalignedPtr<uint32_t>(m_buffer);
+    const auto buff16 = UnalignedPtr<uint16_t>(m_buffer);
+
+    buff32[4] = 0x04;                                                           // Volume Descriptor Sequence Number
+    strcpy(reinterpret_cast<char*>(m_buffer) + 21, "OSTA Compressed Unicode");  // Descriptor Character Set
+    // Logical Volume Identifier
+    writeDString(m_buffer + 84, m_volumeLabel.c_str(), 128);
+    buff32[212 / 4] = SECTOR_SIZE;                              // Logical Block Size
+    writeUDFString(m_buffer + 216, "*OSTA UDF Compliant", 32);  // Domain Identifier
+
+    // Domain Flags #03: Hard and Soft Write-Protect
+    m_buffer[242] = 0x03;
+
+    // Logical Volume Contents Use: the extent of the file set descriptor, one block (2048 bytes) at block 0 of the
+    // metadata partition. It was two blocks, the descriptor and a terminating descriptor behind it.
+    m_buffer[249] = 0x08;
+    m_buffer[256] = 0x01;
+
+    m_buffer[264] = 0x46;  // partition Map Table Length ( in bytes)
+    m_buffer[268] = 0x02;  // Number of Partition Maps.
+
+    // Implementation Identifier
+    strcpy(reinterpret_cast<char*>(m_buffer) + 273, m_impId.c_str());
+    strcpy(reinterpret_cast<char*>(m_buffer) + 304, m_appId.c_str());
+
+    // Integrity Sequence Extent
+    buff32[432 / 4] = 0x8000;
+    buff32[436 / 4] = 0x40;
+
+    // Partition Maps
+    m_buffer[440] = 0x01;    // Type 1 Partition Map
+    m_buffer[441] = 0x06;    // map len
+    buff16[442 / 2] = 0x01;  // Volume Sequence Number
+    buff16[444 / 2] = 0x00;  // Partition Number
+
+    m_buffer[446] = 0x02;  // Type 2 Partition Map
+    m_buffer[447] = 64;    // map len
+    writeUDFString(m_buffer + 450, "*UDF Metadata Partition", 32);
+
+    buff16[482 / 2] = 0x01;  // Volume Sequence Number
+    buff16[484 / 2] = 0x00;  // Partition Number
+    buff16[486 / 2] = 0x00;  // Metadata File Location
+    buff16[488 / 2] = 0x00;  // Metadata File Location
+    // Metadata Mirror File Location, to    do: fill me. should be written here in future
+    const uint32_t mirrorHeaderLocation = (m_metadataMirrorLBN - 1 - m_partitionStartAddress);
+    buff16[490 / 2] = static_cast<uint16_t>(mirrorHeaderLocation % 65536);
+    buff16[492 / 2] = mirrorHeaderLocation / 65536;
+
+    // Metadata Bitmap File Location
+    buff16[494 / 2] = 0xffff;
+    buff16[496 / 2] = 0xffff;
+
+    buff16[498 / 2] = 0x20;  // Allocation Unit Size (blocks) (64K in bytes)
+    buff16[500 / 2] = 0x00;  // Allocation Unit Size (blocks)
+    buff16[502 / 2] = 0x20;  // Alignment Unit Size (blocks) (64K in bytes)
+    m_buffer[504] = 0x01;    // Flags
+
+    calcDescriptorCRC(m_buffer, 510);
+    m_file.write(m_buffer, SECTOR_SIZE);
+}
+
+void IsoWriter::writeUnallocatedSpaceDescriptor()
+{
+    memset(m_buffer, 0, sizeof(m_buffer));
+    writeDescriptorTag(m_buffer, DescriptorTag::UnallocSpace, absoluteSectorNum());
+
+    const auto buff32 = UnalignedPtr<uint32_t>(m_buffer);
+
+    buff32[4] = 0x05;  // Volume Descriptor Sequence Number
+
+    calcDescriptorCRC(m_buffer, 24);
+    m_file.write(m_buffer, SECTOR_SIZE);
+}
+
+void IsoWriter::writeTerminationDescriptor()
+{
+    memset(m_buffer, 0, sizeof(m_buffer));
+    writeDescriptorTag(m_buffer, DescriptorTag::Terminating, absoluteSectorNum());
+
+    calcDescriptorCRC(m_buffer, 512);
+    m_file.write(m_buffer, SECTOR_SIZE);
+}
+
+void IsoWriter::writeLogicalVolumeIntegrityDescriptor()
+{
+    memset(m_buffer, 0, sizeof(m_buffer));
+    writeDescriptorTag(m_buffer, DescriptorTag::LogicalVolIntegrity, absoluteSectorNum());
+
+    const auto buff32 = UnalignedPtr<uint32_t>(m_buffer);
+    const auto buff16 = UnalignedPtr<uint16_t>(m_buffer);
+
+    writeTimestamp(m_buffer + 16, m_currentTime, m_utcTime);
+    buff32[7] = 0x01;              // Integrity Type
+    buff32[8] = buff32[9] = 0x00;  // Next Integrity Extent
+    // Logical Volume Contents Use (32 bytes)
+    buff32[10] = m_objectUniqId;
+    buff32[11] = 0;  // uniq ID hi
+
+    buff32[72 / 4] = 0x02;                                             // Number of Partitions
+    buff32[76 / 4] = static_cast<uint32_t>(46 + m_appId.size());       // Length of Implementation Use
+    buff32[80 / 4] = buff32[84 / 4] = 0;                               // Free Space Table
+    buff32[88 / 4] = m_partitionEndAddress - m_partitionStartAddress;  // main partition size
+    buff32[92 / 4] = m_metadataFileLen / SECTOR_SIZE;
+
+    strcpy(reinterpret_cast<char*>(m_buffer) + 97, m_impId.c_str());
+
+    buff32[0x80 / 4] = m_totalFiles;
+    buff32[0x84 / 4] = m_totalDirectories;
+    buff16[0x88 / 2] = 0x0250;  // Minimum UDF Read Revision
+    buff16[0x8a / 2] = 0x0250;  // Minimum UDF Write Revision
+    buff16[0x8c / 2] = 0x0250;  // Maximum UDF Write Revision
+
+    strcpy(reinterpret_cast<char*>(m_buffer) + 142, m_appId.c_str());
+
+    calcDescriptorCRC(m_buffer, static_cast<uint16_t>(142 + m_appId.size()));
+    m_file.write(m_buffer, SECTOR_SIZE);
+}
+
+void IsoWriter::writeAnchorVolumeDescriptor(const uint32_t endPartitionAddr)
+{
+    memset(m_buffer, 0, sizeof(m_buffer));
+    writeDescriptorTag(m_buffer, DescriptorTag::AnchorVolPtr, absoluteSectorNum());
+
+    const auto buff32 = UnalignedPtr<uint32_t>(m_buffer);
+    buff32[4] = 0x8000;  // point of the main volume descriptor
+    buff32[5] = 0x20;
+    buff32[6] = 0x8000;
+    buff32[7] = endPartitionAddr;  // set size to allocated sectors amount
+
+    calcDescriptorCRC(m_buffer, 512);
+    m_file.write(m_buffer, SECTOR_SIZE);
+}
+
+void IsoWriter::writeSector(const uint8_t* sectorData) { m_file.write(sectorData, SECTOR_SIZE); }
+
+int IsoWriter::writeRawData(const uint8_t* data, const int size) { return m_file.write(data, size); }
+
+int64_t IsoWriter::imageLBA() const { return m_file.pos() / SECTOR_SIZE; }
+
+int64_t IsoWriter::currentImageLBA() const { return imageLBA(); }
+
+bool IsoWriter::nearLayerBreak(const int upcomingBytes) const
+{
+    if (m_layerBreakSuppressed)
+        return false;
+    const int64_t lbn = imageLBA();
+    const int64_t lenSectors = (static_cast<int64_t>(upcomingBytes) + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    if (int64_t mirrorStart = 0; mirrorPending(mirrorStart) && lbn + lenSectors > mirrorStart)
+        return true;
+    for (size_t i = 0; i < m_layerBreakPoints.size(); ++i)
+    {
+        int64_t zoneStart = 0, zoneEnd = 0;
+        guardZone(i, zoneStart, zoneEnd);
+        if (lbn < zoneEnd && lbn + lenSectors > zoneStart)
+            return true;
+    }
+    return false;
+}
+
+// If the upcoming write would touch the guard zone around ANY layer break, fill zero sectors up
+// to the far edge of that break's zone. Each zone is [break - guardBefore, break + guardAfter)
+// in ABSOLUTE image sectors (asymmetric: the defect lives at the START of the next layer). The
+// interrupted file continues in a fresh extent (m_lastWritedObjectID reset), so the padding
+// belongs to no file and players never read it. A BD-R/RE DL has 1 break; BDXL 100 GB has 2,
+// 128 GB has 3. Must only be called at a sector-aligned file offset - FileEntryInfo::write()
+// guarantees that.
+void IsoWriter::writeZeroPad(const int64_t sectors)
+{
+    // A pad that would run over the place of the metadata mirror leaves the mirror there and goes on behind it. The
+    // callers place it first, so this is only a backstop.
+    const int64_t endLbn = imageLBA() + sectors;
+    placeMirrorBefore(endLbn);
+    fillZeroSectors(endLbn - imageLBA());
+}
+
+void IsoWriter::fillZeroSectors(const int64_t sectors)
+{
+    if (sectors <= 0)
+    {
+        m_lastWritedObjectID = -1;
+        return;
+    }
+    if (m_sparseOk)
+    {
+        // Extend the image across the guard as a sparse hole: no zero bytes hit the disk, yet the region
+        // reads back as zeros, so the burned image is byte-identical. truncate() sets the new file end;
+        // seek() then syncs the tracked position for the data that continues after the pad.
+        const int64_t newPos = static_cast<int64_t>(m_file.pos()) + sectors * SECTOR_SIZE;
+        // Extend only, never shrink: writeZeroPad is always called at the append point, but guard anyway
+        // so a stray truncate() can never destroy already-written data.
+        if (newPos > m_file.size())
+            m_file.truncate(static_cast<uint64_t>(newPos));
+        m_file.seek(newPos);
+        m_lastWritedObjectID = -1;
+        return;
+    }
+    // Fallback (no sparse support): physically write the zeros in large chunks.
+    static constexpr int PAD_CHUNK_SECTORS = 8192;  // 16 MB chunks
+    const std::vector<uint8_t> zeroBuff(static_cast<size_t>(PAD_CHUNK_SECTORS) * SECTOR_SIZE, 0);
+    int64_t restSectors = sectors;
+    while (restSectors > 0)
+    {
+        const int n = static_cast<int>(std::min<int64_t>(restSectors, PAD_CHUNK_SECTORS));
+        m_file.write(zeroBuff.data(), n * SECTOR_SIZE);
+        restSectors -= n;
+    }
+    m_lastWritedObjectID = -1;
+}
+
+void IsoWriter::checkLayerBreakPoint(const int maxExtentSize)
+{
+    const int64_t lenSectors = (static_cast<int64_t>(maxExtentSize) + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    // The mirror comes first: it ends where the guard zone of the break begins
+    placeMirrorBefore(imageLBA() + lenSectors);
+    if (m_layerBreakPoints.empty())
+        return;
+    const int64_t lbn = imageLBA();
+    for (size_t i = 0; i < m_layerBreakPoints.size(); ++i)
+    {
+        const int bp = m_layerBreakPoints[i];
+        int64_t zoneStart = 0, zoneEnd = 0;
+        guardZone(i, zoneStart, zoneEnd);
+        if (lbn < zoneEnd && lbn + lenSectors > zoneStart)
+        {
+            m_layerBreakPads.push_back({bp, lbn, zoneEnd});
+            writeZeroPad(zoneEnd - lbn);
+            return;  // at most one break per write (breaks are far apart)
+        }
+    }
+}
+
+void IsoWriter::padBeforeInterleavedPair(const int64_t pairBytes)
+{
+    if (pairBytes <= 0)
+        return;
+    // Clamped rather than refused: the value only decides whether the coming pair reaches the
+    // guard zone, and a clamp can make that test eager, never blind.
+    const int upcoming = pairBytes > INT32_MAX ? INT32_MAX : static_cast<int>(pairBytes);
+    m_pairsPlaced = true;  // the mirror, too, goes between two pairs here
+    checkLayerBreakPoint(upcoming);
+}
+
+bool IsoWriter::padOverZoneIfFileCrosses(const int64_t fileSizeBytes, const int64_t discCapacitySectors,
+                                         const int64_t restBytes, const int64_t maxEmptySectors,
+                                         const bool alignedStart, const int64_t laterOverrunSectors)
+{
+    if (m_layerBreakPoints.empty() || fileSizeBytes <= 0)
+        return false;
+    // Without a known capacity, derive a conservative one from the break spacing (layers hold the
+    // user data evenly, so the disc ends one layer past the last break). Prevents moving a file
+    // past the break when doing so would push the image beyond the disc.
+    int64_t capacity = discCapacitySectors;
+    if (capacity <= 0)
+        capacity = static_cast<int64_t>(m_layerBreakPoints.back()) + m_layerBreakPoints.front();
+    constexpr int64_t SECTORS_PER_BLOCK = ALLOC_BLOCK_SIZE / SECTOR_SIZE;
+    // Where the file's data will begin: a stream is moved to the next 64 KB boundary when it is opened
+    const int64_t lbn = alignedStart ? static_cast<int64_t>(roundUp64(imageLBA(), SECTORS_PER_BLOCK)) : imageLBA();
+    const int64_t fileSectors = (fileSizeBytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    for (size_t i = 0; i < m_layerBreakPoints.size(); ++i)
+    {
+        const int bp = m_layerBreakPoints[i];
+        int64_t zoneStart = 0, zoneEnd = 0;
+        guardZone(i, zoneStart, zoneEnd);
+        if (lbn >= zoneStart || lbn + fileSectors <= zoneStart)
+            continue;  // file starts past this zone, or ends before reaching it
+        // The file would cross this zone. Move it wholly past the break only if it then fits
+        // before the NEXT zone (and within the disc, when the capacity is known); a file larger
+        // than a layer must straddle and keeps the normal mid-file pad.
+        const int64_t fileEndIfMoved = zoneEnd + fileSectors;
+        if (i + 1 < m_layerBreakPoints.size())
+        {
+            int64_t nextZoneStart = 0, nextZoneEnd = 0;
+            guardZone(i + 1, nextZoneStart, nextZoneEnd);
+            if (fileEndIfMoved > nextZoneStart)
+                return false;
+        }
+        if (fileEndIfMoved > capacity)
+            return false;
+        // The zones of --inner-only are sized for the data running on without a gap: the layer before the zone holds
+        // its share up to the zone. A file moved behind the zone leaves that share's end unused, and the data behind
+        // it then needs that much more room than the disc has left. Measured with four clips of 100 MB on a model disc
+        // of two layers: the second clip was moved, the last one ran past the end of the disc, and the image was
+        // refused once it had been written. So the rest of the data has to fit behind the zone, with every zone it
+        // will still reach and a few MB for the volume structures written at the end; and on a disc of more layers,
+        // where each layer keeps an even share, the move may leave no more of the layer unused than a pad's overrun.
+        // The same holds for any guard: a file moved behind the default guard of a disc that was nearly full left the
+        // rest without room, and the image came out too big after the whole copy.
+        if (restBytes > 0)
+        {
+            int64_t need = zoneEnd + (restBytes + SECTOR_SIZE - 1) / SECTOR_SIZE + 4096;
+            for (size_t k = i + 1; k < m_layerBreakPoints.size(); ++k)
+            {
+                int64_t laterStart = 0, laterEnd = 0;
+                guardZone(k, laterStart, laterEnd);
+                need += laterEnd - laterStart + laterOverrunSectors;
+            }
+            // the mirror, when it has no place in front of a zone and goes behind the data
+            if (int64_t mirrorStart = 0; !m_mirrorPlaced && !mirrorPending(mirrorStart))
+                need += m_metadataFileLen / SECTOR_SIZE + ALLOC_BLOCK_SIZE / SECTOR_SIZE;
+            if (need > capacity)
+                return false;
+        }
+        if (maxEmptySectors >= 0 && zoneStart - lbn > maxEmptySectors)
+            return false;
+        // The mirror ends where the zone begins, as when the data runs on up to it: the end of layer 0 the move leaves
+        // empty is filled up to the place of the mirror first. It was put where the data stopped, which was next to
+        // the main copy when the file moved was the first large one.
+        if (int64_t mirrorStart = 0; !m_layerBreakSuppressed && mirrorPending(mirrorStart) && zoneEnd > mirrorStart)
+        {
+            if (mirrorStart > imageLBA())
+                fillZeroSectors(mirrorStart - imageLBA());
+            placeMirrorHere();
+        }
+        const int64_t padStart = imageLBA();
+        m_layerBreakPads.push_back({bp, padStart, zoneEnd});
+        writeZeroPad(zoneEnd - padStart);
+        return true;
+    }
+    return false;
+}
+
+void IsoWriter::setLayerBreakPoints(const std::vector<int>& lbns) { m_layerBreakPoints = lbns; }
+
+// The mirror of the metadata is the second copy of the file system. Behind the data of an image of two layers it lay
+// at the end of layer 1, which on a disc of opposite track path is next to the centre, the same place as the main copy
+// at the start of layer 0, so a damaged inner edge could take both. An image whose data reaches the end of layer 0
+// holds the mirror there now, at the outer edge, and the data goes on behind it: the file that runs into it is cut
+// into two extents around it, the way a layer break guard cuts it.
+void IsoWriter::setMetadataMirrorBreak(const int lbn) { m_mirrorBreakLbn = lbn; }
+
+bool IsoWriter::mirrorGap(int64_t& from, int64_t& to) const
+{
+    from = m_mirrorGapStart;
+    to = m_mirrorGapEnd;
+    return m_mirrorPlaced;
+}
+
+// Whether the mirror is still to go inside the data, and the first sector of its place: one 64 KB block for its file
+// entry, which takes the last sector of it, then the mirror itself, ending where layer 0 ends, or where the guard zone
+// in front of the break begins
+bool IsoWriter::mirrorPending(int64_t& zoneStart) const
+{
+    if (m_mirrorPlaced || m_mirrorBreakLbn <= 0)
+        return false;
+    constexpr int64_t SECTORS_PER_BLOCK = ALLOC_BLOCK_SIZE / SECTOR_SIZE;
+    int64_t end = m_mirrorBreakLbn;
+    for (size_t i = 0; i < m_layerBreakPoints.size(); ++i)
+    {
+        int64_t guardStart = 0, guardEnd = 0;
+        guardZone(i, guardStart, guardEnd);
+        if (guardStart < end && guardEnd >= end)
+            end = guardStart;
+    }
+    end -= end % SECTORS_PER_BLOCK;
+    zoneStart = end - m_metadataFileLen / SECTOR_SIZE - SECTORS_PER_BLOCK;
+    return zoneStart >= m_dataStartLbn;
+}
+
+// The whole sectors a write can still take before the place of the mirror, or -1 when there is none ahead
+int64_t IsoWriter::bytesBeforeMirror() const
+{
+    int64_t zoneStart = 0;
+    if (m_layerBreakSuppressed || !mirrorPending(zoneStart) || zoneStart <= imageLBA())
+        return -1;
+    return (zoneStart - imageLBA()) * SECTOR_SIZE;
+}
+
+// The mirror goes here: its file entry in the last sector before the next 64 KB boundary, the mirror from that
+// boundary on. Its sectors are left empty until close() writes them; the data goes on behind them.
+void IsoWriter::placeMirrorHere()
+{
+    constexpr int64_t SECTORS_PER_BLOCK = ALLOC_BLOCK_SIZE / SECTOR_SIZE;
+    const int64_t from = imageLBA();
+    const auto mirrorLbn = static_cast<int64_t>(roundUp64(from + 1, SECTORS_PER_BLOCK));
+    const int64_t to = mirrorLbn + m_metadataFileLen / SECTOR_SIZE;
+    m_mirrorPlaced = true;
+    m_metadataMirrorLBN = static_cast<int>(mirrorLbn);
+    m_mirrorGapStart = from;
+    m_mirrorGapEnd = to;
+    fillZeroSectors(to - from);
+}
+
+// Puts the mirror here when what comes next, up to endLbn, would reach its place
+void IsoWriter::placeMirrorBefore(const int64_t endLbn)
+{
+    int64_t zoneStart = 0;
+    if (!m_layerBreakSuppressed && mirrorPending(zoneStart) && endLbn > zoneStart)
+        placeMirrorHere();
+}
+
+// Called before the first write of each piece of a file. The pieces of the two views of a 3D mux are written in turn,
+// and the mirror has to fall between two pairs: cutting a piece would leave one view with a piece more than the other,
+// and the .ssif could not be made from them. So the view that leads the pairs puts the mirror in front of a pair that
+// could reach its place. Any other file is cut where its data reaches the place, and moves nothing before that: the
+// look ahead put the mirror in front of a 2D stream that only started within that distance of it, also when the data
+// of the image ended long before the end of layer 0.
+void IsoWriter::beforePiece(FileEntryInfo* entry)
+{
+    if (entry->m_fileSize == 0 && entry->m_extents.empty())
+        entry->m_leadsPieces =
+            !(m_lastWritedEntry && m_lastWritedEntry != entry &&
+              m_lastWritedEntry->m_fileType == FileTypes::RealtimeFile && !m_lastWritedEntry->m_closed);
+    if (!entry->m_subMode || !entry->m_leadsPieces || m_pairsPlaced)
+        return;
+    // The guard zone of a break goes in front of such a pair as well. It was laid down where a write met it, inside a
+    // piece of one view, which then had a piece more than the other, and the mux was refused at its end ("Can't
+    // interleave"). That happened when the break lay within the look ahead of the start of the data: the mirror was
+    // put in front of the first pair, and nothing kept the zone between two pairs.
+    const int64_t from = imageLBA();
+    const bool mirrorPlaced = m_mirrorPlaced;
+    const size_t pads = m_layerBreakPads.size();
+    checkLayerBreakPoint(static_cast<int>(MIRROR_LOOKAHEAD_BYTES));
+    if (imageLBA() == from)
+        return;
+    // The data may still end before it reaches the mirror's place: close() then moves the pairs back
+    if (m_lookAheadGaps.empty())
+        m_padsBeforeLookAhead = pads;
+    if (m_mirrorPlaced && !mirrorPlaced)
+        m_mirrorByLookAhead = true;
+    m_lookAheadGaps.emplace_back(from, imageLBA());
+}
+
+// A 3D mux that ended within the look ahead of the mirror's place had the mirror, and the zeros of a guard zone, put
+// in front of its last pairs, and those pairs behind the break: the image grew by up to 55 MB and the zone, and
+// crossed a break its data never reached. When everything written behind those gaps fits in front of the mirror's
+// place, it is moved back over them, by whole 64 KB blocks so that every piece keeps its alignment, and the mirror
+// goes behind the data, as for an image that never reaches the end of layer 0. Otherwise nothing changes.
+void IsoWriter::moveBackLookAhead()
+{
+    if (m_lookAheadGaps.empty())
+        return;
+    constexpr int64_t SECTORS_PER_BLOCK = ALLOC_BLOCK_SIZE / SECTOR_SIZE;
+    // Every zero fill and the mirror behind the first gap have to be the look ahead's own
+    if (m_layerBreakPads.size() < m_padsBeforeLookAhead || (m_mirrorPlaced && !m_mirrorByLookAhead))
+        return;
+    const int64_t end = imageLBA();
+    if (m_file.pos() % SECTOR_SIZE != 0 || m_file.size() != static_cast<int64_t>(m_file.pos()))
+        return;
+    int64_t moved = 0;
+    for (const auto& [from, to] : m_lookAheadGaps) moved += (to - from) / SECTORS_PER_BLOCK * SECTORS_PER_BLOCK;
+    for (size_t i = m_padsBeforeLookAhead; i < m_layerBreakPads.size(); ++i)
+    {
+        const LayerBreakPad& pad = m_layerBreakPads[i];
+        const bool inGap = std::any_of(m_lookAheadGaps.begin(), m_lookAheadGaps.end(), [&](const auto& gap)
+                                       { return pad.padStartLbn >= gap.first && pad.padEndLbn <= gap.second; });
+        if (!inGap)
+            return;
+    }
+    // Where the mirror goes when the data does not reach it
+    const bool mirrorPlaced = m_mirrorPlaced;
+    m_mirrorPlaced = false;
+    int64_t mirrorStart = 0;
+    const bool pending = mirrorPending(mirrorStart);
+    m_mirrorPlaced = mirrorPlaced;
+    if (!pending || end - moved > mirrorStart)
+        return;
+
+    File reader;
+    if (!reader.open(m_file.getName().c_str(), File::ofRead | File::ofOpenExisting))
+        return;
+    std::vector<uint8_t> buffer(4 * 1024 * 1024);
+    int64_t dataEnd = end;
+    for (auto gap = m_lookAheadGaps.rbegin(); gap != m_lookAheadGaps.rend(); ++gap)
+    {
+        const int64_t shift = (gap->second - gap->first) / SECTORS_PER_BLOCK * SECTORS_PER_BLOCK;
+        if (shift == 0)
+            continue;
+        // Low to high: a block is read before anything is written over it
+        for (int64_t pos = gap->second * SECTOR_SIZE; pos < dataEnd * SECTOR_SIZE;)
+        {
+            const auto len = static_cast<uint32_t>(
+                (std::min<int64_t>)(dataEnd * SECTOR_SIZE - pos, static_cast<int64_t>(buffer.size())));
+            reader.seek(pos);
+            if (reader.read(buffer.data(), len) != static_cast<int>(len))
+                throw std::runtime_error("Can't read back " + m_file.getName() + " to move its last pairs");
+            m_file.seek(pos - shift * SECTOR_SIZE);
+            m_file.write(buffer.data(), len);
+            pos += len;
+        }
+        dataEnd -= shift;
+        auto shiftEntry = [&](FileEntryInfo* entry, auto& self) -> void
+        {
+            for (Extent& extent : entry->m_extents)
+                if (extent.lbnPos + m_partitionStartAddress >= gap->second)  // lbnPos counts from the partition
+                    extent.lbnPos -= static_cast<int>(shift);
+            for (FileEntryInfo* file : entry->m_files) self(file, self);
+            for (FileEntryInfo* dir : entry->m_subDirs) self(dir, self);
+        };
+        shiftEntry(m_rootDirInfo, shiftEntry);
+        if (m_systemStreamDir)
+            shiftEntry(m_systemStreamDir, shiftEntry);
+    }
+    reader.close();
+    m_file.truncate(static_cast<uint64_t>(dataEnd) * SECTOR_SIZE);
+    m_file.seek(dataEnd * SECTOR_SIZE);
+    m_layerBreakPads.resize(m_padsBeforeLookAhead);
+    m_mirrorPlaced = false;
+    m_mirrorGapStart = m_mirrorGapEnd = 0;
+    m_lastWritedObjectID = -1;
+    m_lookAheadGaps.clear();
+}
+
+void IsoWriter::setLayerBreakGuards(const std::vector<int>& beforeSectors, const std::vector<int>& afterSectors)
+{
+    m_breakGuardBefore = beforeSectors;
+    m_breakGuardAfter = afterSectors;
+}
+
+void IsoWriter::guardZone(const size_t i, int64_t& zoneStart, int64_t& zoneEnd) const
+{
+    const int64_t bp = m_layerBreakPoints[i];
+    const bool own = i < m_breakGuardBefore.size() && i < m_breakGuardAfter.size();
+    zoneStart = bp - (own ? m_breakGuardBefore[i] : m_layerBreakGuardBeforeSectors);
+    zoneEnd = bp + (own ? m_breakGuardAfter[i] : m_layerBreakGuardAfterSectors);
+}
+
+void IsoWriter::setLayerBreakGuard(const int afterSectors)
+{
+    // The BD-R/RE DL layer-1-start defect is ASYMMETRIC: real-hardware data (Verbatim BD-R DL, 2026-07-11)
+    // showed the first ~35 MB of layer 1 uncorrectable while the tail of layer 0 verified 100% clean. So put
+    // the requested guard AFTER the break (layer 1, where the defect lives) and a proportional margin before
+    // it (layer 0): one sixteenth of the after value, the 64:4 ratio of the original design, with a 4 MB
+    // floor. A bigger safety appetite then scales both sides while keeping the budget where the defect is.
+    m_layerBreakGuardAfterSectors = afterSectors;
+    const int floorMargin = 4 * 1024 * 1024 / SECTOR_SIZE;  // at least 4 MB on the layer-0 side
+    int beforeMargin = afterSectors / 16;
+    if (beforeMargin < floorMargin)
+        beforeMargin = floorMargin;
+    m_layerBreakGuardBeforeSectors = afterSectors < beforeMargin ? afterSectors : beforeMargin;
+}
+
+void IsoWriter::setLayerBreakGuard(const int beforeSectors, const int afterSectors)
+{
+    // Two-zone override (--layer-break-guard-before): the caller sizes both sides explicitly. The default is
+    // asymmetric because the measured defect sits at the START of the next layer, but some media are weak on
+    // BOTH sides of the transition, so each zone can be set on its own.
+    m_layerBreakGuardBeforeSectors = beforeSectors;
+    m_layerBreakGuardAfterSectors = afterSectors;
+}
+
+IsoHeaderData IsoHeaderData::normal()
+{
+    return IsoHeaderData{"*tsMuxeR " TSMUXER_VERSION, std::string("*tsMuxeR ") + int32uToHex(random32()), time(nullptr),
+                         random32(), false};
+}
+
+IsoHeaderData IsoHeaderData::reproducible() { return IsoHeaderData{"*tsMuxeR", "*tsMuxeR", 1, 1593630000, true}; }

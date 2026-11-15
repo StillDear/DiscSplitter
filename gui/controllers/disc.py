@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QUrl, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
-from core import bluray_iso, chapter_marks, dvd, models, naming, preview, setlist, sources, space, tracklist
+from core import bluray_iso, chapter_marks, dvd, engine, models, naming, preview, setlist, sources, space, tracklist
 from .. import logic, track_info
 from ..background import SideJob
 from ..i18n import localize_reason
@@ -19,6 +19,8 @@ class DiscController(Controller):
     """The disc being worked on: source and destination, the chosen playlist, its tracks and
     chapters (with edits), and the track details sheet."""
 
+    FORMATS = ('mkv', 'm2ts', 'flac')
+
     def __init__(self, app):
         cfg = app.cfg
         super().__init__(
@@ -26,7 +28,8 @@ class DiscController(Controller):
             sidecars=[], album='', artist='',
             chapterSelected=0, audioSelected=0, subtitleSelected=0, unnamedRows=[], originsMixed=False, chaptersEdited=False,
             hasVideo=False, keepVideo=False, videoSummary='', videoExtra='', exportEstimate={}, sourceSummary='', chapterKinds={}, chapterKindsManual=[],
-            outputFormat='flac' if cfg.get('output_container') == 'flac' else 'mkv',
+            outputFormat=cfg.get('output_container') if cfg.get('output_container') in self.FORMATS else 'mkv',
+            canM2ts=False,
             trackInfo=dict(title='', heading='', sections=[], probing=False, error=''))
         self.playlists = []
         self.playlist = None
@@ -59,7 +62,8 @@ class DiscController(Controller):
         self.put(source=source)
         self.app.exporter.refresh_resume()
         path = Path(source)
-        if source and (path.is_dir() or sources.is_mkv_source(path) or bluray_iso.is_iso(path)):
+        if source and (path.is_dir() or sources.is_mkv_source(path) or bluray_iso.is_iso(path)
+                       or sources.is_bluray_file(path)):
             self.scan()
 
     @Slot(str)
@@ -89,11 +93,12 @@ class DiscController(Controller):
             # same disc keeps them, as switching between its playlists does.)
             self.forget_chapters()
         self.show('main')
-        self.put(audioSelected=0, subtitleSelected=0, chapterSelected=0, hasVideo=False, keepVideo=False)
+        self.put(audioSelected=0, subtitleSelected=0, chapterSelected=0, hasVideo=False, keepVideo=False, canM2ts=False)
         keeper = self.app.preview_mounts
         def work(progress):
             keeper.close()
             sidecar_folder = (source.parent if sources.is_mkv_source(source) or bluray_iso.is_iso(source)
+                              or sources.is_bluray_file(source)
                               else dvd.disc_folder(source) or source)
             return (sources.score_playlists(sources.scan_source(source)),
                     tracklist.find_sidecar_tracklist_files(sidecar_folder),
@@ -273,7 +278,15 @@ class DiscController(Controller):
         for i in range(len(self.playlist_model.rows)):
             self.playlist_model.change(i, chosen=i == index)
         self.audio = self.playlist.best_default_audio_track()
-        self.populate_tracks([self.audio.track_id] if self.audio else [], [])
+        self.put(canM2ts=self.m2ts_possible())
+        if self.state['outputFormat'] == 'm2ts' and not self.state['canM2ts']:
+            self.put(outputFormat='mkv')        # this source cannot be copied as M2TS; the setting stays as it is
+        if self.state['outputFormat'] == 'm2ts':
+            # A copy of the disc keeps every sound and subtitle track unless some are taken out.
+            self.populate_tracks([t.track_id for t in self.playlist.audio_tracks],
+                                 [t.track_id for t in self.playlist.subtitle_tracks])
+        else:
+            self.populate_tracks([self.audio.track_id] if self.audio else [], [])
         self.chapters = [models.Chapter(i, 0) for i in range(1, self.playlist.chapter_count + 1)]
         self.source_chapters = None
         self.put(chaptersEdited=False)
@@ -286,7 +299,9 @@ class DiscController(Controller):
         self.source_size = None
         def work(progress):
             with self.app.preview_mounts.use(playlist.path, playlist.iso_image) as path:
-                return (chapter_marks.read_chapters_from_source(path, preferred_language=language),
+                # The engine's scan brought the marks along: nothing to read for them.
+                return (chapter_marks.playlist_chapters(playlist) if playlist.by_engine and playlist.marks
+                        else chapter_marks.read_chapters_from_source(path, preferred_language=language),
                         space.source_size_bytes(path),
                         # Measured for the chosen playlist only (a scan reads hundreds of them).
                         sources.audio_bitrates(playlist, path) if not playlist.measured else {})
@@ -343,7 +358,7 @@ class DiscController(Controller):
         for i in range(len(self.playlist_model.rows)):
             self.playlist_model.change(i, chosen=i == index)
         self.scanned_source = str(Path(self.state['source'])) if self.state['source'] else None
-        self.put(outputFormat=manifest.container)
+        self.put(outputFormat=manifest.container, canM2ts=self.m2ts_possible())
         self.populate_tracks(manifest.audio_track_ids or [manifest.audio_track_id], manifest.subtitle_track_ids,
                              keep_video=manifest.video_track_id is not None)
         fields = {'index', 'start_seconds', 'end_seconds', 'name'}
@@ -469,14 +484,28 @@ class DiscController(Controller):
                  subtitleSelected=sum(r['chosen'] for r in self.subtitle_model.rows))
         self.refresh_insights()
 
+    def m2ts_possible(self) -> bool:
+        """M2TS copies a Blu-ray as the disc has it: only a Blu-ray read by the built-in engine."""
+        playlist = self.playlist
+        return playlist is not None and playlist.by_engine and not dvd.is_title(playlist.path)
+
     @Slot(str)
     def setOutputFormat(self, output_format):
-        if self.state['busy'] or output_format not in ('mkv', 'flac'):
+        if self.state['busy'] or output_format not in self.FORMATS:
+            return
+        if output_format == 'm2ts' and self.playlist is not None and not self.m2ts_possible():
             return
         self.app.set_config(output_container=output_format)
+        previous = self.state['outputFormat']
         self.put(outputFormat=output_format)
-        if output_format == 'mkv':          # video mode always carries the picture when the disc has one
+        if output_format != 'flac':         # video mode always carries the picture when the disc has one
             self.put(keepVideo=self.state['hasVideo'])
+        if output_format == 'm2ts' and previous != 'm2ts' and self.playlist is not None:
+            for i in range(len(self.audio_model.rows)):
+                self.audio_model.change(i, chosen=True)
+            for i in range(len(self.subtitle_model.rows)):
+                self.subtitle_model.change(i, chosen=True)
+            self.update_track_selection()
         self.refresh_insights()
         self.app.preview.restart_preview()
         if output_format == 'flac' and self.audio is not None:
@@ -585,7 +614,7 @@ class DiscController(Controller):
         audio = self.selected_tracks('audio')
         if container == 'flac':
             audio = audio[:1]
-        keep_video = container == 'mkv' and self.state['keepVideo']
+        keep_video = container != 'flac' and self.state['keepVideo']
         size = need = None
         if timed:
             size = space.estimate_output_bytes(playlist, chapters, audio_tracks=audio, keep_video=keep_video,
@@ -618,6 +647,8 @@ class DiscController(Controller):
             kind = 'ovBdIso'
         elif playlist.path.suffix.lower() == '.mpls':
             kind = 'ovBdFolder'
+        elif playlist.path.suffix.lower() in engine.TS_SUFFIXES:
+            kind = 'ovM2ts'
         else:
             kind = 'ovMkv'
         size = None

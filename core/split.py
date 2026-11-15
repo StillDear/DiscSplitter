@@ -1,20 +1,25 @@
 """
 Cutting a source into one file per chapter.
 
-    FLAC  ffmpeg encodes each chapter from an MKV holding the chosen audio track (extract_audio_mkv)
+    FLAC  ffmpeg encodes each chapter from an MKV holding the chosen audio track (extract_audio_mkv,
+          or for a Blu-ray read by the engine extract_audio_engine)
     MKV   mkvmerge cuts every chapter straight from the source in one pass, nothing re-encoded
+    M2TS  the built-in engine cuts every run of chapters straight from the disc, the streams as they are
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import threading
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional
 
 from . import dvd
+from . import engine
 from . import tagging
 from . import tools
 from .jobs import Failure, JobCancelled, already_done, extracting, splitting, tool_failed
@@ -67,6 +72,45 @@ def extract_audio_mkv(
     if result.returncode != 0:
         raise tool_failed("mkvmerge", f"{result.stdout}\n{result.stderr}")
     return output_path
+
+
+def extract_audio_engine(
+    source: str,
+    output_path: Path,
+    audio_track: Track,
+    *,
+    start: float = 0.0,
+    end: Optional[float] = None,
+    duration: float = 0.0,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> float:
+    """
+    One audio track of a Blu-ray playlist, from `start` to `end` only, into a Matroska audio file, read by
+    the engine straight from the disc (an image is not mounted). TrueHD is kept without its AC-3 core.
+    Returns where the file's timeline begins on the playlist's: a playlist time t is at t - offset in it.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    options = ["MUXOPT", "--no-chapters"]
+    offset = 0.0
+    if start > CUT_SLACK:
+        offset = start
+        options.append(f"--cut-start={engine.clock(start)}")
+    if end is not None and (not duration or end < duration - CUT_SLACK):
+        options.append(f"--cut-end={engine.clock(end)}")
+    meta = [" ".join(options), engine.track_line(source, audio_track, matroska=True, drop_core=True)]
+    if progress_cb:
+        progress_cb(extracting(f"Extracting audio track {audio_track.track_id} -> {output_path.name}"))
+    partial = output_path.with_name(output_path.stem + ".partial.mka")
+    partial.unlink(missing_ok=True)
+    try:
+        engine.run_meta(meta, output_path.with_suffix(".meta"), partial, on_message=progress_cb,
+                        cancel_event=cancel_event)
+        os.replace(partial, output_path)
+    finally:
+        partial.unlink(missing_ok=True)
+        output_path.with_suffix(".meta").unlink(missing_ok=True)
+    return offset
 
 
 def split_flac(
@@ -315,3 +359,185 @@ def split_mkv_direct(
         return results
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# M2TS: straight from the disc with the built-in engine, the streams as the disc has them
+# ---------------------------------------------------------------------------
+
+# Chapter marks are listed to the millisecond, so a mark may read up to half a millisecond off the key
+# picture it sits on. Cuts are nudged by this much towards that picture: a start a little after it (the
+# engine starts at the key picture at or before), a split a little before it (at or after).
+CUT_SLACK = 0.0005
+
+
+def chapter_runs(items: list[PlannedOutput]) -> list[list[PlannedOutput]]:
+    """Planned chapters grouped into runs that follow one another without a gap: one engine pass per run."""
+    runs: list[list[PlannedOutput]] = []
+    for item in items:
+        last = runs[-1][-1].chapter if runs else None
+        if last is not None and last.end_seconds is not None and \
+                abs(last.end_seconds - item.chapter.start_seconds) < 2 * CUT_SLACK:
+            runs[-1].append(item)
+        else:
+            runs.append([item])
+    return runs
+
+
+def m2ts_meta(source: str, run: list[Chapter], *, video_tracks: list[Track], audio_tracks: list[Track],
+              subtitle_tracks: list[Track], duration: float) -> list[str]:
+    """The meta file of one run: its streams, where it starts and ends, and a file per chapter."""
+    first, last = run[0], run[-1]
+    options = ["MUXOPT", "--no-pcr-on-video-pid", "--new-audio-pes", "--vbr", "--vbv-len=500"]
+    start = first.start_seconds + CUT_SLACK if first.start_seconds > CUT_SLACK else 0.0
+    if start:
+        options.append(f"--cut-start={engine.clock(start)}")
+    if last.end_seconds is not None and (not duration or last.end_seconds < duration - CUT_SLACK):
+        options.append(f"--cut-end={engine.clock(last.end_seconds)}")
+    if len(run) > 1:
+        marks = [start] + [ch.start_seconds - CUT_SLACK for ch in run[1:]]
+        options += ["--split-chapters", "--custom-chapters=" + ";".join(engine.clock(m) for m in marks)]
+    lines = [" ".join(options)]
+    lines += [engine.track_line(source, t) for t in (*video_tracks, *audio_tracks, *subtitle_tracks)]
+    return lines
+
+
+def split_m2ts(
+    source: str,
+    chapters: list[Chapter],
+    output_folder: Path,
+    *,
+    video_tracks: list[Track],
+    audio_tracks: list[Track],
+    subtitle_tracks: list[Track],
+    duration: float,
+    metadata: Optional[dict] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    overwrite: Optional[set[Path]] = None,
+    cancel_event: Optional[threading.Event] = None,
+    skip_paths: Optional[set[Path]] = None,
+    on_output_written: Optional[Callable[[Path], None]] = None,
+    number_filenames: bool = False,
+    filename_template: str = "",
+) -> list[Path]:
+    """
+    Cut the given chapters of a Blu-ray playlist into one .m2ts each, read by the engine straight from the
+    disc (an image is not mounted). Video, audio and subtitles are copied as the disc has them: TrueHD keeps
+    its AC-3 core, DTS-HD its extensions, PGS subtitles their pictures, and the timestamps stay those of the
+    disc, so sound and picture stay in step exactly as on the disc.
+
+    Chapters that follow one another are cut in one pass, split at the chapter marks (which sit on key
+    pictures). A file is moved to its final name as soon as the engine has moved on to the next one, so a
+    cancelled or failed job resumes after the last complete chapter.
+    """
+    if not chapters:
+        raise ValueError("No chapters selected.")
+    planned, skip_paths = _planned(chapters, output_folder, "m2ts", overwrite, skip_paths,
+                                   number_filenames=number_filenames, filename_template=filename_template,
+                                   metadata=metadata)
+
+    def log(message: str) -> None:
+        if progress_cb:
+            progress_cb(message)
+
+    results: list[Path] = []
+    pending = []
+    for item in planned:
+        if item.path in skip_paths and item.path.is_file():
+            log(already_done(item.chapter.index, item.chapter.title))
+            results.append(item.path)
+        else:
+            pending.append(item)
+    if not pending:
+        return results
+
+    engine.require()
+    work = output_folder / f".split-{uuid.uuid4().hex[:8]}"
+    work.mkdir()
+    try:
+        runs = chapter_runs(pending)
+        log(extracting(f"Cutting {len(pending)} chapter(s) in {len(runs)} pass(es) straight from the disc "
+                       f"with the built-in engine (no intermediate file)..."))
+        for number, run in enumerate(runs, start=1):
+            if cancel_event is not None and cancel_event.is_set():
+                raise JobCancelled("Cancelled by user.")
+            results += _cut_run(source, run, work / f"run{number}", video_tracks=video_tracks,
+                                audio_tracks=audio_tracks, subtitle_tracks=subtitle_tracks, duration=duration,
+                                log=log, cancel_event=cancel_event, on_output_written=on_output_written)
+        return results
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _cut_run(source: str, run: list[PlannedOutput], stem: Path, *, video_tracks, audio_tracks, subtitle_tracks,
+             duration: float, log: Callable[[str], None], cancel_event, on_output_written) -> list[Path]:
+    """One engine pass over chapters that follow one another; each part is moved into place once complete."""
+    output = stem.with_suffix(".m2ts")
+    meta = m2ts_meta(source, [item.chapter for item in run], video_tracks=video_tracks, audio_tracks=audio_tracks,
+                     subtitle_tracks=subtitle_tracks, duration=duration)
+    done: list[Path] = []
+    announced = -1
+
+    def parts() -> list[Path]:
+        """The parts still in the work folder (finished ones are moved out), oldest first."""
+        if len(run) == 1:
+            return [output] if output.is_file() else []
+        found = stem.parent.glob(f"{stem.name}.split.*.m2ts")
+        return sorted(found, key=lambda p: int(p.name.rsplit(".", 2)[-2]))
+
+    def finalize(item: PlannedOutput, part: Path) -> bool:
+        try:
+            os.replace(part, item.path)
+        except PermissionError:      # still open: the engine has not closed it yet
+            return False
+        done.append(item.path)
+        if on_output_written:
+            on_output_written(item.path)
+        return True
+
+    def on_tick() -> None:
+        nonlocal announced
+        written = parts()
+        # The engine opens part N+1 only after closing part N: every part but the newest is complete.
+        while len(written) > 1 and len(done) < len(run) and finalize(run[len(done)], written[0]):
+            written = written[1:]
+        current = len(done)
+        if current < len(run) and current != announced:
+            announced = current
+            log(splitting(run[current].chapter.index, run[current].chapter.title))
+
+    engine.run_meta(meta, stem.with_suffix(".meta"), output, on_tick=on_tick, on_message=log,
+                    cancel_event=cancel_event)
+    remaining = parts()
+    if len(remaining) != len(run) - len(done):
+        raise RuntimeError(f"The engine wrote {len(remaining) + len(done)} file(s) for {len(run)} chapter(s).")
+    for item, part in zip(run[len(done):], remaining):
+        if cancel_event is not None and cancel_event.is_set():
+            raise JobCancelled("Cancelled by user.")
+        if not finalize(item, part):
+            raise RuntimeError(f"{part.name} could not be moved to {item.path.name}.")
+    return done
+
+
+def mkvmerge_track_ids(source: Path, tracks: list[Track]) -> list[Track]:
+    """
+    The same tracks with mkvmerge's own numbers, for cutting with mkvmerge a playlist the engine read (the
+    engine numbers tracks by their PID). Matched by PID, which mkvmerge reports as each track's stream_id.
+    """
+    if not tracks:
+        return []
+    result = tools.run([TOOL_PATHS["mkvmerge"], "-J", str(source)], timeout=120)
+    if result.returncode >= 2:
+        raise tool_failed("mkvmerge", result.stderr or result.stdout)
+    by_pid = {}
+    for entry in json.loads(result.stdout).get("tracks", []):
+        pid = (entry.get("properties") or {}).get("stream_id")
+        if pid is not None:
+            by_pid[int(pid)] = entry.get("id")
+    mapped = []
+    for track in tracks:
+        number = by_pid.get(track.stream_id or track.track_id)
+        if number is None:
+            raise Failure("tracks_unavailable", f"mkvmerge does not list the track with PID {track.stream_id}.")
+        mapped.append(replace(track, track_id=number))
+    return mapped

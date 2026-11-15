@@ -12,6 +12,7 @@ from typing import Optional
 
 from . import bluray_iso
 from . import dvd
+from . import engine
 from . import tools
 from .jobs import Failure
 from .models import Playlist, Track
@@ -36,6 +37,11 @@ def is_mkv_source(source: Path) -> bool:
     return source.is_file() and source.suffix.lower() in {".mkv", ".mk3d", ".mka"}
 
 
+def is_bluray_file(source: Path) -> bool:
+    """A single Blu-ray playlist (.mpls) or transport stream (.m2ts, .ts) opened on its own."""
+    return source.is_file() and (source.suffix.lower() == ".mpls" or source.suffix.lower() in engine.TS_SUFFIXES)
+
+
 def find_sources(source: Path) -> list[Path]:
     """Find Blu-ray playlists or top-level Matroska files, preferring BDMV."""
     if is_mkv_source(source):
@@ -47,13 +53,54 @@ def find_sources(source: Path) -> list[Path]:
     return sorted(p for p in source.iterdir() if is_mkv_source(p))
 
 
+def _bluray_root(source: Path) -> Optional[Path]:
+    """The disc folder of a Blu-ray folder given as the folder holding BDMV, or as BDMV itself."""
+    if (source / "BDMV").is_dir():
+        return source
+    if source.name.upper() == "BDMV" and (source / "PLAYLIST").is_dir():
+        return source.parent
+    return None
+
+
+def scan_with_engine(disc: Path, image: Optional[Path] = None) -> list[Playlist]:
+    """
+    A Blu-ray folder or image read by the built-in engine, without mounting: its titles (playlists under two
+    minutes, copies and menus loops left out, unless nothing else is left), the main title marked.
+    `disc` is the folder or the image; playlists of an image keep a path relative to it.
+    """
+    found = engine.titles(disc) or engine.titles(disc, all_playlists=True)
+    names = [(t.playlist, t.main) for t in found]
+
+    def read(entry: tuple[str, bool]) -> Playlist:
+        name, main = entry
+        relative = Path("BDMV") / "PLAYLIST" / name
+        playlist = engine.inspect(engine.source_of(relative, image) if image else str(disc / relative))
+        playlist.path = relative if image else disc / relative
+        playlist.iso_image, playlist.main_title = image, main
+        return playlist
+
+    if len(names) < 2:
+        return [read(n) for n in names]
+    with ThreadPoolExecutor(max_workers=min(SCAN_WORKERS, len(names))) as pool:
+        return list(pool.map(read, names))
+
+
 def scan_source(source: Path) -> list[Playlist]:
     """Inspect a GUI source while retaining the legacy disc scan entry point."""
+    if is_bluray_file(source):
+        return [inspect_playlist(source)]
     if bluray_iso.is_iso(source):
         image = source.resolve()
         # DVD images are read straight from the file by ffmpeg; no mounting.
         if dvd.iso_looks_like_dvd(image):
             return dvd.scan(image)
+        if engine.available():
+            try:
+                found = scan_with_engine(image, image)
+            except Failure:
+                found = []      # not a Blu-ray the engine reads (a DVD it was not recognised as): look inside
+            if found:
+                return found
         with bluray_iso.mounted(image) as root:
             if not (root / "BDMV").is_dir() and (root / "VIDEO_TS").is_dir():
                 is_dvd = True
@@ -65,6 +112,11 @@ def scan_source(source: Path) -> list[Playlist]:
     disc = dvd.disc_folder(source)
     if disc is not None:
         return dvd.scan(disc)
+    root = _bluray_root(source) if source.is_dir() else None
+    if root is not None and engine.available():
+        found = scan_with_engine(root)
+        if found:
+            return found
     candidates = find_sources(source)
     if source.is_dir() and ((source / "BDMV").is_dir() or not candidates):
         return scan_disc_folder(source)
@@ -76,14 +128,16 @@ _GENERIC_NAMES = {"video_ts", "dvdimage", "image", "disc", "disk", "dvd", "bdmv"
 
 def source_name_path(source: Path) -> Path:
     """Use the source filename without its extension for album naming."""
-    named = source.with_suffix("") if is_mkv_source(source) or bluray_iso.is_iso(source) else source
+    if is_bluray_file(source) and source.parent.parent.name.upper() == "BDMV":
+        source = source.parent.parent.parent       # BDMV/PLAYLIST/00001.mpls: the disc folder names the album
+    named = source.with_suffix("") if is_mkv_source(source) or bluray_iso.is_iso(source) or is_bluray_file(source)         else source
     # "VIDEO_TS" or "DVDIMAGE.ISO" say nothing about the album: the folder around them does.
     if named.name.lower() in _GENERIC_NAMES and named.parent != named:
         return named.parent
     return named
 
 
-def inspect_playlist(playlist_path: Path) -> Playlist:
+def inspect_playlist(playlist_path: Path, use_engine: bool = True) -> Playlist:
     """
     Run `mkvmerge -J` on a playlist and parse the resulting JSON for
     tracks and chapter count. Audio bitrates are not part of it (mkvmerge
@@ -99,6 +153,12 @@ def inspect_playlist(playlist_path: Path) -> Playlist:
     """
     if dvd.is_title(playlist_path):
         return dvd.inspect(playlist_path)
+    suffix = playlist_path.suffix.lower()
+    # use_engine=False reads it as mkvmerge numbers its tracks (to resume a job checkpointed that way).
+    if (suffix == ".mpls" or suffix in engine.TS_SUFFIXES) and use_engine and engine.available():
+        playlist = engine.inspect(str(playlist_path))
+        playlist.path = playlist_path
+        return playlist
     result = tools.run([TOOL_PATHS["mkvmerge"], "-J", str(playlist_path)], timeout=60)
     # mkvmerge returns 0 for a clean read and 1 for warnings (still usable
     # output), but 2 means it couldn't read the file at all - in that case
@@ -314,6 +374,7 @@ REASON_TEXT = {
     "lossy": "No Atmos or lossless track - best available is {}",
     "no_audio": "No audio track at all - cannot be the right playlist",
     "chapters": "{} chapters",
+    "main_title": "Main title of the disc (plays the most footage)",
     "no_chapters": "No chapters - can't be split into songs even if selected",
     "video": "Includes a video track ({})",
     "no_video": "No video track - audio-only playlist",
@@ -368,6 +429,11 @@ def score_playlists(playlists: list[Playlist]) -> list[PlaylistScore]:
             reasons.append(Reason("chapters", pl.chapter_count))
         else:
             reasons.append(Reason("no_chapters"))
+
+        if pl.main_title:
+            # The engine's pick: the playlist that plays the most of the disc's footage.
+            score += 25
+            reasons.append(Reason("main_title"))
 
         if pl.video_track is not None:
             score += 10

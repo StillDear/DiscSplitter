@@ -1,0 +1,173 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef LPCM_STREAM_READER_H_
+#define LPCM_STREAM_READER_H_
+
+#include <string>
+#include <vector>
+
+#include "avPacket.h"
+#include "simplePacketizerReader.h"
+
+class LPCMStreamReader final : public SimplePacketizerReader
+{
+    friend class MatroskaMuxer;
+
+   public:
+    enum class LPCMHeaderType
+    {
+        htNone,
+        htM2TS,
+        htWAVE,
+        htWAVE64
+    };
+
+    LPCMStreamReader() : m_useNewStyleAudioPES(false), m_tmpFrameBuffer()
+    {
+        m_bitsPerSample = m_freq = m_channels = 0;
+        m_lfeExists = false;
+        m_headerType = LPCMHeaderType::htNone;
+        m_testMode = false;
+        m_firstFrame = true;
+        m_demuxMode = false;
+        // m_waveHeaderParsed = false;
+        m_curChunkLen = 0;
+        m_channels = 0;
+        m_frameRest = 0;
+        m_needPCMHdr = true;
+        m_openSizeWaveFormat = false;  // WAVE data size unknown and zero
+        m_lastChannelRemapPos = nullptr;
+        m_demuxToW64 = false;
+    }
+    // Write the demuxed audio as Sony Wave64 instead of RIFF WAVE. A RIFF header states its sizes
+    // in 32 bits, so it cannot describe a file past 4 GiB and a long LPCM track has to be written
+    // as two. Wave64 is the same audio with 16 byte chunk ids and 64 bit sizes, and tsMuxeR has
+    // always been able to READ it.
+    void setDemuxToW64(const bool value) { m_demuxToW64 = value; }
+    [[nodiscard]] bool isDemuxToW64() const { return m_demuxToW64; }
+    void setNewStyleAudioPES(const bool value) { m_useNewStyleAudioPES = value; }
+    int getTSDescriptor(uint8_t* dstBuff, bool blurayMode, bool hdmvDescriptors) override;
+    int getFreq() override { return m_freq; }
+    // what a disc's clip information and descriptor give; a demux and a Matroska output keep the WAV's own count
+    uint8_t getChannels() override { return m_demuxMode ? m_channels : static_cast<uint8_t>(bdChannels()); }
+    void applyDiscoveryData(const StreamDiscoveryData& data) override;
+    void fillDiscoveryData(StreamDiscoveryData& data) override;
+    // void setDemuxMode(bool value) {m_demuxMode = value;}
+    void setFirstFrame(const bool value) { m_firstFrame = value; }
+    bool beforeFileCloseEvent(File& file) override;
+    void setHeadersType(LPCMHeaderType value);
+    // Why a disc or a TS cannot take the speaker layout of the WAV (planBdLayout), a sentence without the advice that
+    // follows it, which names the output; empty when it can. A demux and a Matroska output keep the WAV's own channels
+    // and take it.
+    [[nodiscard]] const std::string& discLayoutRefusal() const { return m_bdRefusal; }
+    // The output a disc or TS mux writes, as the refusal names it: "a Blu-ray disc", "an AVCHD disc", "a transport
+    // stream"
+    void setDiscOutputName(const std::string& name) { m_bdOutput = name; }
+
+   protected:
+    int getHeaderLen() override { return 4; }
+    int decodeFrame(uint8_t* buff, uint8_t* end, int& skipBytes, int& skipBeforeBytes) override;
+    uint8_t* findFrame(uint8_t* buff, uint8_t* end) override;
+    double getFrameDuration() override;
+    const CodecInfo& getCodecInfo() override;
+    const std::string getStreamInfo() override;
+    void writePESExtension(PESPacket* pesPacket, const AVPacket& avPacket) override;
+    void setTestMode(const bool value) override { m_testMode = value; }
+    int writeAdditionData(uint8_t* dstBuffer, uint8_t* dstEnd, AVPacket& avPacket,
+                          PriorityDataInfo* priorityData) override;
+    int readPacket(AVPacket& avPacket) override;
+    int flushPacket(AVPacket& avPacket) override;
+    void onSplitEvent() override { m_firstFrame = true; }
+    void setBuffer(uint8_t* data, uint32_t dataLen, bool lastBlock = false) override;
+    // The samples as a demux and a Matroska output keep them: their size in bits, and whether they are floating point
+    [[nodiscard]] int keptBits() const
+    {
+        return m_srcBits ? m_srcBits : (m_bitsPerSample == 20 ? 24 : m_bitsPerSample);
+    }
+    [[nodiscard]] bool keptFloat() const { return m_srcFloat; }
+
+   private:
+    LPCMHeaderType m_headerType;
+    bool m_useNewStyleAudioPES;
+    bool m_testMode;
+    bool m_firstFrame;
+    // bool m_demuxMode;
+    // bool m_waveHeaderParsed;
+    uint8_t m_tmpFrameBuffer[17280 + 4];  // max PCM frame size
+    int32_t m_frameRest;
+    bool m_needPCMHdr;
+
+    uint16_t m_bitsPerSample;
+    // ** SAMPLES A DISC DOES NOT TAKE. ** A WAV of 8 bit, 32 bit or floating point samples: m_srcBits is their size (8,
+    // 32, 64) and m_srcFloat says they are floating point, m_bitsPerSample then the size a disc gets (16 or 24). 0: the
+    // samples are taken as they are. A demux and a Matroska output keep them; the disc and TS path converts them
+    // (convertSamples).
+    uint16_t m_srcBits = 0;
+    bool m_srcFloat = false;
+    std::vector<uint8_t> m_convBuffer;
+    int64_t m_convSamples = 0;  // samples of one channel converted so far: the time of a warning
+    int64_t m_clipped = 0;      // floating point samples above full scale, clipped
+    bool m_lowBitsSaid = false;
+    bool m_clipSaid = false;
+    bool m_convertSaid = false;
+    bool m_firstConverted = false;  // the first file of the join has samples that are converted
+    uint64_t m_firstFormat = 0;     // rate, channels, sample size of the first file: the files of a join must have it
+    [[nodiscard]] int sourceSampleBytes() const
+    {
+        return m_srcBits ? m_srcBits / 8 : (m_bitsPerSample == 20 ? 3 : m_bitsPerSample / 8);
+    }
+    void convertSamples(const uint8_t* start, const uint8_t* end);
+    int32_t m_freq;
+    uint8_t m_channels;
+    bool m_lfeExists;
+    // ** WHERE EACH CHANNEL GOES ON A DISC. ** A Blu-ray LPCM track has a fixed set of layouts. m_bdMap gives, for each
+    // channel of the layout the WAV becomes, in WAV order, the WAV's own channel, or -1 for a silent one; empty when
+    // the WAV is written as it is. m_backCentre: the single surround of the 2/1 and 3/1 layouts. A demux and a Matroska
+    // output keep the WAV's own channels; only the disc and transport stream path use these.
+    std::vector<int> m_bdMap;
+    std::vector<uint8_t> m_bdBuffer;
+    bool m_backCentre = false;
+    std::string m_bdRefusal;  // discLayoutRefusal
+    std::string m_bdOutput = "a disc or a TS";
+    bool m_noMaskSaid = false;  // the warning for a WAV of more than 2 channels without a channel mask was given
+    // ** A DEMUX KEEPS THE SPEAKERS OF THE WAV. ** The channel mask of a WAV whose header names one speaker for each
+    // channel, 0 for any other. A demux wrote a mask made from the number of channels, and 5.1 with back surrounds came
+    // out as 5.1 with side ones.
+    uint32_t m_srcMask = 0;
+    [[nodiscard]] int bdChannels() const { return m_bdMap.empty() ? m_channels : static_cast<int>(m_bdMap.size()); }
+    void planBdLayout(uint32_t mask);
+    int64_t m_curChunkLen;
+    bool m_openSizeWaveFormat;
+    // An RF64 or BW64 file: its sizes are in the ds64 chunk, the data chunk saying 0xFFFFFFFF
+    bool m_rf64 = false;
+    bool m_burstsSaid = false;  // decodeWaveHeader: the PCM holds IEC 61937 bursts of coded sound
+    // The data chunk's size was given, so m_curChunkLen reaching 0 is the end of the audio and not
+    // "size unknown". m_afterData is set at that end: the bytes that follow are a pad byte, a chunk
+    // of tags, another data chunk or another file, and are looked at before any is taken for audio.
+    bool m_chunkSizeKnown = false;
+    bool m_afterData = false;
+    int m_dataPad = 0;       // pad bytes after the data chunk (an odd size in WAV; to 8 bytes in W64)
+    int64_t m_skipRest = 0;  // bytes of a chunk after the audio still to step over
+
+    void setDataChunkSize(int64_t size, bool known);
+    int stepAfterData(uint8_t* buff, uint8_t* end);
+    // A later file of a join whose header comes before the data chunk of the file in front of it has ended
+    void findJoinedFileHeader();
+    int m_joinPartial = 0;  // the part of a sample in front of that header, stepped over when the chunk ends
+    uint8_t* m_lastChannelRemapPos;
+    bool m_demuxToW64;
+
+    bool detectLPCMType(uint8_t* buffer, int64_t len);
+    int decodeLPCMHeader(const uint8_t* buff);
+    int convertLPCMToWAV(uint8_t* start, uint8_t* end);
+    int convertWavToPCM(uint8_t* start, uint8_t* end);
+
+    void storeChannelData(const uint8_t* start, const uint8_t* end, int chNum, uint8_t* tmpData, int mch) const;
+    void copyChannelData(uint8_t* start, const uint8_t* end, int chFrom, int chTo, int mch) const;
+    void restoreChannelData(uint8_t* start, const uint8_t* end, int chNum, const uint8_t* tmpData, int mch) const;
+    void removeChannel(uint8_t* start, const uint8_t* end, int cnNum, int mch) const;
+    int decodeWaveHeader(uint8_t* buff, uint8_t* end);
+    static uint8_t* findSubstr(const char* pattern, uint8_t* buff, const uint8_t* end);
+};
+
+#endif

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import bluray_iso, dvd, jobs, models, sources, tools
+from .engine import TS_SUFFIXES
 
 MAX_PREVIEW_SECONDS = 15 * 60   # a chapter longer than this is previewed from its start only
 # The .mpls reader lives in sources (scans need it too); re-exported for callers here.
@@ -37,6 +38,15 @@ def _start_time(path: Path) -> float:
         return float(result.stdout.strip())
     except ValueError:
         return 0.0
+
+
+def _by_pid(source: Path, track: models.Track) -> bool:
+    """A transport stream read by the engine: its track IDs are PIDs, which ffmpeg selects with 0:i:<pid>."""
+    return source.suffix.lower() in TS_SUFFIXES and bool(track.stream_id)
+
+
+def _stream(source: Path, track: models.Track) -> str:
+    return f"0:i:{track.stream_id:#x}" if _by_pid(source, track) else f"0:{track.track_id}"
 
 
 def clip_input(source: Path, track: models.Track, audio_index: int, start: float,
@@ -57,7 +67,9 @@ def clip_input(source: Path, track: models.Track, audio_index: int, start: float
         inputs = dvd.input_args(source, chapter=chapter) if chapter else \
             dvd.input_args(source, seek=start)
         return [*inputs, "-map", f"0:{track.track_id}"], length
-    return ["-ss", f"{start:.3f}", "-i", str(source), "-map", f"0:{track.track_id}"], length
+    if _by_pid(source, track):          # m2ts clocks rarely start at zero
+        start += _start_time(source)
+    return ["-ss", f"{start:.3f}", "-i", str(source), "-map", _stream(source, track)], length
 
 
 def _probe_target(source: Path, track: models.Track, kind_index: int, kind: str) -> tuple[list[str], str]:
@@ -72,7 +84,7 @@ def _probe_target(source: Path, track: models.Track, kind_index: int, kind: str)
         letter = {"audio": "a", "video": "v"}.get(kind, "s")
         return [str(target)], f"i:{track.stream_id:#x}" if track.stream_id else f"{letter}:{kind_index}"
     inputs = dvd.input_args(source) if dvd.is_title(source) else [str(source)]
-    return inputs, str(track.track_id)
+    return inputs, f"i:{track.stream_id:#x}" if _by_pid(source, track) else str(track.track_id)
 
 
 def probe_stream(source: Path, track: models.Track, kind_index: int, kind: str = "audio") -> dict:
@@ -218,7 +230,7 @@ def render_video(source: Path, track: models.Track, audio_index: int, video: mod
     if source.suffix.lower() == ".mpls":
         video_map = ["-map", f"0:i:{video.stream_id:#x}" if video.stream_id else "0:v:0"]
     else:
-        video_map = ["-map", f"0:{video.track_id}"]
+        video_map = ["-map", _stream(source, video)]
     output.parent.mkdir(parents=True, exist_ok=True)
     partial = output.with_name(output.stem + ".partial.mkv")
     command = [tools.TOOL_PATHS["ffmpeg"], "-v", "error", "-y", *args[:-2], *video_map, *audio_map,
@@ -286,7 +298,7 @@ def disc_peaks(source: Path, track: models.Track, audio_index: int, total_second
     elif dvd.is_title(source):
         inputs = [*dvd.input_args(source), "-map", f"0:{track.track_id}"]
     else:
-        inputs = ["-i", str(source), "-map", f"0:{track.track_id}"]
+        inputs = ["-i", str(source), "-map", _stream(source, track)]
     command = [tools.TOOL_PATHS["ffmpeg"], "-v", "error", *inputs, "-vn", "-sn", "-dn",
                "-ac", "1", "-ar", str(DISC_RATE), "-f", "s16le", "-"]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,

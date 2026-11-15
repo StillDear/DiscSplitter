@@ -45,13 +45,18 @@ def duration_tolerance(container: str, keep_video: bool) -> float:
     return 2.5 if keep_video else 0.75
 
 
+SYNC_TOLERANCE = 0.25     # sound may start a frame or two before or after the first picture, as on the disc
+
+
 def verify_output(path: Path, chapter: Chapter, *, container: str, audio_tracks: list[Track],
                   subtitle_count: int, keep_video: bool, title: str,
-                  probe: Optional[Callable[[Path], dict]] = None) -> VerifyResult:
+                  probe: Optional[Callable[[Path], dict]] = None, video_count: int = 1) -> VerifyResult:
     """
     Read a finished file back with ffprobe and compare it with what was asked
-    for: its length, the streams it carries and its title tag. Nothing is
-    decoded, so this takes a fraction of a second per file.
+    for: its length, the streams it carries, that sound and picture start
+    together, and its title tag (an M2TS has none). Nothing is decoded, so this
+    takes a fraction of a second per file. video_count: the video streams a
+    picture copy carries (2 with a Dolby Vision enhancement layer).
     """
     result = VerifyResult(path, chapter.index)
     issues = result.issues
@@ -84,18 +89,37 @@ def verify_output(path: Path, chapter: Chapter, *, container: str, audio_tracks:
     want_audio = 1 if flac else len(audio_tracks)
     if len(audios) != want_audio:
         issues.append(VerifyIssue("audio", str(want_audio), str(len(audios))))
-    want_video = 1 if keep_video and not flac else 0
+    want_video = max(1, video_count) if keep_video and not flac else 0
     if videos != want_video:
         issues.append(VerifyIssue("video", str(want_video), str(videos)))
     if not flac and kinds.count("subtitle") != subtitle_count:
         issues.append(VerifyIssue("subtitles", str(subtitle_count), str(kinds.count("subtitle"))))
     if flac and audios and audios[0].get("codec_name") != "flac":
         issues.append(VerifyIssue("codec", "flac", str(audios[0].get("codec_name") or "")))
+    if want_video and audios:
+        offset = _start_offset(streams)
+        if offset is not None and abs(offset) > SYNC_TOLERANCE:
+            issues.append(VerifyIssue("sync", f"±{SYNC_TOLERANCE * 1000:.0f} ms", f"{offset * 1000:+.0f} ms"))
 
     tags = {str(k).lower(): str(v) for k, v in ((info.get("format") or {}).get("tags") or {}).items()}
-    if title and tags.get("title", "").strip() != title.strip():
+    if title and container.lower() != "m2ts" and tags.get("title", "").strip() != title.strip():
         issues.append(VerifyIssue("title", title, tags.get("title", "")))
     return result
+
+
+def _start_offset(streams: list[dict]) -> Optional[float]:
+    """How much later the first sound starts than the first picture (seconds); None when not stated."""
+    def first(kind: str) -> Optional[float]:
+        times = []
+        for s in streams:
+            if s.get("codec_type") == kind and not (s.get("disposition") or {}).get("attached_pic"):
+                try:
+                    times.append(float(s.get("start_time")))
+                except (TypeError, ValueError):
+                    pass
+        return min(times) if times else None
+    video, audio = first("video"), first("audio")
+    return None if video is None or audio is None else audio - video
 
 
 def _probe_file(path: Path) -> dict:

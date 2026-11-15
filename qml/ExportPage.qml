@@ -78,7 +78,8 @@ ColumnLayout {
                             }
                             Copy {
                                 text: win.tr((win.discView.outputFormat === "flac" ? ["stageExtractDetail", "stageSplitFlac", "stageCleanDetail", "stageVerifyDetail"]
-                                                                              : ["stageExtractDirect", "stageSplitDirect", "stageCleanDirect", "stageVerifyDetail"])[stageCard.index])
+                                              : win.discView.outputFormat === "m2ts" ? ["stageExtractEngine", "stageSplitM2ts", "stageCleanM2ts", "stageVerifyDetail"]
+                                              : ["stageExtractDirect", "stageSplitDirect", "stageCleanDirect", "stageVerifyDetail"])[stageCard.index])
                                 font.pixelSize: Theme.px(12); color: stageCard.phase === 2 ? Theme.faint : Theme.sub; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
                             }
                         }

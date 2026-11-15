@@ -1,11 +1,16 @@
 """
 The whole export in one call: checkpointed, resumable and cancellable.
 
-Both routes share one skeleton (checkpoint, chapters, resume, status, cleanup); they differ only in
+Every route shares one skeleton (checkpoint, chapters, resume, status, cleanup); they differ only in
 the file the songs are cut from and the tool that cuts it:
 
+    M2TS  a Blu-ray cut straight from the disc by the built-in engine, the streams as the disc has them
     MKV   cut straight from the disc in one mkvmerge pass (a DVD title is first copied to one MKV)
-    FLAC  extract the chosen audio to one MKV first, then encode each chapter with ffmpeg
+    FLAC  extract the chosen audio first (from a Blu-ray: by the engine, only the span the chapters cover;
+          otherwise with mkvmerge or ffmpeg), then encode each chapter with ffmpeg
+
+A Blu-ray the engine read (Playlist.by_engine) is never mounted for M2TS or FLAC: the engine reads the
+image directly, and the chapter marks came with the scan.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-from . import bluray_iso, chapter_marks, dvd, split, tagging, tools
+from . import bluray_iso, chapter_marks, dvd, engine, split, tagging, tools
 from .chapter_marks import apply_chapter_layout
 from .jobs import Failure, JobCancelled, ProgressEvent, cleaning_up, job_cancelled, job_failed
 from .manifest import JobManifest, read_manifest, write_manifest
@@ -116,6 +121,9 @@ def run_full_pipeline(
 
     audio_track_ids = [audio_track.track_id] if audio_track_ids is None else audio_track_ids
     subtitle_track_ids = subtitle_track_ids or []
+    by_engine = playlist.by_engine and not dvd.is_title(playlist.path)
+    if container.lower() == "m2ts" and not by_engine:
+        raise Failure("tracks_unavailable", "M2TS export takes a Blu-ray read by the built-in engine.")
     if container.lower() == "flac":
         if len(set(audio_track_ids)) != 1:
             raise ValueError("FLAC export requires exactly one audio track.")
@@ -148,52 +156,50 @@ def run_full_pipeline(
             output_folder=str(output_folder),
             container=container,
             track_names={str(k): v for k, v in track_names.items()},
-            tool_versions=tools.tool_versions(),
+            tool_versions={**tools.tool_versions(), **({"tsmuxer": engine.version()} if by_engine else {})},
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             status="extracting",
             metadata=metadata or {},
             chapter_layout=[float(s) for s in chapter_layout] if chapter_layout else None,
+            track_numbers="engine" if by_engine else "mkvmerge",
         )
         write_manifest(work_folder, manifest)
+    elif by_engine != (manifest.track_numbers == "engine"):
+        # Track IDs are PIDs for the engine and mkvmerge's own numbers otherwise: never mix the two.
+        raise Failure("tracks_unavailable", "This job was saved with other track numbers than the playlist was "
+                                            "read with now.")
 
-    direct = container.lower() == "mkv"
+    direct = container.lower() in ("mkv", "m2ts")
 
     def save(status: str) -> None:
         manifest.status = status
         write_manifest(work_folder, manifest)
 
+    def on_output_written(path: Path) -> None:
+        if str(path) not in manifest.completed_outputs:
+            manifest.completed_outputs.append(str(path))
+            write_manifest(work_folder, manifest)
+
+    def common(done: set[Path]) -> dict:
+        return dict(progress_cb=log, overwrite=overwrite, cancel_event=cancel_event, skip_paths=done,
+                    on_output_written=on_output_written, metadata=metadata,
+                    number_filenames=manifest.number_filenames, filename_template=manifest.filename_template)
+
     try:
-        with _cut_source(playlist, manifest, work_folder, direct=direct, resume=resume, log=log, save=save,
-                         cancel_event=cancel_event, audio_track=audio_tracks[0]) as source:
-            chapters = _chapters_to_cut(source, direct, manifest, chapter_indices, track_names)
-            save("splitting")
-            done = _already_done(manifest, work_folder, resume, skip_existing, log)
-
-            def on_output_written(path: Path) -> None:
-                if str(path) not in manifest.completed_outputs:
-                    manifest.completed_outputs.append(str(path))
-                    write_manifest(work_folder, manifest)
-
-            common = dict(progress_cb=log, overwrite=overwrite, cancel_event=cancel_event, skip_paths=done,
-                          on_output_written=on_output_written, metadata=metadata,
-                          number_filenames=manifest.number_filenames, filename_template=manifest.filename_template)
-            selected = [ch for ch in chapters if chapter_indices is None or ch.index in chapter_indices]
-            if direct:
-                # Video files carry only their song titles: no album tags, cover or folder.jpg.
-                video = [video_track] if keep_video and video_track is not None else []
-                streams = (video, audio_tracks, subtitle_tracks)
-                if dvd.is_title(playlist.path):         # cut from the title's copy, whose numbers differ
-                    streams = tuple(dvd.in_copy(playlist.path, group) for group in streams)
-                video, cut_audio, cut_subtitles = streams
-                results = split.split_mkv_direct(
-                    source, selected, output_folder, audio_tracks=cut_audio, subtitle_tracks=cut_subtitles,
-                    video_track=video[0] if video else None, **common)
-            else:
-                # A resumed job keeps the tags it started with.
-                tagging.write_folder_cover(metadata, output_folder)
-                results = split.split_flac(
-                    source, selected, output_folder, source_chapter_count=len(chapters),
-                    renumber_tracks=manifest.renumber_tracks, **common)
+        if by_engine:
+            results = _cut_with_engine(playlist, manifest, work_folder, container=container.lower(),
+                                       resume=resume, log=log, save=save, cancel_event=cancel_event,
+                                       chapter_indices=chapter_indices, track_names=track_names,
+                                       video=[video_track] if keep_video and video_track is not None else [],
+                                       audio_tracks=audio_tracks, subtitle_tracks=subtitle_tracks,
+                                       skip_existing=skip_existing, common=common,
+                                       output_folder=output_folder, metadata=metadata)
+        else:
+            results = _cut_other(playlist, manifest, work_folder, direct=direct, resume=resume, log=log, save=save,
+                                 cancel_event=cancel_event, chapter_indices=chapter_indices, track_names=track_names,
+                                 keep_video=keep_video, video_track=video_track, audio_tracks=audio_tracks,
+                                 subtitle_tracks=subtitle_tracks, skip_existing=skip_existing, common=common,
+                                 output_folder=output_folder, metadata=metadata)
         save("complete")
     except JobCancelled:
         save("cancelled")
@@ -208,6 +214,82 @@ def run_full_pipeline(
         log(cleaning_up())
         shutil.rmtree(work_folder, ignore_errors=True)
     return results
+
+
+def _cut_with_engine(playlist: Playlist, manifest: JobManifest, work_folder: Path, *, container: str, resume: bool,
+                     log, save, cancel_event, chapter_indices, track_names, video: list[Track],
+                     audio_tracks: list[Track], subtitle_tracks: list[Track], skip_existing, common,
+                     output_folder: Path, metadata) -> list[Path]:
+    """A Blu-ray the engine read: chapters from its marks, cut straight from the disc (or its audio for FLAC)."""
+    chapters = _named_chapters(chapter_marks.playlist_chapters(playlist), manifest, chapter_indices, track_names)
+    selected = [ch for ch in chapters if chapter_indices is None or ch.index in chapter_indices]
+    source = engine.source_for(playlist)
+    if container == "m2ts":
+        save("splitting")
+        done = _already_done(manifest, work_folder, resume, skip_existing, log)
+        # The picture as the disc plays it, a Dolby Vision enhancement layer included.
+        pictures = playlist.picture_tracks if video else []
+        return split.split_m2ts(source, selected, output_folder, video_tracks=pictures, audio_tracks=audio_tracks,
+                                subtitle_tracks=subtitle_tracks, duration=playlist.duration_seconds, **common(done))
+    if container == "mkv":
+        # mkvmerge cuts the MKV, as it always has; it numbers the tracks its own way and needs a mounted image.
+        with bluray_iso.playlist_file(playlist.path, playlist.iso_image) as path:
+            streams = [split.mkvmerge_track_ids(path, group) for group in (video, audio_tracks, subtitle_tracks)]
+            save("splitting")
+            done = _already_done(manifest, work_folder, resume, skip_existing, log)
+            mkv_video, mkv_audio, mkv_subtitles = streams
+            return split.split_mkv_direct(path, selected, output_folder, audio_tracks=mkv_audio,
+                                          subtitle_tracks=mkv_subtitles,
+                                          video_track=mkv_video[0] if mkv_video else None, **common(done))
+    # FLAC: only the audio the chosen chapters cover, read by the engine, then cut to the sample by ffmpeg.
+    copy = work_folder / "_audio_extracted.mka"
+    if resume and manifest.audio_extracted and copy.is_file():
+        log(ProgressEvent(f"Resuming: {manifest.audio_track_label} already extracted, skipping re-extraction.",
+                          stage="splitting"))
+    else:
+        manifest.audio_extracted = False
+        save("extracting")
+        manifest.audio_offset = split.extract_audio_engine(
+            source, copy, audio_tracks[0], start=selected[0].start_seconds, end=selected[-1].end_seconds,
+            duration=playlist.duration_seconds, progress_cb=log, cancel_event=cancel_event)
+        manifest.audio_extracted = True
+        write_manifest(work_folder, manifest)
+    save("splitting")
+    done = _already_done(manifest, work_folder, resume, skip_existing, log)
+    offset = manifest.audio_offset
+    shifted = [dataclasses.replace(ch, start_seconds=ch.start_seconds - offset,
+                                   end_seconds=None if ch.end_seconds is None else ch.end_seconds - offset)
+               for ch in selected]
+    tagging.write_folder_cover(metadata, output_folder)
+    return split.split_flac(copy, shifted, output_folder, source_chapter_count=len(chapters),
+                            renumber_tracks=manifest.renumber_tracks, **common(done))
+
+
+def _cut_other(playlist: Playlist, manifest: JobManifest, work_folder: Path, *, direct: bool, resume: bool, log, save,
+               cancel_event, chapter_indices, track_names, keep_video: bool, video_track: Optional[Track],
+               audio_tracks: list[Track], subtitle_tracks: list[Track], skip_existing, common, output_folder: Path,
+               metadata) -> list[Path]:
+    """DVD titles, Matroska files, and Blu-rays read with mkvmerge (the engine missing, or an older checkpoint)."""
+    with _cut_source(playlist, manifest, work_folder, direct=direct, resume=resume, log=log, save=save,
+                     cancel_event=cancel_event, audio_track=audio_tracks[0]) as source:
+        chapters = _chapters_to_cut(source, direct, manifest, chapter_indices, track_names)
+        save("splitting")
+        done = _already_done(manifest, work_folder, resume, skip_existing, log)
+        selected = [ch for ch in chapters if chapter_indices is None or ch.index in chapter_indices]
+        if direct:
+            # Video files carry only their song titles: no album tags, cover or folder.jpg.
+            video = [video_track] if keep_video and video_track is not None else []
+            streams = (video, audio_tracks, subtitle_tracks)
+            if dvd.is_title(playlist.path):         # cut from the title's copy, whose numbers differ
+                streams = tuple(dvd.in_copy(playlist.path, group) for group in streams)
+            video, cut_audio, cut_subtitles = streams
+            return split.split_mkv_direct(
+                source, selected, output_folder, audio_tracks=cut_audio, subtitle_tracks=cut_subtitles,
+                video_track=video[0] if video else None, **common(done))
+        # A resumed job keeps the tags it started with.
+        tagging.write_folder_cover(metadata, output_folder)
+        return split.split_flac(source, selected, output_folder, source_chapter_count=len(chapters),
+                                renumber_tracks=manifest.renumber_tracks, **common(done))
 
 
 @contextlib.contextmanager
@@ -248,6 +330,12 @@ def _chapters_to_cut(source: Path, direct: bool, manifest: JobManifest, chapter_
     """The source's chapters, edited as the job asked and named; recorded in the manifest."""
     chapters = (chapter_marks.read_chapters_from_source(source) if direct
                 else chapter_marks.read_chapters(source))
+    return _named_chapters(chapters, manifest, chapter_indices, track_names)
+
+
+def _named_chapters(chapters: list[Chapter], manifest: JobManifest, chapter_indices: Optional[list[int]],
+                    track_names: dict[int, str]) -> list[Chapter]:
+    """Chapters edited as the job asked and named; recorded in the manifest."""
     if not chapters:
         raise Failure("no_chapters", "No chapters found - this playlist has no chapter markers, so it can't be split "
                                      "into songs.")

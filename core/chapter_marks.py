@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from . import dvd
+from . import engine
 from . import tools
 from .jobs import Failure, tool_failed
 from .models import Chapter
@@ -120,6 +121,11 @@ def read_chapters_from_source(
         return read_chapters(source_path, preferred_language=preferred_language)
     if dvd.is_title(source_path):
         return dvd.read_chapters(source_path)
+    suffix = source_path.suffix.lower()
+    if (suffix == ".mpls" or suffix in engine.TS_SUFFIXES) and engine.available():
+        # The engine reads the playlist's marks directly: no temporary Matroska file, no mkvextract.
+        listed = engine.inspect(str(source_path))
+        return chapters_from_marks(listed.marks or [], listed.duration_seconds)
 
     tmp_path = Path(tempfile.gettempdir()) / f"_chapters_only_{uuid.uuid4().hex}.mkv"
     args = [
@@ -136,6 +142,22 @@ def read_chapters_from_source(
         return read_chapters(tmp_path, preferred_language=preferred_language)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def chapters_from_marks(marks: list[float], duration: float = 0.0) -> list[Chapter]:
+    """Chapters from start times (a Blu-ray playlist's marks); the last one ends with the playlist."""
+    starts = sorted(set(float(m) for m in marks))
+    chapters = [Chapter(index=i, start_seconds=s) for i, s in enumerate(starts, start=1)]
+    for ch, nxt in zip(chapters, chapters[1:]):
+        ch.end_seconds = nxt.start_seconds
+    if chapters and duration and duration > chapters[-1].start_seconds:
+        chapters[-1].end_seconds = duration
+    return chapters
+
+
+def playlist_chapters(playlist) -> list[Chapter]:
+    """The chapters of a playlist the engine read (no disc access: its marks came with the scan)."""
+    return chapters_from_marks(playlist.marks or [], playlist.duration_seconds)
 
 
 _LANGUAGE_ALIASES = (

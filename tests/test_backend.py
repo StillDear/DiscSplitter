@@ -339,7 +339,7 @@ def test_resume_restores_manifest_audio_names_and_container(backend, qt_app, mon
     m.chapters = [{'index': i, 'start_seconds': (i-1)*100, 'end_seconds': i*100, 'name': ''} for i in range(1, 4)]
     core.manifest.write_manifest(output / '_work', m)
     backend.exporter.flow.manifest = m
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path: playlist)
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path, **_: playlist)
     calls = []
     def pipeline(pl, audio, names, **kw):
         calls.append((audio.track_id, names, kw))

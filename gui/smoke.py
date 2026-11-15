@@ -37,10 +37,11 @@ def populate(backend):
         models.Track(1, 'audio', 'TrueHD Atmos', 'A_TRUEHD', 'eng', 8, 'Dolby Atmos 7.1', 96000, 24, default_track=True,
                         stream_id=0x1100, properties={'language_ietf': 'en-US', 'forced_track': False}),
         models.Track(2, 'audio', 'LPCM', 'A_PCM/INT/BIG', 'eng', 2, '', 96000, 24, stream_id=0x1101),
-        models.Track(3, 'subtitles', 'HDMV PGS', 'S_HDMV/PGS', 'eng', stream_id=0x1200)], chapter_count=9, duration_seconds=2700)
+        models.Track(3, 'subtitles', 'HDMV PGS', 'S_HDMV/PGS', 'eng', stream_id=0x1200)], chapter_count=9, duration_seconds=2700,
+        reader='engine', main_title=True)
     backend.disc.refresh_stream_texts()     # card titles, chips and info lines from the tracks above
     backend.disc.update_track_selection()
-    backend.put(hasVideo=True, keepVideo=True, videoSummary='H.264 · 1920×1080 · 23.976p · SDR')
+    backend.put(hasVideo=True, keepVideo=True, canM2ts=True, videoSummary='H.264 · 1920×1080 · 23.976p · SDR')
     # Preview bar open (no clip, so nothing plays): exercises its layout on every screen.
     backend.put(previewRow=1, previewAudio=0, previewTitle='02 · Song 2', previewTrack='TrueHD Atmos - 7.1',
                 previewTracks=['TrueHD Atmos 7.1', 'LPCM 2.0'], previewLoading=False, previewVideo=True)
@@ -60,7 +61,9 @@ def populate(backend):
     backend.put(pasteDraft='\n'.join(['＜収録内容＞', 'Disc 1', 'Opening Movie', 'M1. Song 1', 'M2. Song 2 (Live)', '-MC-',
                                        'M3. Song 3', 'M4. Song 4', 'ENCORE', 'EN1. Song 5', 'EN2. Song 6', 'EN3. Song 7',
                                        '', 'Disc 2', '特典映像', '1. Documentary']))
-    backend.tool_model.replace([dict(tool=t, path=t, available=t != 'ffprobe') for t in tools.TOOL_PATHS])
+    backend.tool_model.replace([dict(tool='tsMuxeR', path='tsMuxeR version 3.1.0', available=True, builtin=True, optional=False)]
+                               + [dict(tool=t, path=t, available=t != 'ffprobe', builtin=False, optional=t.startswith('mkv'))
+                                  for t in tools.TOOL_PATHS])
     backend.metadata.meta['album'].update(artist='Dire Straits', album='Brothers In Arms', album_artist='Dire Straits', date='1985', genre='Rock')
     backend.metadata.setTrackArtist(1, 'Dire Straits feat. Sting')
     backend.metadata.publish_metadata()
@@ -92,6 +95,10 @@ def run(app, backend, window, warnings, screenshots=None):
     # Full-motion pass: every page transition and Behavior runs once, no screenshots.
     for page in ('start', 'main', 'review', 'export', 'done', 'settings', 'metadata', 'main'):
         steps.append(('zh', 'dark', 'motion:' + page))
+    # The disc copied as M2TS (a Blu-ray the built-in engine read): the format switch, the summary, the stages.
+    for language, theme in (('zh', 'dark'), ('en', 'light')):
+        for page in ('main', 'export', 'settings'):
+            steps.append((language, theme, 'm2ts:' + page))
     dialogs = iter(('tools', 'collision', 'diskSpace', 'discard', 'resume', 'duplicate', 'closeBusy', 'tips', 'about', 'paste', 'trackinfo', 'videoinfo'))
     def advance():
         if steps:
@@ -106,6 +113,13 @@ def run(app, backend, window, warnings, screenshots=None):
             backend.setPreference('language', language)
             backend.setPreference('theme', theme)
             backend.put(pipeline=False)
+            if page.startswith('m2ts:'):
+                backend.setPreference('motion', 'reduced')
+                backend.put(outputFormat='m2ts')
+                page = page.split(':')[1]
+                name_page = 'm2ts-' + page
+            else:
+                name_page = page.replace(":", "-")
             backend.navigate(page.split(':')[0])
             backend.put(pipeline=page == 'export')
             if page.startswith('settings:'):
@@ -114,7 +128,7 @@ def run(app, backend, window, warnings, screenshots=None):
                 window.smokeSection('tools')
             if screenshots:
                 screenshots.mkdir(parents=True, exist_ok=True)
-                name = f'{language}-{theme}-{page.replace(":", "-")}.png'
+                name = f'{language}-{theme}-{name_page}.png'
                 QTimer.singleShot(60, lambda: window.grabWindow().save(str(screenshots / name)))
             QTimer.singleShot(100, advance)
         else:

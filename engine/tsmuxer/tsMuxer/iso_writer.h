@@ -1,0 +1,428 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef ISO_WRITER_H_
+#define ISO_WRITER_H_
+
+#include <fs/file.h>
+#include <types/types.h>
+
+#include <map>
+#include <string>
+
+static constexpr int SECTOR_SIZE = 2048;
+static constexpr int ALLOC_BLOCK_SIZE = 1024 * 64;
+static constexpr int METADATA_START_ADDR = 1024 * 640 / SECTOR_SIZE;
+// The longest extent a file is cut into: the largest multiple of both 64 KB and the 6144 byte aligned unit of a stream
+// that is below 1 GB, where the 30 bit length of an extent ends
+static constexpr int MAX_EXTENT_SIZE = 0x3FFF0000;
+static constexpr uint32_t NEXT_EXTENT = 0xc0000000;
+
+static constexpr int64_t META_BLOCK_PER_DATA = 16 * 1000000000ll;
+// The metadata area's length is held in 32 bits, so it is at most 32767 blocks of 64K, about 2 GB: far more than any
+// disc needs. --extra-iso-space asks for blocks on top of the estimate, and is refused when the area would pass this.
+static constexpr int MAX_META_BLOCKS = 0x7fffffff / ALLOC_BLOCK_SIZE;
+
+// it can be allocated inside single sector of a extended file
+static constexpr int MAX_EXTENTS_IN_EXTFILE = (SECTOR_SIZE - 216 - 32) / 16;
+static constexpr int MAX_EXTENTS_IN_EXTCONT = (SECTOR_SIZE - 24 - 32) / 16;
+
+static constexpr int MAIN_INTERLEAVE_BLOCKSIZE = 6144 * 3168;
+static constexpr int SUB_INTERLEAVE_BLOCKSIZE = 6144 * 1312;
+
+// The copies of BDMV/BACKUP are held back and written as one group at the end of the data, so that they lie apart from
+// the files they copy. Past this much the rest is written where it stands.
+static constexpr int64_t MAX_DEFERRED_BYTES = 256 * 1024 * 1024;
+
+// How far ahead of the mirror's place the start of a piece of a stream that leads a 3D pair puts the mirror: more than
+// a pair of pieces can hold, so that no piece is cut and both views stay in step
+static constexpr int64_t MIRROR_LOOKAHEAD_BYTES = 2LL * (MAIN_INTERLEAVE_BLOCKSIZE + SUB_INTERLEAVE_BLOCKSIZE);
+
+static constexpr int MAX_MAIN_MUXER_RATE = 48000000;
+static constexpr int MAX_4K_MUXER_RATE = 109000000;
+static constexpr int MAX_SUBMUXER_RATE = 35000000;
+
+enum class DescriptorTag
+{
+    SpoaringTable = 0,  // UDF
+    PrimVol = 1,
+    AnchorVolPtr = 2,
+    VolPtr = 3,
+    ImplUseVol = 4,
+    Partition = 5,
+    LogicalVol = 6,
+    UnallocSpace = 7,
+    Terminating = 8,
+    LogicalVolIntegrity = 9,
+
+    FileSet = 256,
+    FileId = 257,
+    AllocationExtent = 258,
+    Indirect = 259,
+    Terminal = 260,
+    File = 261,
+    ExtendedAttrHeader = 262,
+    UnallocatedSpace = 263,
+    SpaceBitmap = 264,
+    PartitionIntegrity = 265,
+    ExtendedFileEntry = 266
+};
+
+enum class FileTypes
+{
+    Unspecified = 0,
+    UnallocatedSpace = 1,
+    PartitionIntegrityEntry = 2,
+    IndirectEntry = 3,
+    Directory = 4,
+    File = 5,
+
+    SystemStreamDirectory = 13,
+
+    RealtimeFile = 249,
+    Metadata = 250,
+    MetadataMirror = 251,
+    MetadataBitmap = 252,
+};
+
+class ByteFileWriter
+{
+   public:
+    ByteFileWriter();
+    void setBuffer(uint8_t* buffer, int len);
+    void writeLE8(uint8_t value);
+    void writeLE16(uint16_t value);
+    void writeLE32(uint32_t value);
+
+    void writeDescriptorTag(DescriptorTag tag, uint32_t tagLocation);
+    void closeDescriptorTag(int dataSize = -1) const;
+
+    void writeIcbTag(uint8_t fileType);
+    void writeLongAD(uint32_t lenBytes, uint32_t pos, uint16_t partition, uint32_t id);
+    void writeDString(const char* value, int64_t len = -1);
+    void writeDString(const std::string& value, int64_t len = -1);
+    void writeCharSpecString(const char* value, int len);
+    void writeUDFString(const char* value, int len);
+    void skipBytes(int value);
+    void writeBytes(const uint8_t* data, size_t len);
+    void doPadding(int padSize);
+    void writeTimestamp(time_t time, bool utc);
+
+    [[nodiscard]] int64_t size() const;
+
+   private:
+    void checkRoom(size_t bytes) const;
+
+    uint8_t* m_buffer;
+    uint8_t* m_bufferEnd;
+    uint8_t* m_curPos;
+    uint8_t* m_tagPos;
+};
+
+struct FileEntryInfo;
+class IsoWriter;
+class ISOFile;
+
+struct Extent
+{
+    Extent() : lbnPos(0), size(0) {}
+    Extent(int lbn, int64_t _size) : lbnPos(lbn), size(_size) {}
+    int lbnPos;  // absolute logic block number
+    int64_t size;
+};
+typedef std::vector<Extent> ExtentList;
+
+struct MappingEntry
+{
+    MappingEntry() : parentLBN(0), LBN(0) {}
+    MappingEntry(const int _parentLBN, const int _lbn) : parentLBN(_parentLBN), LBN(_lbn) {}
+
+    int parentLBN;
+    int LBN;
+};
+
+struct FileEntryInfo
+{
+    FileEntryInfo(IsoWriter* owner, FileEntryInfo* parent, uint32_t objectId, FileTypes fileType);
+    ~FileEntryInfo();
+
+    int32_t write(const uint8_t* data, int32_t len);
+    bool setName(const std::string& name);
+    [[nodiscard]] const std::string& name() const { return m_name; }
+    void checkNameIsUnique(const FileEntryInfo* entry);
+    void claimIdentifier(const FileEntryInfo* entry);
+    void close();
+    void setSubMode(bool value);
+    void addExtent(const Extent& extent);
+
+    [[nodiscard]] FileEntryInfo* subDirByName(const std::string& name) const;
+    [[nodiscard]] FileEntryInfo* fileByName(const std::string& name) const;
+
+   private:
+    int32_t writeImpl(const uint8_t* data, int32_t len);
+    void addSubDir(FileEntryInfo* dir);
+    void addFile(FileEntryInfo* file);
+    void serialize() const;  // flush directory tree to a disk
+    int allocateEntity(int sectorNum);
+    void writeEntity(ByteFileWriter& writer, const FileEntryInfo* subDir) const;
+    void serializeDir() const;
+    void serializeFile() const;
+    void fillDirContent(ByteFileWriter& writer) const;  // write the directory's FID stream (parent + entries)
+    [[nodiscard]] int dirContentSectors() const;        // sectors the FID stream occupies (>=1; multi-sector aware)
+    [[nodiscard]] bool isFile() const;
+
+    friend class IsoWriter;
+    friend class ISOFile;
+
+    std::vector<FileEntryInfo*> m_subDirs;
+    std::vector<FileEntryInfo*> m_files;
+    // UDF identifier -> name, of the children
+    std::map<std::vector<uint8_t>, std::string, ByteVectorLess> m_childIdentifiers;
+    IsoWriter* m_owner;
+    FileEntryInfo* m_parent;
+    int m_sectorNum;
+    int m_sectorsUsed;
+    uint32_t m_objectId;
+    std::string m_name;
+    FileTypes m_fileType;
+
+    ExtentList m_extents;
+    int64_t m_fileSize;
+    uint8_t* m_sectorBuffer;
+    int m_sectorBufferSize;
+    bool m_subMode;              // a view of a 3D mux, written in pieces in turn with the other view (TSMuxer)
+    bool m_deferred = false;     // a BDMV/BACKUP copy: held in m_deferredData until IsoWriter::writeDeferredFiles
+    bool m_closed = false;       // close() has run
+    bool m_leadsPieces = false;  // a stream whose first piece followed no open stream: the first view of a 3D pair
+    std::vector<uint8_t> m_deferredData;
+};
+
+struct IsoHeaderData
+{
+    std::string appId;
+    std::string impId;
+    time_t fileTime;
+    uint32_t volumeId;
+    bool utcTime;  // the times in UTC, the same in every time zone, rather than in the zone of the machine
+
+    static IsoHeaderData normal();
+    static IsoHeaderData reproducible();
+};
+
+// The bytes a name has as a UDF file identifier, where a long name is cut. Two names of one folder with the same
+// bytes are one name on an image, and one of the two files is lost.
+std::vector<std::uint8_t> udfFileIdentifier(const std::string& name);
+
+class IsoWriter
+{
+   public:
+    IsoWriter(const IsoHeaderData&);
+    ~IsoWriter();
+
+    void setVolumeLabel(const std::string& value);
+    bool open(const std::string& fileName, int64_t diskSize, int64_t extraISOBlocks);
+    // The metadata area open() sets aside, in blocks of ALLOC_BLOCK_SIZE.
+    static int64_t metadataBlocks(int64_t diskSize, int64_t extraISOBlocks);
+    // Why an --extra-iso-space value alone makes the metadata area larger than an image can hold, or nothing
+    static std::string tooManyExtraBlocks(int64_t extraISOBlocks);
+
+    bool createDir(const std::string& dir);
+    ISOFile* createFile();
+
+    bool createInterleavedFile(const std::string& inFile1, const std::string& inFile2, const std::string& outFile);
+
+    void close();
+
+    // Writes the BDMV/BACKUP copies held back so far, as one group behind everything written before. close() does it
+    // too; a caller that reports where the data went calls it first.
+    void writeDeferredFiles();
+
+    void setLayerBreakPoints(const std::vector<int>& lbns);
+    void setLayerBreakGuard(int afterSectors);
+    void setLayerBreakGuard(int beforeSectors, int afterSectors);
+    // One zone per break, given in the order of setLayerBreakPoints: --inner-only sizes each one from the layers on
+    // its two sides. A break left out of the list keeps the zone of setLayerBreakGuard.
+    void setLayerBreakGuards(const std::vector<int>& beforeSectors, const std::vector<int>& afterSectors);
+    // The guard is the one an image crossing a layer break gets when none is given: close() says so once, when it was
+    // written, and says nothing when the image ends before the break.
+    void setDefaultGuard(const bool defaultGuard) { m_defaultGuard = defaultGuard; }
+
+    // One record per zero-fill actually written for a layer break, in absolute image sectors.
+    // padStartLbn can be well before zoneStart (the fill starts wherever the interrupted write
+    // stood), and equals the pre-file position for a whole-file layer-fit pad.
+    struct LayerBreakPad
+    {
+        int breakLbn;
+        int64_t padStartLbn;
+        int64_t padEndLbn;
+    };
+    [[nodiscard]] const std::vector<LayerBreakPad>& layerBreakPads() const { return m_layerBreakPads; }
+
+    // Layer-fit placement: called before a file's data starts. If the file, written from the
+    // current position, would run into a guard zone AND it fits completely between that zone's
+    // end and the next zone (and the disc capacity, when known), pad with zeros up to the zone
+    // end so the whole file lands on the next layer. Returns true if a pad was written.
+    // Two more limits (0 and -1 = none): restBytes, this file and every one after it, must still fit on the disc
+    // behind the zone, with laterOverrunSectors for each zone still ahead; and the file may leave at most
+    // maxEmptySectors of the layer before it unused (--inner-only on more than two layers).
+    // alignedStart: the file is a stream, which starts on the next 64 KB boundary (alignForStream)
+    bool padOverZoneIfFileCrosses(int64_t fileSizeBytes, int64_t discCapacitySectors, int64_t restBytes = 0,
+                                  int64_t maxEmptySectors = -1, bool alignedStart = false,
+                                  int64_t laterOverrunSectors = 0);
+
+    // Interleaved 3D groups: the two views have to end up cut into the SAME number of pieces, or
+    // the .ssif cannot be described as an alias over them. Left to the ordinary path a guard pad
+    // lands wherever a copy write happens to reach the zone, and a chunk larger than the copy
+    // buffer takes several writes, so the pad falls INSIDE a chunk and the interrupted view gains
+    // a piece its partner does not have. Called before each pair of chunks, this moves the pad to
+    // the boundary between pairs, where both views are between pieces and stay in step.
+    void padBeforeInterleavedPair(int64_t pairBytes);
+    [[nodiscard]] int64_t currentImageLBA() const;
+
+    // The first layer break of the disc, in absolute image sectors, or 0 for a disc of one layer. An image whose data
+    // reaches it holds the mirror of its metadata inside the data, at the end of layer 0, and the data goes on behind
+    // the mirror; a smaller image holds the mirror behind its data, as before.
+    void setMetadataMirrorBreak(int lbn);
+    // The sectors [from, to) the mirror took out of the data, in absolute image sectors; false when it is behind it
+    bool mirrorGap(int64_t& from, int64_t& to) const;
+
+   private:
+    enum class Partition
+    {
+        MainPartition,
+        MetadataPartition
+    };
+
+    void setMetaPartitionSize(int size);
+    int writeRawData(const uint8_t* data, int size);
+    void checkLayerBreakPoint(int maxExtentSize);
+    [[nodiscard]] bool nearLayerBreak(int upcomingBytes) const;
+    [[nodiscard]] bool mirrorPending(int64_t& zoneStart) const;
+    [[nodiscard]] int64_t bytesBeforeMirror() const;
+    void placeMirrorHere();
+    void placeMirrorBefore(int64_t endLbn);
+    void beforePiece(FileEntryInfo* entry);
+    void moveBackLookAhead();
+    [[nodiscard]] int64_t imageLBA() const;
+    void writePrimaryVolumeDescriptor();
+    void writeAnchorVolumeDescriptor(uint32_t endPartitionAddr);
+    void writeImpUseDescriptor();
+    void writePartitionDescriptor();
+    void writeLogicalVolumeDescriptor();
+    void writeUnallocatedSpaceDescriptor();
+    void writeTerminationDescriptor();
+    void writeLogicalVolumeIntegrityDescriptor();
+    int writeExtendedFileEntryDescriptor(bool namedStream, uint32_t objectId, FileTypes fileType, uint64_t len,
+                                         uint32_t pos, uint16_t linkCount, const ExtentList* extents = nullptr);
+    void writeFileSetDescriptor();
+    void writeAllocationExtentDescriptor(const ExtentList* extents, size_t start, size_t indexEnd);
+
+    static void writeEntity(const FileEntryInfo* dir);
+    int allocateEntity(FileEntryInfo* entity, int sectorNum);
+
+    void sectorSeek(Partition partition, int pos) const;
+    void writeSector(const uint8_t* sectorData);
+    int32_t absoluteSectorNum() const;
+
+    static void writeIcbTag(bool namedStream, uint8_t* buffer, FileTypes fileType);
+    void writeDescriptors();
+    void allocateMetadata();
+    void orderBdmvFolders() const;
+    void alignForStream();
+    void writeMetadata(int lbn);
+
+    FileEntryInfo* mkdir(const char* name, FileEntryInfo* parent = nullptr);
+    FileEntryInfo* getEntryByName(const std::string& name, FileTypes fileType);
+    FileEntryInfo* createFileEntry(FileEntryInfo* parent, FileTypes fileType);
+
+    friend class ByteFileWriter;
+    friend struct FileEntryInfo;
+    friend class ISOFile;
+
+    std::string m_volumeLabel;
+    std::string m_impId;
+    std::string m_appId;
+    uint32_t m_volumeId;
+    File m_file;
+    uint8_t m_buffer[SECTOR_SIZE];
+    time_t m_currentTime;
+    bool m_utcTime;  // IsoHeaderData::utcTime
+
+    uint32_t m_objectUniqId;
+    uint32_t m_totalFiles;
+    uint32_t m_totalDirectories;
+    uint32_t m_volumeSize;
+
+    // int m_sectorNum; // where to allocate new data
+    FileEntryInfo* m_rootDirInfo;
+    FileEntryInfo* m_systemStreamDir;
+    FileEntryInfo* m_metadataMappingFile;
+
+    int m_partitionStartAddress;
+    int m_partitionEndAddress;
+    int m_metadataFileLen;
+    int m_mappingReserve = ALLOC_BLOCK_SIZE;  // bytes kept for the UDF ID mapping file after the metadata
+    int m_systemStreamLBN;
+
+    int m_metadataLBN;  // where to allocate data
+    int m_metadataMirrorLBN;
+    int m_curMetadataPos;
+    int m_tagLocationBaseAddr;
+    int m_lastWritedObjectID;
+    FileEntryInfo* m_lastWritedEntry = nullptr;
+    int m_mirrorBreakLbn = 0;      // setMetadataMirrorBreak
+    int64_t m_dataStartLbn = 0;    // the first sector open() leaves for data
+    bool m_mirrorPlaced = false;   // the mirror is inside the data, at m_metadataMirrorLBN
+    int64_t m_mirrorGapStart = 0;  // the sectors it took out of the data
+    int64_t m_mirrorGapEnd = 0;
+    bool m_pairsPlaced = false;  // the caller places 3D pairs itself (padBeforeInterleavedPair)
+    // The sectors [first, second) beforePiece left empty in front of a pair, for the mirror or the zeros of a zone,
+    // before the data had reached them (moveBackLookAhead)
+    std::vector<std::pair<int64_t, int64_t>> m_lookAheadGaps;
+    size_t m_padsBeforeLookAhead = 0;  // the zeros written for a break before the first of these gaps
+    bool m_mirrorByLookAhead = false;  // the mirror lies in one of these gaps
+
+    std::map<int, MappingEntry> m_mappingEntries;
+    std::vector<FileEntryInfo*> m_deferredFiles;  // the BDMV/BACKUP copies held back, in the order they were opened
+    int64_t m_deferredBytes = 0;
+    bool m_opened;
+    bool m_sparseOk = false;  // image file marked sparse -> guard/inner-only pads are holes, not real zeros
+    // Dual-layer guard band (--layer-break-guard): m_layerBreakPoint is the ABSOLUTE image sector
+    // where BD-R DL layer 1 begins (media-fixed at half the disc); m_layerBreakGuardSectors is the
+    // amount of zero-filler placed on EACH side of it so no file data sits on the defect-prone
+    // sectors around the physical layer transition. 0 layer break point = feature off (default).
+    std::vector<int> m_layerBreakPoints;  // absolute image LBAs of the layer breaks (DL=1, BDXL 100=2, 128=3)
+    int m_layerBreakGuardBeforeSectors;   // zero-fill BEFORE each break (previous layer side; small margin)
+    int m_layerBreakGuardAfterSectors;    // zero-fill AFTER each break (next layer side; main defect protection)
+    std::vector<int> m_breakGuardBefore;  // per break, when setLayerBreakGuards gave one (else the two above)
+    std::vector<int> m_breakGuardAfter;
+    bool m_defaultGuard = false;  // the guard was not asked for (see setDefaultGuard)
+    // The zone of break i in absolute image sectors: [break - before, break + after)
+    void guardZone(size_t i, int64_t& zoneStart, int64_t& zoneEnd) const;
+    std::vector<LayerBreakPad> m_layerBreakPads;  // where zeros were actually written (for reporting)
+    // Set while a UDF structure is being written at a fixed address of its own. The guard exists to
+    // move FILE DATA off the sectors around a layer break; a volume structure has nowhere else it
+    // may live, so moving one does not protect it, it destroys the image.
+    bool m_layerBreakSuppressed;
+    void writeZeroPad(int64_t sectors);  // shared zero-fill used by both pad paths
+    void fillZeroSectors(int64_t sectors);
+};
+
+class ISOFile final : public AbstractOutputStream
+{
+   public:
+    ISOFile(IsoWriter* owner) : AbstractOutputStream(), m_owner(owner), m_entry(nullptr) {}
+    ~ISOFile() override { close(); }
+
+    int write(const void* data, uint32_t len) override;
+    bool open(const char* name, unsigned int oflag, unsigned int systemDependentFlags = 0) override;
+    void sync() override;
+    bool close() override;
+    [[nodiscard]] int64_t size() const override;
+    void setSubMode(bool value) const;
+
+   private:
+    IsoWriter* m_owner;
+    FileEntryInfo* m_entry;
+};
+
+#endif  // ISO_WRITER_H_

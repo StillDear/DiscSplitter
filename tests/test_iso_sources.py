@@ -57,7 +57,7 @@ def test_iso_import_and_resume_survive_drive_changes(backend, qt_app, tmp_path, 
     audio = core.models.Track(1, 'audio', 'LPCM')
     chapters = [core.models.Chapter(1, 0, 30)]
     monkeypatch.setattr(bluray_iso, 'mounted', mounted)
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path: core.models.Playlist(path, [audio], 1, 30))
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path, **_: core.models.Playlist(path, [audio], 1, 30))
     read_paths = []
     monkeypatch.setattr(core.chapter_marks, 'read_chapters_from_source', lambda path, **kw: read_paths.append(path) or chapters)
     monkeypatch.setattr(core.tools, 'tool_versions', lambda: {})

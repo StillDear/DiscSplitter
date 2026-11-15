@@ -1,0 +1,863 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#include "ac3Codec.h"
+
+#include <fs/systemlog.h>
+
+#include <sstream>
+
+#include "avCodecs.h"
+#include "bitStream.h"
+#include "vodCoreException.h"
+#include "vod_common.h"
+
+#define max(a, b) ((a) > (b) ? (a) : (b))
+static constexpr int NB_BLOCKS = 6;  // number of PCM blocks inside an AC3 frame
+static constexpr int AC3_FRAME_SIZE = NB_BLOCKS * 256;
+
+bool isSyncWord(const uint8_t* buff) { return buff[0] == 0x0B && buff[1] == 0x77; }
+
+bool isHDSyncWord(const uint8_t* buff) { return buff[0] == 0xf8 && buff[1] == 0x72 && buff[2] == 0x6f; }
+
+static constexpr uint8_t eac3_blocks[4] = {1, 2, 3, 6};
+
+static constexpr uint8_t ff_ac3_channels[8] = {2, 1, 2, 3, 3, 4, 4, 5};
+
+// possible frequencies
+static constexpr uint16_t ff_ac3_freqs[3] = {48000, 44100, 32000};
+
+// possible bitrates
+static constexpr uint16_t ff_ac3_bitratetab[19] = {
+    32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640,
+};
+
+static constexpr uint16_t ff_ac3_frame_sizes[38][3] = {
+    {64, 69, 96},       {64, 70, 96},       {80, 87, 120},      {80, 88, 120},      {96, 104, 144},
+    {96, 105, 144},     {112, 121, 168},    {112, 122, 168},    {128, 139, 192},    {128, 140, 192},
+    {160, 174, 240},    {160, 175, 240},    {192, 208, 288},    {192, 209, 288},    {224, 243, 336},
+    {224, 244, 336},    {256, 278, 384},    {256, 279, 384},    {320, 348, 480},    {320, 349, 480},
+    {384, 417, 576},    {384, 418, 576},    {448, 487, 672},    {448, 488, 672},    {512, 557, 768},
+    {512, 558, 768},    {640, 696, 960},    {640, 697, 960},    {768, 835, 1152},   {768, 836, 1152},
+    {896, 975, 1344},   {896, 976, 1344},   {1024, 1114, 1536}, {1024, 1115, 1536}, {1152, 1253, 1728},
+    {1152, 1254, 1728}, {1280, 1393, 1920}, {1280, 1394, 1920},
+};
+
+static const uint16_t ctx[256] = {
+    0x0000, 0x0580, 0x0F80, 0x0A00, 0x1B80, 0x1E00, 0x1400, 0x1180, 0x3380, 0x3600, 0x3C00, 0x3980, 0x2800, 0x2D80,
+    0x2780, 0x2200, 0x6380, 0x6600, 0x6C00, 0x6980, 0x7800, 0x7D80, 0x7780, 0x7200, 0x5000, 0x5580, 0x5F80, 0x5A00,
+    0x4B80, 0x4E00, 0x4400, 0x4180, 0xC380, 0xC600, 0xCC00, 0xC980, 0xD800, 0xDD80, 0xD780, 0xD200, 0xF000, 0xF580,
+    0xFF80, 0xFA00, 0xEB80, 0xEE00, 0xE400, 0xE180, 0xA000, 0xA580, 0xAF80, 0xAA00, 0xBB80, 0xBE00, 0xB400, 0xB180,
+    0x9380, 0x9600, 0x9C00, 0x9980, 0x8800, 0x8D80, 0x8780, 0x8200, 0x8381, 0x8601, 0x8C01, 0x8981, 0x9801, 0x9D81,
+    0x9781, 0x9201, 0xB001, 0xB581, 0xBF81, 0xBA01, 0xAB81, 0xAE01, 0xA401, 0xA181, 0xE001, 0xE581, 0xEF81, 0xEA01,
+    0xFB81, 0xFE01, 0xF401, 0xF181, 0xD381, 0xD601, 0xDC01, 0xD981, 0xC801, 0xCD81, 0xC781, 0xC201, 0x4001, 0x4581,
+    0x4F81, 0x4A01, 0x5B81, 0x5E01, 0x5401, 0x5181, 0x7381, 0x7601, 0x7C01, 0x7981, 0x6801, 0x6D81, 0x6781, 0x6201,
+    0x2381, 0x2601, 0x2C01, 0x2981, 0x3801, 0x3D81, 0x3781, 0x3201, 0x1001, 0x1581, 0x1F81, 0x1A01, 0x0B81, 0x0E01,
+    0x0401, 0x0181, 0x0383, 0x0603, 0x0C03, 0x0983, 0x1803, 0x1D83, 0x1783, 0x1203, 0x3003, 0x3583, 0x3F83, 0x3A03,
+    0x2B83, 0x2E03, 0x2403, 0x2183, 0x6003, 0x6583, 0x6F83, 0x6A03, 0x7B83, 0x7E03, 0x7403, 0x7183, 0x5383, 0x5603,
+    0x5C03, 0x5983, 0x4803, 0x4D83, 0x4783, 0x4203, 0xC003, 0xC583, 0xCF83, 0xCA03, 0xDB83, 0xDE03, 0xD403, 0xD183,
+    0xF383, 0xF603, 0xFC03, 0xF983, 0xE803, 0xED83, 0xE783, 0xE203, 0xA383, 0xA603, 0xAC03, 0xA983, 0xB803, 0xBD83,
+    0xB783, 0xB203, 0x9003, 0x9583, 0x9F83, 0x9A03, 0x8B83, 0x8E03, 0x8403, 0x8183, 0x8002, 0x8582, 0x8F82, 0x8A02,
+    0x9B82, 0x9E02, 0x9402, 0x9182, 0xB382, 0xB602, 0xBC02, 0xB982, 0xA802, 0xAD82, 0xA782, 0xA202, 0xE382, 0xE602,
+    0xEC02, 0xE982, 0xF802, 0xFD82, 0xF782, 0xF202, 0xD002, 0xD582, 0xDF82, 0xDA02, 0xCB82, 0xCE02, 0xC402, 0xC182,
+    0x4382, 0x4602, 0x4C02, 0x4982, 0x5802, 0x5D82, 0x5782, 0x5202, 0x7002, 0x7582, 0x7F82, 0x7A02, 0x6B82, 0x6E02,
+    0x6402, 0x6182, 0x2002, 0x2582, 0x2F82, 0x2A02, 0x3B82, 0x3E02, 0x3402, 0x3182, 0x1382, 0x1602, 0x1C02, 0x1982,
+    0x0802, 0x0D82, 0x0782, 0x0202,
+};
+
+static constexpr int AC3_ACMOD_MONO = 1;
+static constexpr int AC3_ACMOD_STEREO = 2;
+
+// ** DOWN-TO-AC3 MAKES AN AC-3 TRACK OF A TRUEHD ONE. ** With down-to-ac3 the reader still finds the lossless
+// substream (m_true_hd_mode), as it must to step over its units, but what it hands on is the AC-3 core alone, so
+// that is the codec the track holds. The TS and demux writers asked isTrueHD() && !getDownconvertToAC3() and were
+// right; Matroska takes its CodecID from here, declared the core A_TRUEHD and, as an A_TRUEHD track sends its AC-3
+// frames to a core track of their own and down-to-ac3 asks for none, wrote the track with no frame in it.
+const CodecInfo& AC3Codec::getCodecInfo()
+{
+    if (m_true_hd_mode && !m_downconvertToAC3)
+        return trueHDCodecInfo;
+    if (isEAC3())
+        return eac3CodecInfo;
+    return ac3CodecInfo;
+}
+
+// returns true if ok, or false if error
+bool AC3Codec::crc32(const uint8_t* buf, const int length)
+{
+    const uint8_t* end = buf + length;
+
+    int crc = 0;
+    while (buf < end) crc = ctx[static_cast<uint8_t>(crc) ^ *buf++] ^ (crc >> 8);
+
+    // the last word of the frame is crc2 = crc for the whole frame except sync_byte
+    if (crc != buf[0] + (buf[1] << 8))
+        return false;
+
+    return true;
+}
+
+// returns NO_ERROR, or type of error
+AC3Codec::AC3ParseError AC3Codec::parseHeader(uint8_t* buf, const uint8_t* end)
+{
+    // The syncword and the four bytes up to bsid are read before anything else; a frame that starts in the last bytes
+    // of a read block was read past the block's end.
+    if (end - buf < 6)
+        return AC3ParseError::NOT_ENOUGH_BUFFER;
+    if (*buf++ != 0x0B || *buf++ != 0x77)
+        return AC3ParseError::SYNC;
+
+    // read ahead to bsid to make sure this is AC-3, not E-AC-3
+    const uint8_t id = buf[3] >> 3;
+    if (id > 16)
+        return AC3ParseError::BSID;
+
+    m_bsid = id;
+
+    // ---------------------------------- EAC3 ------------------------------------------
+    if (m_bsid > 10)
+    {
+        m_frame_size = static_cast<uint16_t>((((buf[0] & 0x07) << 8 | buf[1]) + 1) << 1);
+        if (m_frame_size < AC3_HEADER_SIZE)
+            return AC3ParseError::FRAME_SIZE;  // invalid header size
+
+        if (end + 2 < m_frame_size + buf)
+            return AC3ParseError::NOT_ENOUGH_BUFFER;
+
+        if (!crc32(buf, m_frame_size - 4))
+            return AC3ParseError::CRC2;
+
+        uint8_t bsmod = 0, dsurmod = 0, numblkscod, mixdef = 0;
+        int extpgmscle, paninfoe;
+        int pgmscle = extpgmscle = paninfoe = 0;
+
+        BitStreamReader gbc{};
+        gbc.setBuffer(buf, end);
+
+        m_strmtyp = gbc.getBits<uint8_t>(2);
+        if (m_strmtyp == 3)
+            return AC3ParseError::SYNC;  // invalid stream type
+
+        m_substreamid = gbc.getBits<uint8_t>(3);
+        gbc.skipBits(11);  // frmsize
+        if (m_strmtyp == 0 && m_substreamid == 0)
+            m_eac3FirstProgram = true;
+        if (m_substreamid && m_strmtyp != 1 && m_eac3FirstProgram && !m_extraProgramReported && !m_testMode)
+        {
+            m_extraProgramReported = true;
+            LTRACE(LT_WARN, 2,
+                   "Warning: the E-AC-3 stream holds more than one program. Its times follow the first program; the "
+                   "others are kept, and a player plays only the first.");
+        }
+
+        const auto fscod = gbc.getBits<uint8_t>(2);
+
+        if (fscod == 3)
+        {
+            const auto m_fscod2 = gbc.getBits<uint8_t>(2);
+            if (m_fscod2 == 3)
+                return AC3ParseError::SYNC;
+
+            numblkscod = 3;
+            m_sample_rate = ff_ac3_freqs[m_fscod2] / 2;
+        }
+        else
+        {
+            numblkscod = gbc.getBits<uint8_t>(2);
+            m_sample_rate = ff_ac3_freqs[fscod];
+        }
+        const int number_of_blocks_per_syncframe =
+            numblkscod == 0 ? 1 : (numblkscod == 1 ? 2 : (numblkscod == 2 ? 3 : 6));
+        const auto acmod = gbc.getBits<uint8_t>(3);
+        const auto lfeon = gbc.getBits<uint8_t>(1);
+
+        m_samples = eac3_blocks[numblkscod] << 8;
+        m_bit_rateExt = m_frame_size * m_sample_rate * 8 / m_samples;
+        // A 7.1 stream is an independent frame of 5.1 and a dependent one of two channels in each period, and the
+        // listing gave the rate of the one read last alone: 640 kbps for a stream of 1664
+        if (m_strmtyp != 1 && m_substreamid == 0)
+            startRatePeriod();
+        m_periodRateSum += m_bit_rateExt;
+
+        gbc.skipBits(5);  // skip bsid, already got it
+        for (int i = 0; i < (acmod ? 1 : 2); i++)
+        {
+            gbc.skipBits(5);  // skip dialog normalization
+            if (gbc.getBit())
+                gbc.skipBits(8);  // skip Compression gain word
+        }
+
+        if (m_strmtyp == 1)  // dependent EAC3 frame
+        {
+            if (gbc.getBit())
+            {
+                const auto chanmap = gbc.getBits<int16_t>(16);
+                if (chanmap & 0x7fe0)  // mask standard 5.1 channels
+                    m_extChannelsExists = true;
+            }
+        }
+
+        if (gbc.getBit())  // mixing metadata
+        {
+            if (acmod > 2)
+                gbc.skipBits(2);  // dmixmod
+            if (acmod & 1 && acmod > 0x2)
+                gbc.skipBits(6);  // ltrtcmixlev, lorocmixlev
+            if (acmod & 4)
+                gbc.skipBits(6);  // ltrtsurmixlev, lorosurmixlev
+            if (lfeon && gbc.getBit())
+                gbc.skipBits(5);  // lfemixlevcod
+            if (m_strmtyp == 0)   // independent EAC3 frame
+            {
+                pgmscle = gbc.getBit();
+                if (pgmscle)
+                    gbc.skipBits(6);  // pgmscl
+                if (acmod == 0 && gbc.getBit())
+                    gbc.skipBits(6);  // pgmscl2
+                extpgmscle = gbc.getBit();
+                if (extpgmscle)
+                    gbc.skipBits(6);  // extpgmscl
+                mixdef = gbc.getBits<uint8_t>(2);
+                if (mixdef == 1)
+                    gbc.skipBits(5);  // premixcmpsel, drcsrc, premixcmpscl
+                else if (mixdef == 2)
+                    gbc.skipBits(12);  // mixdata
+                else if (mixdef == 3)
+                {
+                    const auto mixdeflen = gbc.getBits<uint8_t>(5);
+                    if (gbc.getBit())  // mixdata2e
+                    {
+                        gbc.skipBits(5);  // premixcmpsel, drcsrc, premixcmpscl
+                        if (gbc.getBit())
+                            gbc.skipBits(4);  // extpgmlscl
+                        if (gbc.getBit())
+                            gbc.skipBits(4);  // extpgmcscl
+                        if (gbc.getBit())
+                            gbc.skipBits(4);  // extpgmrscl
+                        if (gbc.getBit())
+                            gbc.skipBits(4);  // extpgmlscl
+                        if (gbc.getBit())
+                            gbc.skipBits(4);  // extpgmrsscl
+                        if (gbc.getBit())
+                            gbc.skipBits(4);  // extpgmlfescl
+                        if (gbc.getBit())
+                            gbc.skipBits(4);  // dmixscl
+                        if (gbc.getBit())     // addch exist
+                        {
+                            if (gbc.getBit())     // extpgmaux1scl exist
+                                gbc.skipBits(4);  // extpgmaux1scl
+                            if (gbc.getBit())     // extpgmaux2scl exist
+                                gbc.skipBits(4);  // extpgmaux2scl
+                        }
+                    }
+                    if (gbc.getBit())  // mixdata3e
+                    {
+                        gbc.skipBits(5);   // spchdat
+                        if (gbc.getBit())  // addspchdat exist
+                        {
+                            gbc.skipBits(7);      // spchdat1, spchan1att
+                            if (gbc.getBit())     // addspchdat2 exist
+                                gbc.skipBits(7);  // spchdat2, spchan2att
+                        }
+                    }
+                    for (int i = 0; i < mixdeflen + 2; i++) gbc.skipBits(8);  // mixdata
+                    gbc.alignByte();                                          // mixdatafill
+                }
+                if (acmod < 2)
+                {
+                    paninfoe = gbc.getBit();
+                    if (paninfoe)
+                        gbc.skipBits(14);  // panmean, paninfo
+                    if (acmod == 0 && gbc.getBit())
+                        gbc.skipBits(14);  // panmean2, paninfo2
+                }
+                if (gbc.getBit())
+                {
+                    if (numblkscod == 0)
+                        gbc.skipBits(5);  // blkmixcfginfo[0]
+                    else
+                        for (int blk = 0; blk < number_of_blocks_per_syncframe; blk++)
+                            if (gbc.getBit())
+                                gbc.skipBits(5);  // blkmixcfginfo[blk]
+                }
+            }
+        }
+
+        if (gbc.getBit()) /* informational metadata */
+        {
+            bsmod = gbc.getBits<uint8_t>(3);
+            gbc.skipBits(2);  // copyrightb, origbs
+            if (acmod == 2)
+            {
+                dsurmod = gbc.getBits<uint8_t>(2);
+                gbc.skipBits(2);  // dheadphonmod
+            }
+            else if (acmod >= 6)  /* if both surround channels exist */
+                gbc.skipBits(2);  // dsurexmod
+            if (gbc.getBit())     // audprodie
+                gbc.skipBits(8);  // mixlevel, roomtype, adconvtyp
+            if (acmod == 0)       /* if 1+1 mode (dual mono, so some items need a second value) */
+            {
+                if (gbc.getBit())     // audprodi2e
+                    gbc.skipBits(8);  // mixlevel2, roomtype2, adconvtyp2
+            }
+            if (fscod < 3)      /* if not half sample rate */
+                gbc.skipBit();  // sourcefscod
+        }
+
+        if (m_strmtyp == 0 && numblkscod != 3)
+            gbc.skipBit();  // convsync
+
+        if (m_strmtyp == 2) /* if bit stream converted from AC-3 */
+        {
+            if (numblkscod == 3 || gbc.getBit())  // blkid
+                gbc.skipBits(6);                  // frmsizecod
+        }
+
+        if (m_atmosFramesProbed < ATMOS_PROBE_FRAMES)
+            m_atmosFramesProbed++;
+
+        if (gbc.getBit())  // addbsi exist
+        {
+            if (gbc.getBits(6) == 1)  // addbsi length
+            {
+                // ETSI TS 103 420 - Backwards-compatible object audio carriage using Enhanced AC-3
+                // para. 8.3: Extensions contained in the addbsi bitstream field.
+                // Per the spec, flag_ec3_extension_type_a == 1 signals a Type A extension (Atmos),
+                // and complexity_index_type_a in [0..16] confirms a valid Atmos complexity index.
+                const auto flag_ec3_extension_type_a = gbc.getBits(8) == 1;
+                if (flag_ec3_extension_type_a)
+                {
+                    const auto complexity_index_type_a = gbc.getBits(8);
+                    // The complexity index IS the object count, so ZERO is not object audio and
+                    // must not earn the name. The old test accepted it, which meant a frame whose
+                    // walk landed on two zero bytes looked exactly like a valid Type A extension.
+                    if (complexity_index_type_a >= 1 && complexity_index_type_a <= 16)
+                    {
+                        // Frames must AGREE, and on the same object count. Reaching this field
+                        // means walking a dozen variable length fields, so one frame landing on
+                        // the pattern says very little; a real object stream carries it in every
+                        // frame with the same count.
+                        if (m_atmosHits == 0 || complexity_index_type_a == m_jocObjects)
+                        {
+                            m_jocObjects = static_cast<uint8_t>(complexity_index_type_a);
+                            m_atmosHits++;
+                        }
+                        else
+                        {
+                            // Frames disagreeing means the walk is landing somewhere else. Start
+                            // again rather than accumulate a majority out of noise.
+                            m_jocObjects = static_cast<uint8_t>(complexity_index_type_a);
+                            m_atmosHits = 1;
+                        }
+                        if (m_atmosHits >= ATMOS_MIN_HITS)
+                            m_isAtmos = true;
+                    }
+                }
+            }
+        }
+
+        m_mixinfoexists = pgmscle || extpgmscle || mixdef > 0 || paninfoe;
+
+        if (m_channels == 0)  // no AC3 interleave
+        {
+            m_acmod = acmod;
+            m_lfeon = lfeon;
+            m_bsmod = bsmod;
+            m_fscod = fscod;
+            m_dsurmod = dsurmod;
+            m_channels = static_cast<uint8_t>(ff_ac3_channels[acmod] + lfeon);
+        }
+    }
+    // ---------------------------------- AC3 ------------------------------------------
+    else
+    {
+        m_fscod = buf[2] >> 6;
+        if (m_fscod == 3)
+            return AC3ParseError::SAMPLE_RATE;
+
+        m_frmsizecod = buf[2] & 0x3f;
+        if (m_frmsizecod > 37)
+            return AC3ParseError::FRAME_SIZE;
+
+        m_frame_size = ff_ac3_frame_sizes[m_frmsizecod][m_fscod] << 1;
+        if (end + 2 < m_frame_size + buf)
+            return AC3ParseError::NOT_ENOUGH_BUFFER;
+
+        if (!crc32(buf, m_frame_size - 4))
+            return AC3ParseError::CRC2;
+
+        BitStreamReader gbc{};
+        gbc.setBuffer(buf + 3, end);
+
+        m_bsidBase = m_bsid;  // id except AC3+ frames
+        m_strmtyp = 2;
+        startRatePeriod();  // the E-AC-3 frames behind this core frame make up the rest of its period
+        m_samples = AC3_FRAME_SIZE;
+
+        gbc.skipBits(5);  // skip bsid, already got it
+        m_bsmod = gbc.getBits<uint8_t>(3);
+        m_acmod = gbc.getBits<uint8_t>(3);
+        if ((m_acmod & 1) && m_acmod != AC3_ACMOD_MONO)  // 3 front channels
+            gbc.skipBits(2);                             // m_cmixlev
+        if (m_acmod & 4)                                 // surround channel exists
+            gbc.skipBits(2);                             // m_surmixlev
+        if (m_acmod == AC3_ACMOD_STEREO)
+            m_dsurmod = gbc.getBits<uint8_t>(2);
+        m_lfeon = gbc.getBits<uint8_t>(1);
+
+        m_halfratecod = max(m_bsid, 8) - 8;
+        m_sample_rate = ff_ac3_freqs[m_fscod] >> m_halfratecod;
+        m_bit_rate = (ff_ac3_bitratetab[m_frmsizecod >> 1] * 1000) >> m_halfratecod;
+        m_channels = static_cast<uint8_t>(ff_ac3_channels[m_acmod] + m_lfeon);
+        // A layout that changes inside the stream, as a 2.0 programme with 5.1 parts or a join of files at different
+        // rates, is muxed frame by frame, but the description of the stream (PMT, clip info, playlist, Matroska header)
+        // keeps the layout of the first frame. A change of rate alone was not reported.
+        if (!m_testMode)
+        {
+            if (m_firstAc3Channels == 0)
+            {
+                m_firstAc3Channels = m_channels;
+                m_firstAc3Rate = m_sample_rate;
+            }
+            else if ((m_channels != m_firstAc3Channels || m_sample_rate != m_firstAc3Rate) && !m_layoutChangeReported)
+            {
+                m_layoutChangeReported = true;
+                LTRACE(LT_WARN, 2,
+                       "Warning: the AC-3 stream changes from "
+                           << static_cast<int>(m_firstAc3Channels) << " channels at " << m_firstAc3Rate << " Hz to "
+                           << static_cast<int>(m_channels) << " channels at " << m_sample_rate
+                           << " Hz. Every frame is kept; the description of the stream keeps the first layout.");
+            }
+        }
+    }
+    return AC3ParseError::NO_ERROR;
+}
+
+// returns frame length, or zero (error), or NOT_ENOUGH_BUFFER
+int AC3Codec::frameSizeAt(const uint8_t* p, const uint8_t* end)
+{
+    if (end - p < 6 || p[0] != 0x0B || p[1] != 0x77)
+        return 0;
+    const int bsid = p[5] >> 3;
+    if (bsid > 16)
+        return 0;
+    if (bsid > 10)  // E-AC-3: frmsiz, in 16 bit words less one
+        return (((p[2] & 0x07) << 8 | p[3]) + 1) * 2;
+    const int fscod = p[4] >> 6;
+    const int frmsizecod = p[4] & 0x3f;
+    if (fscod == 3 || frmsizecod > 37)
+        return 0;
+    return ff_ac3_frame_sizes[frmsizecod][fscod] * 2;
+}
+
+int AC3Codec::decodeFrame(uint8_t* buf, uint8_t* end, int& skipBytes)
+{
+    try
+    {
+        int rez = 0;
+        m_frameIsCore = false;
+
+        if (end - buf < 2)
+            return NOT_ENOUGH_BUFFER;
+        if (m_state != AC3State::stateDecodeAC3 && buf[0] == 0x0B && buf[1] == 0x77)
+        {
+            if (testDecodeTestFrame(buf, end))
+                m_state = AC3State::stateDecodeAC3;
+        }
+
+        if (m_state == AC3State::stateDecodeAC3)
+        {
+            skipBytes = 0;
+            const AC3ParseError err = parseHeader(buf, end);
+
+            if (err == AC3ParseError::NOT_ENOUGH_BUFFER)
+                return NOT_ENOUGH_BUFFER;
+
+            if (err != AC3ParseError::NO_ERROR)
+                return 0;  // parse error
+
+            m_frameDuration = (INTERNAL_PTS_FREQ * m_samples) / m_sample_rate;
+            rez = m_frame_size;
+
+            // In the Blu-ray DD+ arrangement every period is an AC-3 core frame followed by an
+            // E-AC-3 frame, and the pair shares one timestamp. That was only known once the first
+            // E-AC-3 frame had been read, so the first core frame took a whole frame's time for
+            // itself and everything after it ran 32 ms late. Look at the frame behind it instead.
+            if (m_bsid <= 10 && !m_bit_rateExt && end - buf >= m_frame_size + 6)
+            {
+                const uint8_t* next = buf + m_frame_size;
+                m_nextFrameIsExt = next[0] == 0x0B && next[1] == 0x77 && (next[5] >> 3) > 10;
+            }
+        }
+
+        if (getTestMode() && !m_true_hd_mode)
+        {
+            uint8_t* trueHDData = buf + rez;
+            if (end - trueHDData < 8)
+                return NOT_ENOUGH_BUFFER;
+            if (!isSyncWord(trueHDData) && isHDSyncWord(trueHDData + 4))
+            {
+                if (end - trueHDData < 21)
+                    return NOT_ENOUGH_BUFFER;
+                m_true_hd_mode = mlp.decodeFrame(trueHDData, trueHDData + 21);
+            }
+            else if (rez > 0 && !isSyncWord(trueHDData))
+                m_true_hd_mode = trueHDMajorSyncAhead(trueHDData, end);
+        }
+
+        if ((m_true_hd_mode))  // omit AC3+
+        {
+            uint8_t* trueHDData = buf + rez;
+            if (end - trueHDData < 7)
+                return NOT_ENOUGH_BUFFER;
+            if (m_state == AC3State::stateDecodeAC3)
+            {
+                // check if it is a real HD frame
+
+                if (trueHDData[0] != 0x0B || trueHDData[1] != 0x77 || !testDecodeTestFrame(trueHDData, end))
+                {
+                    m_waitMoreData = true;
+                    m_state = AC3State::stateDecodeTrueHDFirst;
+                }
+                m_frameIsCore = true;
+                return rez;
+            }
+            m_state = AC3State::stateDecodeTrueHD;
+            int trueHDFrameLen = (trueHDData[0] & 0x0f) << 8;
+            trueHDFrameLen += trueHDData[1];
+            trueHDFrameLen *= 2;
+            if (end - trueHDData < static_cast<int64_t>(trueHDFrameLen))
+                return NOT_ENOUGH_BUFFER;
+            if (!m_true_hd_mode)
+            {
+                m_true_hd_mode = mlp.decodeFrame(trueHDData, trueHDData + trueHDFrameLen);
+            }
+            uint8_t* nextFrame = trueHDData + trueHDFrameLen;
+
+            // With down-to-ac3 the time of a period is added at its last TrueHD frame, the one a core frame follows,
+            // so that is asked of the next header. A TrueHD frame that ends where the data read so far ends has no
+            // header behind it yet, and taking that for "not the last" gave the period no time: the next core frame
+            // got the time of the one before it, and every frame after it was 32 ms early. Where the data read ends
+            // depends only on the read blocks, so it hit one source and not another. It waits for more data instead.
+            if (m_downconvertToAC3 && !getTestMode() && end - nextFrame < 7)
+                return NOT_ENOUGH_BUFFER;
+
+            // A TrueHD frame that ends where the data read so far ends has nothing behind it yet: the two bytes of a
+            // sync word were read beyond the data
+            if (end - nextFrame >= 2 && nextFrame[0] == 0x0B && nextFrame[1] == 0x77 &&
+                testDecodeTestFrame(nextFrame, end))
+                m_waitMoreData = false;
+
+            // With down-to-ac3 a TrueHD frame is skipped: it gives no frame, only bytes to step over. The detection
+            // takes a frame of no length for the end of a run of frames, so a raw file of TrueHD with its AC-3 core,
+            // with down-to-ac3, was not recognised as TrueHD before the mux. Matroska, which has no other probe,
+            // then read it as plain AC-3: every TrueHD frame was a bad frame, and the job was refused. In test mode
+            // the frame is given as it is, as without down-to-ac3.
+            if (m_downconvertToAC3 && !getTestMode())
+            {
+                skipBytes = trueHDFrameLen;
+                return 0;
+            }
+            return trueHDFrameLen;
+        }
+        const int timecodeBlock = timecodeBlockAfter(buf + rez, end);
+        if (timecodeBlock == NOT_ENOUGH_BUFFER)
+            return NOT_ENOUGH_BUFFER;
+        if (m_downconvertToAC3 && m_bsid > 10)
+        {
+            // Extracting the core means dropping the E-AC-3 frames and keeping the AC-3 ones
+            // that are interleaved with them. A Dolby Digital Plus stream that has no AC-3 core
+            // at all therefore loses EVERY frame and used to produce a 0 byte file while still
+            // reporting success.
+            // On the Blu-ray layout the core frame always precedes its extension, so reaching an
+            // E-AC-3 frame with no core parsed yet means there is none. m_testMode excludes the
+            // detection pass, which must stay non-fatal.
+            if (m_bit_rate == 0 && !m_testMode)
+                THROW(ERR_INVALID_CODEC_FORMAT,
+                      "down-to-ac3: this Dolby Digital Plus track has no AC-3 core to extract, so there is "
+                      "nothing to keep. Mux it without down-to-ac3 to pass the track through unchanged.")
+            skipBytes = rez + timecodeBlock;  // skip E-AC3 frame
+            return 0;
+        }
+        skipBytes = timecodeBlock;
+        return rez;
+    }
+    catch (BitStreamException&)
+    {
+        return NOT_ENOUGH_BUFFER;
+    }
+}
+
+// ** TRUEHD IS FOUND BEHIND ANY AC-3 FRAME, NOT ONLY BEHIND THE FIRST. ** The check took a TrueHD track with its AC-3
+// core (a disc's TrueHD) for TrueHD only when the unit right behind an AC-3 frame was a major sync, and that is so
+// for the first frame of a track, as a track begins on a major sync, but seldom later: an AC-3 frame comes once in
+// some forty units at 48 kHz, and a major sync is one unit in many. Every chain of frames found behind damage near
+// the start (see SimplePacketizerReader::checkStream) began on a later frame, did not meet TrueHD, broke on the
+// first unit behind its first frame, and the AC-3 reader turned the track down: the TrueHD track of a disc with
+// its 3rd or 8th TS packet lost was listed as TrueHD without its core (A_MLP), which leaves the core out of the
+// mux. Here the units behind the frame are walked by the length each gives, over the AC-3 frames between them, to
+// the next major sync, which must decode. Lengths that do not chain, or data that ends first, are not TrueHD, as
+// before. At most MAX_UNITS units are walked, so data that is not TrueHD costs little.
+bool AC3Codec::trueHDMajorSyncAhead(const uint8_t* p, const uint8_t* end)
+{
+    static constexpr int MAX_UNITS = 512;
+    for (int units = 0; units < MAX_UNITS && end - p >= 8; ++units)
+    {
+        if (isSyncWord(p))
+        {
+            const int frameLen = frameSizeAt(p, end);
+            if (frameLen <= 0)
+                return false;
+            p += frameLen;
+            continue;
+        }
+        const int unitLen = (((p[0] & 0x0f) << 8) | p[1]) * 2;
+        if (unitLen < 8 || unitLen > end - p)
+            return false;
+        if (isHDSyncWord(p + 4))
+            return unitLen >= MLP_FULL_HEADER_LEN &&
+                   mlp.decodeFrame(const_cast<uint8_t*>(p), const_cast<uint8_t*>(p) + unitLen);
+        p += unitLen;
+    }
+    return false;
+}
+
+// ** A TIMECODE BLOCK BETWEEN THE FRAMES. **
+// With their timecode option on, AC-3 encoders such as SurCode and the Dolby Media Encoder put 16 bytes in front of
+// every AC-3 frame, or in front of each AC-3 core and the E-AC-3 frame that follows it: 01 10, the time stamp of the
+// AC-3 standard's time stamp annex (hours, minutes, seconds and frames, the sample it refers to, a frame rate code),
+// and two more bytes. The audio is the same as without them, but the frames were expected back to back, so such a
+// file was not recognised at all. The block is left out: it is taken only where it is followed by the sync word of
+// the next frame, so audio that merely happens to hold 01 10 there is read as before.
+int AC3Codec::timecodeBlockAfter(const uint8_t* next, const uint8_t* end)
+{
+    static constexpr int BLOCK_SIZE = 16;
+    if (end - next < 2 || next[0] != 0x01 || next[1] != 0x10)
+        return 0;
+    if (end - next < BLOCK_SIZE + 2)
+        return NOT_ENOUGH_BUFFER;
+    if (next[BLOCK_SIZE] != 0x0B || next[BLOCK_SIZE + 1] != 0x77)
+        return 0;
+    if (!m_timecodeBlockSaid && !m_testMode)
+    {
+        m_timecodeBlockSaid = true;
+        LTRACE(LT_INFO, 2, "AC-3: a 16 byte timecode block in front of the frames is left out");
+    }
+    return BLOCK_SIZE;
+}
+
+AC3Codec::AC3ParseError AC3Codec::testParseHeader(uint8_t* buf, uint8_t* end) const
+{
+    BitStreamReader gbc{};
+    gbc.setBuffer(buf, buf + 7);
+
+    const auto test_sync_word = gbc.getBits<int16_t>(16);
+    if (test_sync_word != 0x0B77)
+        return AC3ParseError::SYNC;
+
+    // read ahead to bsid to make sure this is AC-3, not E-AC-3
+    const int test_bsid = gbc.showBits(29) & 0x1F;
+    /*
+    if (test_bsid != m_bsid)
+    return AC3_PARSE_ERROR_SYNC;
+    */
+
+    if (test_bsid > 16)
+    {
+        return AC3ParseError::SYNC;  // invalid stream type
+    }
+    if (m_bsid > 10)
+    {
+        return AC3ParseError::SYNC;  // doesn't used for EAC3
+    }
+    gbc.skipBits(16);  // test_crc1
+    const auto test_fscod = gbc.getBits<uint8_t>(2);
+    if (test_fscod == 3)
+        return AC3ParseError::SAMPLE_RATE;
+
+    const auto test_frmsizecod = gbc.getBits<uint8_t>(6);
+    if (test_frmsizecod > 37)
+        return AC3ParseError::FRAME_SIZE;
+
+    gbc.skipBits(5);  // skip bsid, already got it
+
+    const auto test_bsmod = gbc.getBits<uint8_t>(3);
+    const auto test_acmod = gbc.getBits<uint8_t>(3);
+
+    if (test_fscod != m_fscod || /*(test_frmsizecod>>1) != (m_frmsizecod>>1) ||*/
+        test_bsmod != m_bsmod /*|| test_acmod != m_acmod*/)
+        return AC3ParseError::SYNC;
+
+    if ((test_acmod & 1) && test_acmod != AC3_ACMOD_MONO)
+        gbc.skipBits(2);  // test_cmixlev
+
+    if (m_acmod & 4)
+        gbc.skipBits(2);  // test_surmixlev
+
+    if (m_acmod == AC3_ACMOD_STEREO)
+    {
+        const auto test_dsurmod = gbc.getBits<uint8_t>(2);
+        if (test_dsurmod != m_dsurmod)
+            return AC3ParseError::SYNC;
+    }
+    const int test_lfeon = gbc.getBit();
+
+    if (test_lfeon != m_lfeon)
+        return AC3ParseError::SYNC;
+
+    const int test_halfratecod = max(test_bsid, 8) - 8;
+    const int test_sample_rate = ff_ac3_freqs[test_fscod] >> test_halfratecod;
+    const int test_bit_rate = (ff_ac3_bitratetab[test_frmsizecod >> 1] * 1000) >> test_halfratecod;
+    const int test_channels = ff_ac3_channels[test_acmod] + test_lfeon;
+    const int test_frame_size = ff_ac3_frame_sizes[test_frmsizecod][test_fscod] * 2;
+    if (test_halfratecod != m_halfratecod || test_sample_rate != m_sample_rate || test_bit_rate != m_bit_rate ||
+        test_channels != m_channels || test_frame_size != m_frame_size)
+        return AC3ParseError::SYNC;
+    return AC3ParseError::NO_ERROR;
+}
+
+bool AC3Codec::testDecodeTestFrame(uint8_t* buf, uint8_t* end) const
+{
+    return testParseHeader(buf, end) == AC3ParseError::NO_ERROR;
+}
+
+uint64_t AC3Codec::getFrameDuration() const
+{
+    // EAC3 dependent frame : wait for next independent frame
+    if (!m_bit_rate && m_strmtyp == 1)
+        return 0;
+
+    // A further independent program of E-AC-3 plays at the same time as the first: every one of its frames moved the
+    // time on as well, and a stream of two programs lasted twice its length. Behind an AC-3 core the E-AC-3 frames
+    // keep the time, whatever their substream.
+    if (m_bsid > 10 && m_strmtyp != 1 && m_substreamid != 0 && m_eac3FirstProgram)
+        return 0;
+
+    // AC3 frame in AC3/EAC3 stream: wait for EAC3 frame
+    if ((m_bit_rateExt || m_nextFrameIsExt) && m_bsid <= 10)
+        return 0;
+
+    // Interleaved AC3/TrueHD: wait for end of True HD frame
+    if (m_waitMoreData)
+        return 0;
+
+    // OK to increment PTS
+    return m_frameDuration;
+}
+
+// A mux describes the stream at its first frame, when the codec has read that frame alone. For E-AC-3 7.1 without an
+// AC-3 core, an independent frame and a dependent one in each period, the "Decoding" line gave the rate of the first,
+// 640 kbps for a stream of 1664, where the listing gives the whole. The frames of the first period are in the data read
+// already: their rates are read from their headers here, without the codec's state, and the line gives the same rate
+// as the listing. Data that ends before the period does gives what it holds. A stream that begins with an AC-3 frame
+// is described as before: 0 is returned for it.
+uint32_t AC3Codec::periodRateAhead(const uint8_t* frame, const uint8_t* end)
+{
+    uint32_t sum = 0;
+    for (const uint8_t* p = frame; end - p >= 6 && p[0] == 0x0B && p[1] == 0x77;)
+    {
+        const int bsid = p[5] >> 3;
+        int size;
+        if (bsid > 10 && bsid <= 16)
+        {
+            const int strmtyp = p[2] >> 6;
+            const int substreamid = p[2] >> 3 & 7;
+            if (p != frame && strmtyp != 1 && substreamid == 0)
+                break;  // the next period
+            size = (((p[2] & 0x07) << 8 | p[3]) + 1) << 1;
+            const int fscod = p[4] >> 6;
+            const int code2 = p[4] >> 4 & 3;
+            if (fscod == 3 && code2 == 3)
+                break;
+            const int rate = fscod == 3 ? ff_ac3_freqs[code2] / 2 : ff_ac3_freqs[fscod];
+            const int samples = eac3_blocks[fscod == 3 ? 3 : code2] << 8;
+            sum += static_cast<uint32_t>(static_cast<int64_t>(size) * rate * 8 / samples);
+        }
+        else
+            break;
+        p += size;
+    }
+    return sum;
+}
+
+const std::string AC3Codec::describeAt(const uint8_t* frame, const uint8_t* end)
+{
+    m_periodRateGiven = periodRateAhead(frame, end);
+    std::string info = getStreamInfo();
+    m_periodRateGiven = 0;
+    return info;
+}
+
+const std::string AC3Codec::getStreamInfo()
+{
+    std::ostringstream str;
+    std::string hd_type;
+    if (mlp.m_subType == MlpSubType::stTRUEHD)
+        hd_type = "TRUE-HD";
+    else
+        hd_type = (mlp.m_subType == MlpSubType::stMLP) ? "MLP" : "UNKNOWN";
+
+    if (m_true_hd_mode)
+    {
+        if (isEAC3())
+            str << "E";
+        str << "AC3 core + ";
+        str << hd_type;
+        if (mlp.m_substreams == 4)
+            str << " + ATMOS";
+        str << ". ";
+
+        str << "Peak bitrate: " << mlp.m_bitrate / 1000 << "Kbps (core " << m_bit_rate / 1000 << "Kbps) ";
+        str << "Sample Rate: " << mlp.m_samplerate / 1000 << "KHz ";
+        if (m_sample_rate != mlp.m_samplerate)
+            str << " (core " << m_sample_rate / 1000 << "Khz) ";
+    }
+    else
+    {
+        if (isEAC3())
+            str << "EAC3 ";
+        if (m_isAtmos)
+        {
+            // Name the carriage, and say how many objects. This is joint object coding, which is
+            // how Atmos travels in E-AC-3 and is a different thing from the Atmos substream of a
+            // TrueHD track, even though both used to print the same three words.
+            str << "+ ATMOS (JOC";
+            if (m_jocObjects > 0)
+                str << ", " << static_cast<int>(m_jocObjects) << " objects";
+            str << "), ";
+        }
+
+        const uint32_t eac3Rate = m_periodRateGiven ? m_periodRateGiven : m_periodRate ? m_periodRate : m_periodRateSum;
+        str << "Bitrate: " << (m_bit_rate + eac3Rate) / 1000 << "Kbps ";
+        if (m_bit_rateExt)
+            str << "(core " << m_bit_rate / 1000 << "Kbps) ";
+        str << "Sample Rate: " << m_sample_rate / 1000 << "KHz ";
+    }
+
+    str << "Channels: ";
+    int channels = m_channels;
+    if (m_extChannelsExists)
+        channels += 2;
+    if (mlp.m_channels)
+        channels = mlp.m_channels;
+
+    if (m_lfeon)
+        str << channels - 1 << ".1";
+    else
+        str << channels;
+    return str.str();
+}
+
+uint8_t* AC3Codec::findFrame(uint8_t* buffer, const uint8_t* end)
+{
+    if (buffer == nullptr)
+        return nullptr;
+    uint8_t* curBuf = buffer;
+    while (curBuf < end - 1)
+    {
+        if (*curBuf == 0x0B && curBuf[1] == 0x77)
+            return curBuf;
+        curBuf++;
+    }
+    return nullptr;
+}

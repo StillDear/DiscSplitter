@@ -123,23 +123,31 @@ Rectangle {
                 RowLayout {
                     id: modeRow
                     Layout.fillWidth: true; spacing: 8
+                    // Video (MKV), the disc as it is (M2TS, a Blu-ray read by the built-in engine only), audio (FLAC)
+                    function modes(short) {
+                        const s = short ? "Short" : ""
+                        const list = [{ key: "mkv", label: win.tr("modeVideo" + s) }]
+                        if (win.discView.canM2ts || win.discView.outputFormat === "m2ts")
+                            list.push({ key: "m2ts", label: win.tr("modeM2ts" + s) })
+                        list.push({ key: "flac", label: win.tr("modeAudio" + s) })
+                        return list
+                    }
                     Segmented {
                         id: modeMeasure
                         visible: false; itemHeight: Math.round(30 * Math.max(1, Theme.fontScale))
-                        options: [{ key: "mkv", label: win.tr("modeVideo") }, { key: "flac", label: win.tr("modeAudio") }]
+                        options: modeRow.modes(false)
                     }
                     Segmented {
                         readonly property bool short: modeRow.width - (busyMark.visible ? busyMark.width + 8 : 0) < modeMeasure.implicitWidth
                         Layout.fillWidth: true; fill: true; itemHeight: Math.round(30 * Math.max(1, Theme.fontScale))
-                        options: short
-                            ? [{ key: "mkv", label: win.tr("modeVideoShort") }, { key: "flac", label: win.tr("modeAudioShort") }]
-                            : [{ key: "mkv", label: win.tr("modeVideo") }, { key: "flac", label: win.tr("modeAudio") }]
+                        options: modeRow.modes(short)
                         current: win.discView.outputFormat
                         enabled: !win.appView.busy
                         onPicked: function(key) { backend.disc.setOutputFormat(key) }
                         HoverHandler { id: modeHover }
                         ToolTip.visible: modeHover.hovered && short; ToolTip.delay: 400
-                        ToolTip.text: win.tr(win.discView.outputFormat === "flac" ? "modeAudio" : "modeVideo")
+                        ToolTip.text: win.discView.outputFormat === "m2ts" ? win.tr("modeM2tsHint")
+                            : win.tr(win.discView.outputFormat === "flac" ? "modeAudio" : "modeVideo")
                     }
                     BusyIndicator {
                         id: busyMark
@@ -497,7 +505,7 @@ Rectangle {
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: { backend.disc.restoreChapters(); page.afterEdit(0) }
                                     ToolTip.visible: containsMouse; ToolTip.delay: 300
-                                    ToolTip.text: win.discView.keepVideo && win.discView.outputFormat === "mkv" ? win.tr("keyframeHint") : win.tr("restoreChapters")
+                                    ToolTip.text: win.discView.keepVideo && win.discView.outputFormat !== "flac" ? win.tr("keyframeHint") : win.tr("restoreChapters")
                                 }
                                 Accessible.role: Accessible.Button; Accessible.name: win.tr("restoreChapters")
                             }
@@ -901,7 +909,8 @@ Rectangle {
                     Copy {
                         text: win.discView.outputFormat === "flac"
                             ? win.fmt("flacExportSummary", { n: win.discView.chapterSelected, a: win.discView.audioSelected })
-                            : win.fmt("exportSummary", { n: win.discView.chapterSelected, a: win.discView.audioSelected, s: win.discView.subtitleSelected })
+                            : win.fmt("exportSummary", { n: win.discView.chapterSelected, a: win.discView.audioSelected, s: win.discView.subtitleSelected,
+                                                         f: win.discView.outputFormat.toUpperCase() })
                               + (win.discView.keepVideo ? "" : " · " + win.tr("videoExcluded"))
                         color: Theme.muted; font.pixelSize: Theme.px(12); Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
                         wrapMode: Text.NoWrap; elide: Text.ElideRight

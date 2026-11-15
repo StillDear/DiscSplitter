@@ -1,0 +1,85 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef ABSTRACT_MUXER_H_
+#define ABSTRACT_MUXER_H_
+
+#include <fs/file.h>
+
+#include <map>
+#include <memory>
+#include <string>
+
+#include "metaDemuxer.h"
+
+class MuxerManager;
+class BlurayHelper;
+
+class AbstractMuxer
+{
+   public:
+    AbstractMuxer(MuxerManager* owner);
+    virtual ~AbstractMuxer() = default;
+
+    virtual void openDstFile() = 0;
+    virtual bool doFlush() = 0;
+    virtual bool close() = 0;
+    virtual void parseMuxOpt(const std::string& opts) = 0;
+
+    virtual void intAddStream(const std::string& streamName, const std::string& codecName, int streamIndex,
+                              const std::map<std::string, std::string>& params, AbstractStreamReader* codecReader) = 0;
+
+    virtual bool muxPacket(AVPacket& avPacket) = 0;
+    virtual void setFileName(const std::string& fileName, FileFactory* fileFactory);
+
+    /*
+     * Chapter start times in seconds. Matroska output writes them, and the transport stream muxer
+     * splits its output at them for --split-chapters; the Blu-ray playlist takes the same list
+     * through BlurayHelper::createMPLSFile instead. Every other muxer ignores them.
+     */
+    virtual void setChapters(const std::vector<double>& chapters) {}
+    // The chapters themselves, in the same order as setChapters, carrying whatever name and
+    // language the source gave them. Empty, or shorter than the list of times, means the muxer
+    // names the rest itself. Only Matroska has anywhere to put either.
+    virtual void setChapterInfo(const std::vector<AVChapter>& info) {}
+    // What a Matroska source carries for a Matroska output (see AbstractDemuxer::getTitle and the two after it).
+    virtual void setSourceExtras(const std::string& title, const std::vector<std::vector<uint8_t>>& attachments,
+                                 const std::vector<std::vector<uint8_t>>& tags)
+    {
+    }
+    // The source's tags about one track, by the stream index of the output track they now belong to
+    virtual void setSourceTrackTags(const std::map<int, std::vector<AbstractDemuxer::SourceTrackTag>>& tags) {}
+    // The MaxBlockAdditionID and BlockAdditionMapping bodies of each source track whose frames carry BlockAdditions
+    virtual void setSourceBlockAdditions(
+        const std::map<int, std::pair<uint64_t, std::vector<std::vector<uint8_t>>>>& info)
+    {
+    }
+
+    virtual void joinToMasterFile() {}
+    virtual void setSubMode(AbstractMuxer* mainMuxer, bool flushInterleavedBlock) {}
+    virtual void setMasterMode(AbstractMuxer* subMuxer, bool flushInterleavedBlock) {}
+
+    virtual std::string getNextName(std::string curName) { return curName; }
+
+    /*
+     * inform writer if new block started, round data by blockRound
+     */
+    void setBlockMuxMode(int blockSize, int sectorSize);
+
+   protected:
+    MuxerManager* m_owner;
+    std::string m_origFileName;
+    int m_interliaveBlockSize;  // used for SSIF interliaved mode
+    int m_sectorSize;
+    FileFactory* m_fileFactory;
+};
+
+class AbstractMuxerFactory
+{
+   public:
+    AbstractMuxerFactory() = default;
+    virtual ~AbstractMuxerFactory() = default;
+
+    [[nodiscard]] virtual std::unique_ptr<AbstractMuxer> newInstance(MuxerManager* owner) const = 0;
+};
+
+#endif

@@ -7,7 +7,8 @@ Build the Windows installer: dist/DiscSplitter-Setup-<version>.exe
 1. PyInstaller builds the app as a folder (packaging/installer.spec -> build/installer/DiscSplitter);
    the version is written next to it (version.txt), where the app reads it.
 2. ffmpeg/ffprobe and mkvmerge/mkvextract/mkvpropedit are copied into its tools\\ folder with their licences;
-   the installed app uses them unless the user sets other paths in Settings.
+   the installed app uses them unless the user sets other paths in Settings. The built-in Blu-ray engine
+   (tsMuxeR, compiled from engine/ by engine/build_engine.py, which runs first when needed) goes there too.
 3. Inno Setup (packaging/DiscSplitter.iss) packs that folder into the setup wizard.
 
 Tool folders come from the arguments, else the environment (FFMPEG_DIR, MKVTOOLNIX_DIR), else the
@@ -100,6 +101,9 @@ def main() -> None:
     folders = {"ffmpeg": tool_folder("ffmpeg", args.ffmpeg_dir),
                "mkvtoolnix": tool_folder("mkvtoolnix", args.mkvtoolnix_dir)}
     iscc = find_iscc(args.iscc)
+    engine_exe = ROOT / "engine" / "bin" / "tsMuxeR.exe"
+    if not engine_exe.is_file():
+        run([sys.executable, ROOT / "engine" / "build_engine.py"])
 
     if not args.skip_pyinstaller:
         run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
@@ -124,6 +128,14 @@ def main() -> None:
             shutil.copy2(text, tools / "licenses" / target)
         else:
             print(f"  warning: no licence file found for {family} in {folder}")
+
+    shutil.copy2(engine_exe, tools / "tsMuxeR.exe")
+    print(f"  bundled tsMuxeR.exe  <- {engine_exe.parent}")
+    upstream = ROOT / "engine" / "tsmuxer"
+    for source, target in ((upstream / "LICENSE", "tsMuxeR-LICENSE.txt"), (upstream / "NOTICE", "tsMuxeR-NOTICE.txt"),
+                           (upstream / "THIRD-PARTY-NOTICES.txt", "tsMuxeR-THIRD-PARTY-NOTICES.txt"),
+                           (ROOT / "engine" / "third_party" / "zlib" / "LICENSE", "zlib-LICENSE.txt")):
+        shutil.copy2(source, tools / "licenses" / target)
 
     run([iscc, "/Q", f"/DAppVersion={args.version}", f"/DSourceDir={APP_DIR}", f"/DOutputDir={ROOT / 'dist'}",
          PACKAGING / "DiscSplitter.iss"])

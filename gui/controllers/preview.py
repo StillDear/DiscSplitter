@@ -96,7 +96,7 @@ class PreviewController(Controller):
     def preview_wants_video(self):
         if self.preview_session.listen:     # quick listening from the paste dialog: sound only
             return False
-        return (self.state['outputFormat'] == 'mkv' and self.state['keepVideo']
+        return (self.state['outputFormat'] != 'flac' and self.state['keepVideo']
                 and self.disc.playlist is not None and self.disc.playlist.video_track is not None)
 
     # Clips kept in the scratch folder: video is about 1 GB per 5 minutes, lossless audio tens of MB per song.

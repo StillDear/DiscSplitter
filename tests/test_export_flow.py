@@ -69,7 +69,7 @@ def test_failed_resume_does_not_leave_a_question_open(backend, qt_app, monkeypat
     core.manifest.write_manifest(tmp_path / 'Album' / '_work', m)
     backend.exporter.flow.manifest = m
     backend.exporter.flow.ask(Phase.CONFIRM_RESUME)
-    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path: (_ for _ in ()).throw(ValueError('gone')))
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path, **_: (_ for _ in ()).throw(ValueError('gone')))
     errors = []
     backend.dialogRequested.connect(lambda kind, text: errors.append(text))
     backend.exporter.resume()

@@ -44,6 +44,10 @@ class JobManifest:
     renumber_tracks: bool = False  # Existing checkpoints used original chapter numbers in track tags.
     filename_template: str = ""   # FILENAME_TEMPLATES key; empty for checkpoints made before presets.
     chapter_layout: Optional[list[float]] = None   # edited chapter start times; None keeps the source's chapters
+    # Whose numbers the track IDs are: "mkvmerge" (its own numbering; every checkpoint before the built-in
+    # engine) or "engine" (transport stream PIDs, from a Blu-ray the engine read).
+    track_numbers: str = "mkvmerge"
+    audio_offset: float = 0.0     # FLAC from the engine: where the extracted audio begins on the playlist's timeline
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=2)

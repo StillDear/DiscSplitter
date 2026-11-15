@@ -1,0 +1,103 @@
+// Changed by teaching-droid, 2026 (https://github.com/teaching-droid/tsMuxer).
+// Apache License 2.0, see LICENSE and NOTICE.
+#ifndef AC3_STREAM_READER_H_
+#define AC3_STREAM_READER_H_
+
+#include "abstractDemuxer.h"
+#include "ac3Codec.h"
+#include "avPacket.h"
+#include "simplePacketizerReader.h"
+
+class AC3StreamReader final : public SimplePacketizerReader, public AC3Codec
+{
+   public:
+    AC3StreamReader() : m_useNewStyleAudioPES(false)
+    {
+        m_downconvertToAC3 = m_true_hd_mode = false;
+        m_state = AC3State::stateDecodeAC3;
+        m_waitMoreData = false;
+
+        m_totalTHDSamples = 0;
+        m_nextAc3Time = 0;
+        m_needTrueHDProbe = false;
+    }
+    int getTSDescriptor(uint8_t* dstBuff, bool blurayMode, bool hdmvDescriptors) override;
+    void setNewStyleAudioPES(const bool value) { m_useNewStyleAudioPES = value; }
+    // The track goes to a transport stream that is neither a disc nor M2TS, where E-AC-3 has the ATSC stream type 0x87
+    void setAtscEac3Type(const bool value) { m_atscEac3Type = value; }
+    void setTestMode(const bool value) override { AC3Codec::setTestMode(value); }
+    int getFreq() override { return m_sample_rate; }
+    int getAltFreq() override
+    {
+        if (m_downconvertToAC3)
+            return m_sample_rate;
+
+        return mlp.m_subType == MlpSubType::stUnknown ? m_sample_rate : mlp.m_samplerate;
+    }
+    uint8_t getChannels() override { return m_channels; }
+    void applyDiscoveryData(const StreamDiscoveryData& data) override;
+    void fillDiscoveryData(StreamDiscoveryData& data) override;
+    bool isPriorityData(AVPacket* packet) override;
+    bool isIFrame(AVPacket* packet) override { return isPriorityData(packet); }
+    bool isSecondary() override;
+    void addTimeGap(int64_t atNs, int64_t gapNs) override;
+
+   private:
+    // Find the lossless substream on THIS reader. Only runs for a track the discovery phase already
+    // identified as TrueHD, and only once.
+    void probeTrueHD();
+    void decodeLeadingFrames(uint8_t* frame);
+    void findTrueHDMajorSync();
+    bool m_needTrueHDProbe;
+    bool m_eac3NoCoreReported = false;
+    bool m_atscEac3Type = false;  // see setAtscEac3Type
+    // E-AC-3 without an AC-3 core: the timestamp of the last independent frame, which the
+    // dependent frames after it belong to
+    void stampDependentFrame(AVPacket& avPacket);
+    int64_t m_lastIndependentPts = -1;
+
+   protected:
+    int getHeaderLen() override { return AC3Codec::getHeaderLen(); }
+    int decodeFrame(uint8_t* buff, uint8_t* end, int& skipBytes, int& skipBeforeBytes) override
+    {
+        skipBeforeBytes = 0;
+        return AC3Codec::decodeFrame(buff, end, skipBytes);
+    }
+    uint8_t* findFrame(uint8_t* buff, uint8_t* end) override;
+    int wholeFrameSizeAt(const uint8_t* p, const uint8_t* end) override;
+    [[nodiscard]] bool declaredByContainer() const override;
+    void resetDecodeState() override;
+    [[nodiscard]] bool frameProvesItself() const override { return true; }
+    double getFrameDuration() override { return static_cast<double>(AC3Codec::getFrameDuration()); }
+    const CodecInfo& getCodecInfo() override { return AC3Codec::getCodecInfo(); }
+    const std::string getStreamInfo() override { return AC3Codec::getStreamInfo(); }
+    std::string getStreamInfoAt(const uint8_t* frame, const uint8_t* end) override
+    {
+        return AC3Codec::describeAt(frame, end);
+    }
+    void writePESExtension(PESPacket* pesPacket, const AVPacket& avPacket) override;
+
+    int readPacket(AVPacket& avPacket) override;
+    int flushPacket(AVPacket& avPacket) override;
+    int readPacketTHD(AVPacket& avPacket);
+
+    [[nodiscard]] bool needMPLSCorrection() const override;
+
+   private:
+    bool m_useNewStyleAudioPES;
+
+    int64_t m_totalTHDSamples;
+    int64_t m_nextAc3Time;
+    // The TrueHD access units in front of the first AC-3 core frame, which are left out, counted once from the start of
+    // the track; -1 when they could not be counted
+    int m_leadUnits = 0;
+    bool m_leadCounted = false;
+    bool m_leadApplied = false;
+    void applyLeadUnits();
+    // The gaps of addTimeGap for TrueHD with its AC-3 core (readPacketTHD): its core frames and its access units are
+    // timed by clocks of their own (m_nextAc3Time, m_totalTHDSamples), not by the base class, and each takes each gap
+    std::vector<std::pair<int64_t, int64_t>> m_coreGaps;
+    std::vector<std::pair<int64_t, int64_t>> m_unitGaps;
+};
+
+#endif
