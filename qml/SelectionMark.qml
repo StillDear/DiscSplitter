@@ -6,7 +6,7 @@ Rectangle {
     implicitWidth: 18
     implicitHeight: 18
     radius: 5
-    color: checked ? Theme.accent : "transparent"
+    color: checked ? Theme.accent : Theme.clear(Theme.accent)
     border.color: checked ? Theme.accent : Theme.muted
     border.width: 1
     Behavior on color { ColorAnimation { duration: Theme.fast } }

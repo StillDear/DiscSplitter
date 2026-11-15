@@ -27,8 +27,8 @@ TextField {
     Component.onCompleted: cursorPosition = 0
     background: Rectangle {
         radius: 8
-        color: field.quiet && !field.activeFocus && !hover.hovered ? "transparent" : Theme.field
-        border.color: field.activeFocus ? Theme.accent : (field.quiet && !hover.hovered ? "transparent" : Theme.line2)
+        color: field.quiet && !field.activeFocus && !hover.hovered ? Theme.clear(Theme.field) : Theme.field
+        border.color: field.activeFocus ? Theme.accent : (field.quiet && !hover.hovered ? Theme.clear(Theme.line2) : Theme.line2)
         Behavior on color { ColorAnimation { duration: Theme.fast } }
         Behavior on border.color { ColorAnimation { duration: Theme.fast } }
     }

@@ -74,7 +74,7 @@ Item {
                     HoverHandler { cursorShape: Qt.PointingHandCursor }
                     background: Rectangle {
                         radius: 8
-                        color: navItem.current ? Theme.accentSoft : navItem.hovered ? Theme.raised : "transparent"
+                        color: navItem.current ? Theme.accentSoft : navItem.hovered ? Theme.raised : Theme.clear(Theme.raised)
                         Behavior on color { ColorAnimation { duration: Theme.fast } }
                         Rectangle {
                             visible: navItem.current; width: 3; height: 16; radius: 1.5; color: Theme.accent

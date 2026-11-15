@@ -27,7 +27,7 @@ MenuItem {
     background: Rectangle {
         implicitHeight: item.implicitHeight
         radius: 6
-        color: item.highlighted ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, Theme.light ? 0.07 : 0.09) : "transparent"
+        color: item.highlighted ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, Theme.light ? 0.07 : 0.09) : Theme.clear(Theme.text)
         Behavior on color { ColorAnimation { duration: Theme.fast } }
     }
 }

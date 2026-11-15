@@ -50,6 +50,7 @@ def populate(backend):
     backend.put(previewRow=1, previewAudio=0, previewTitle='02 · Song 2', previewTrack='TrueHD Atmos - 7.1',
                 previewTracks=['TrueHD Atmos 7.1', 'LPCM 2.0'], previewLoading=False, previewVideo=True,
                 previewLength=161)
+    backend.preview.refresh_preview_info()     # set by hand above, so the panel's chapter info too
     # Synthetic loudness outlines: the timeline (2 peaks per second) and the preview clip.
     import math
     backend.preview._wave = [round(0.15 + 0.7 * abs(math.sin(i / 37) * math.sin(i / 5.3)), 3) for i in range(2700 * 2)]

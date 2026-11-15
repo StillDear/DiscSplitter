@@ -217,7 +217,7 @@ RowLayout {
                     required property bool included
                     property alias artistField: artistField
                     width: ListView.view.width - tagBar.gutter; height: Theme.rowHeight; radius: 8
-                    color: rowHover.hovered || artistField.activeFocus ? Theme.raised : "transparent"
+                    color: rowHover.hovered || artistField.activeFocus ? Theme.raised : Theme.clear(Theme.raised)
                     Behavior on color { ColorAnimation { duration: Theme.fast } }
                     HoverHandler { id: rowHover }
                     RowLayout {

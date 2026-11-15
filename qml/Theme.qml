@@ -35,6 +35,9 @@ QtObject {
     // Accent used as text on the page background, kept readable in both themes.
     readonly property color accentText: light ? (accentLuma > 0.35 ? Qt.darker(accent, 1.75) : accent)
                                               : (accentLuma < 0.45 ? Qt.lighter(accent, 1.5) : accent)
+    // "transparent" is transparent *black*: a colour animated to or from it passes through grey (a dark
+    // smear on a light hover). Fade to the same colour with no alpha instead.
+    function clear(c) { return Qt.rgba(c.r, c.g, c.b, 0) }
     // Motion
     readonly property bool animate: backend.config.motion !== "reduced"
     readonly property int fast: animate ? 120 : 0

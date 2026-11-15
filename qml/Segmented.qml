@@ -43,7 +43,7 @@ Rectangle {
                 Layout.fillWidth: seg.fill; Layout.preferredHeight: seg.itemHeight
                 implicitWidth: label.implicitWidth + 24
                 radius: 6
-                color: !on && area.containsMouse ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.06) : "transparent"
+                color: !on && area.containsMouse ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.06) : Theme.clear(Theme.text)
                 Behavior on color { ColorAnimation { duration: Theme.fast } }
                 Text {
                     id: label; anchors.centerIn: parent

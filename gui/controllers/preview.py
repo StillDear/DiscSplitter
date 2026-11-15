@@ -10,7 +10,7 @@ import threading
 from PySide6.QtCore import QObject, Property, QRunnable, QUrl, Signal, Slot
 
 from core import jobs, models, preview
-from .. import settings
+from .. import logic, settings
 from ..background import SideJob
 from ..preview_session import PreviewSession, State as PreviewState
 from .base import Controller
@@ -47,12 +47,14 @@ class PreviewController(Controller):
     def __init__(self, app):
         super().__init__(app, previewRow=-1, previewAudio=-1, previewUrl='', previewLoading=False, previewError='',
                          previewTitle='', previewTrack='', previewTracks=[], previewVideo=False, previewLength=0,
+                         previewInfo={},
                          waveState='off', waveProgress=0)
         self._wave = []
         self.ripple = []        # level swing per outline step (see preview._ripple)
         self._preview_wave = []
         self.wave_job = SideJob(self, self.wave_done, self.wave_failed, self.wave_progress)
         self.preview_session = PreviewSession()     # off / loading / ready / error, and its renders
+        self._info_hooked = False
 
     # ------------------------------------------------------------ audio preview
     def preview_track_row(self, audio_row):
@@ -171,6 +173,33 @@ class PreviewController(Controller):
         if not session.active:
             values.update(previewRow=-1, previewUrl='')
         self.put(previewLoading=session.state is PreviewState.LOADING, previewError=session.error, **values)
+        self.refresh_preview_info()
+
+    def preview_info(self):
+        """The chapter being played as the preview panel shows it: where it sits, its name as typed, what follows."""
+        row, rows = self.state['previewRow'], self.disc.chapter_model.rows
+        if not 0 <= row < len(rows):
+            return {}
+        r = rows[row]
+        info = dict(row=row, number=r['number'], count=len(rows), name=r['title'], start=r['start'],
+                    end=logic.format_clock(r['begin'] + r['seconds'], self.state['longClock']), duration=r['duration'])
+        if row + 1 < len(rows):
+            after = rows[row + 1]
+            info['next'] = dict(number=after['number'], name=after['title'], duration=after['duration'])
+        # A few chapters around it for the panel's queue (it shows as many as fit, from one before)
+        info['queue'] = [dict(row=i, number=rows[i]['number'], name=rows[i]['title'], duration=rows[i]['duration'])
+                         for i in range(max(0, row - 1), min(len(rows), row + 9))]
+        return info
+
+    def refresh_preview_info(self, *args):
+        if not self._info_hooked:       # follow renames, merges and splits made while it plays
+            self._info_hooked = True
+            model = self.disc.chapter_model
+            model.dataChanged.connect(self.refresh_preview_info)
+            model.modelReset.connect(self.refresh_preview_info)
+        info = self.preview_info()
+        if info != self.state['previewInfo']:
+            self.put(previewInfo=info)
 
     # ------------------------------------------------------------ waveforms
     WAVE_CACHE = settings.SETTINGS_PATH.parent / 'waveforms'

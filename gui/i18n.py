@@ -209,6 +209,8 @@ PAIRS = {
     'previewNext': ('下一章', 'Next chapter'),
     'previewPlay': ('播放', 'Play'),
     'previewPause': ('暂停', 'Pause'),
+    'upNext': ('下一首', 'Next'),
+    'previewTitleTip': ('曲名，直接输入即可修改', 'Track title — type to rename'),
     'previewClose': ('关闭试听', 'Close preview'),
     'previewCloseVideo': ('关闭预览', 'Close preview'),
     'previewVolume': ('音量', 'Volume'),

@@ -28,11 +28,11 @@ Button {
         radius: control.large ? 10 : 8
         color: control.accent ? (control.down ? Qt.darker(Theme.accent, 1.12) : control.hovered ? Qt.lighter(Theme.accent, 1.08) : Theme.accent)
              : control.selected ? Theme.accentSoft
-             : control.ghost ? (control.hovered ? Theme.raised : "transparent")
-             : control.danger ? "transparent"
+             : control.ghost ? (control.hovered ? Theme.raised : Theme.clear(Theme.raised))
+             : control.danger ? Theme.clear(Theme.raised)
              : (control.down ? Theme.segOn : control.hovered ? Qt.lighter(Theme.raised, Theme.light ? 0.97 : 1.18) : Theme.raised)
         border.color: control.visualFocus ? Theme.accent
-             : control.accent || control.ghost ? "transparent"
+             : control.accent || control.ghost ? Theme.clear(Theme.line2)
              : control.selected ? Theme.accent
              : control.danger ? Theme.dangerLine : Theme.line2
         Behavior on color { ColorAnimation { duration: Theme.fast } }

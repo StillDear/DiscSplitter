@@ -15,7 +15,7 @@ Rectangle {
     readonly property bool flagged: status === "done" && verify === "warn"
     readonly property color tone: flagged ? Theme.danger : status === "done" ? Theme.goodText : status === "failed" ? Theme.danger : status === "running" ? Theme.accentText : Theme.faint
     height: Theme.rowHeight; radius: 8
-    color: status === "running" || status === "failed" || flagged ? Theme.raised : "transparent"
+    color: status === "running" || status === "failed" || flagged ? Theme.raised : Theme.clear(Theme.raised)
     Behavior on color { ColorAnimation { duration: Theme.normal } }
     HoverHandler { id: rowHover }
     ToolTip.visible: progressRow.flagged && rowHover.hovered

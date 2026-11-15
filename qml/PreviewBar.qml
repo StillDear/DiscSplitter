@@ -272,42 +272,150 @@ Item {
                 }
                 HoverHandler { id: screenHover }
             }
-            // Beside the picture, which keeps its size: a narrow column, so every row stacks and shrinks
-            // instead of sitting side by side. Top: title and close, the track, the audio switch on a line
-            // of its own. Bottom: the waveform across the full width, the times under it, then the buttons
-            // with the volume. No row needs more than ~220 px, so nothing is pushed out of view.
+            // Beside the picture (which keeps its size): a small listening desk for the chapter being played.
+            //   top     where it sits on the disc · close; its title, typed straight in on the workspace;
+            //           artist · album; music / interlude / talk and the audio track; the track's details
+            //   middle  the queue: this chapter among its neighbours, as many rows as fit, click to play one
+            //   bottom  position | waveform | length; the buttons ("next: …" beside them when no queue fits)
+            // The lower-priority lines give way as the panel gets shorter; at the smallest panel the title,
+            // switches, waveform and buttons still fit (about 170 px), and nothing is pushed out of view.
             ColumnLayout {
                 id: side
+                readonly property var info: win.previewView.previewInfo || ({})
+                readonly property bool editable: win.appView.page === "main" && info.row !== undefined
+                // The kind switch is the first to go: below ~236 px it stays only while it shares one line with the tracks
+                readonly property bool kindShown: editable && (height >= 236 || height >= 180
+                    && kindSwitch.implicitWidth + (tracksShown ? 8 + previewTracksSwitch.implicitWidth : 0) <= width)
+                readonly property bool tracksShown: win.previewView.previewTracks.length > 1
+                function pad(n) { return String(n || 0).padStart(2, "0") }
+                function nameOf(entry) { return entry && entry.name ? entry.name : "Track " + pad(entry ? entry.number : 0) }
                 Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 0; spacing: 0
+
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
-                    ColumnLayout {
-                        Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 3
-                        Copy { text: win.previewView.previewTitle; font.pixelSize: Theme.heading; font.weight: Theme.strong; elide: Text.ElideRight; wrapMode: Text.NoWrap; Layout.fillWidth: true }
-                        Copy { text: win.previewView.previewTrack; color: Theme.muted; font.pixelSize: Theme.px(12); elide: Text.ElideRight; wrapMode: Text.NoWrap; Layout.fillWidth: true }
-                    }
-                    CloseButton { Layout.alignment: Qt.AlignTop }
-                }
-                // Audio track: a full-width switch; long names shorten (the hint shows them whole)
-                TrackSwitch {
-                    Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.topMargin: 12
-                    fill: true; itemHeight: Math.round(26 * Math.max(1, Theme.fontScale))
-                    options: win.previewView.previewTracks.map(function(label, i) { return { key: String(i), label: label, hint: label } })
-                }
-                Item { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 10 }
-                Scrubber {
-                    Layout.fillWidth: true; Layout.preferredHeight: waveHeight
-                    waveHeight: bar.waveOn ? Math.round(Math.max(32, Math.min(64, bar.height * 0.2))) : 18
-                }
-                RowLayout {
-                    Layout.fillWidth: true; Layout.topMargin: 4; spacing: 8
-                    visible: !bar.loading           // the picture says it is being prepared
                     Copy {
+                        text: side.info.number ? side.pad(side.info.number) + " / " + side.pad(side.info.count)
+                                                 + "     " + side.info.start + " – " + side.info.end : ""
+                        font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.caption; color: Theme.faint
+                        Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
+                    }
+                    CloseButton { implicitWidth: 26; implicitHeight: 24 }
+                }
+                // The title: on the workspace it can be typed in place, as in the chapter list
+                Field {
+                    visible: side.editable
+                    quiet: true; Layout.fillWidth: true; Layout.leftMargin: -10; Layout.topMargin: 2
+                    implicitHeight: Math.round(32 * Math.max(1, Theme.fontScale))
+                    text: side.info.name || ""; placeholderText: side.nameOf({ number: side.info.number })
+                    font.pixelSize: Theme.title; font.weight: Theme.strong
+                    enabled: !win.appView.busy
+                    onTextEdited: backend.disc.editTitle(side.info.row, text)
+                    Keys.onReturnPressed: focus = false
+                    Keys.onEnterPressed: focus = false
+                    Keys.onEscapePressed: focus = false
+                    ToolTip.visible: hovered && !activeFocus; ToolTip.delay: 600; ToolTip.text: win.tr("previewTitleTip")
+                }
+                Copy {
+                    visible: !side.editable
+                    text: side.info.number ? side.nameOf(side.info) : win.previewView.previewTitle
+                    font.pixelSize: Theme.title; font.weight: Theme.strong; Layout.fillWidth: true; Layout.topMargin: 4
+                    wrapMode: Text.NoWrap; elide: Text.ElideRight
+                }
+                Copy {
+                    visible: side.height >= 250 && text !== ""
+                    text: [win.discView.artist, win.discView.album].filter(function(x) { return !!x }).join(" · ")
+                    color: Theme.muted; font.pixelSize: Theme.small; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
+                }
+                // What it is (music / interlude / talk, set by hand from here), and which audio track plays
+                Flow {
+                    Layout.fillWidth: true; Layout.topMargin: 8; spacing: 8
+                    visible: side.kindShown || side.tracksShown
+                    Segmented {
+                        id: kindSwitch
+                        visible: side.kindShown
+                        itemHeight: Math.round(22 * Math.max(1, Theme.fontScale))
+                        options: ["music", "interlude", "talk"].map(function(k) { return { key: k, label: win.tr("kind_" + k) } })
+                        current: (win.discView.chapterKinds || {})[String(side.info.number)] || ""
+                        enabled: !win.appView.busy
+                        onPicked: function(key) { backend.disc.setChapterKind(side.info.row, key) }
+                    }
+                    TrackSwitch {
+                        id: previewTracksSwitch
+                        width: Math.min(implicitWidth, side.width); fill: true
+                        itemHeight: Math.round(22 * Math.max(1, Theme.fontScale))
+                        options: win.previewView.previewTracks.map(function(label, i) { return { key: String(i), label: label, hint: label } })
+                    }
+                }
+                Copy {
+                    visible: side.height >= 290
+                    text: win.previewView.previewTrack; color: Theme.faint; font.pixelSize: Theme.caption
+                    Layout.fillWidth: true; Layout.topMargin: 6; wrapMode: Text.NoWrap; elide: Text.ElideRight
+                }
+                // The queue takes whatever height is left: with room for three rows or more it shows this chapter among
+                // its neighbours; with less, only what comes next (the title above already names this one)
+                Item {
+                    id: queue
+                    readonly property var all: side.info.queue || []
+                    readonly property int rowHeight: Math.round(26 * Math.max(1, Theme.fontScale))
+                    readonly property int fits: Math.min(all.length, Math.floor(height / rowHeight))
+                    readonly property bool shown: fits >= 1
+                    readonly property int current: all.findIndex(function(q) { return q.row === side.info.row })
+                    readonly property int first: fits < 3 ? Math.min(current + 1, all.length - fits)
+                                                          : Math.max(0, Math.min(current - 1, all.length - fits))
+                    Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 6
+                    Layout.topMargin: 8; Layout.bottomMargin: 4
+                    clip: true
+                    Column {
+                        visible: queue.shown; width: parent.width
+                        Repeater {
+                            model: queue.shown ? queue.all.slice(queue.first, queue.first + queue.fits) : []
+                            Rectangle {
+                                id: queueRow
+                                required property var modelData
+                                readonly property bool now: modelData.row === side.info.row
+                                width: parent.width; height: queue.rowHeight; radius: 6
+                                color: now ? Theme.accentSoft : queueHover.hovered ? Theme.raised : Theme.clear(Theme.raised)
+                                Behavior on color { ColorAnimation { duration: Theme.fast } }
+                                RowLayout {
+                                    anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 10
+                                    Copy {
+                                        text: side.pad(queueRow.modelData.number); Layout.preferredWidth: 20
+                                        font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.caption
+                                        color: queueRow.now ? Theme.accentText : Theme.faint; wrapMode: Text.NoWrap
+                                    }
+                                    Copy {
+                                        text: (queue.fits < 3 && queueRow.modelData.row === side.info.row + 1 ? win.tr("upNext") + "  ·  " : "")
+                                              + side.nameOf(queueRow.modelData); font.pixelSize: Theme.small
+                                        font.weight: queueRow.now ? Font.DemiBold : Font.Normal
+                                        color: queueRow.now ? Theme.text : queueRow.modelData.name ? Theme.sub : Theme.faint
+                                        Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
+                                    }
+                                    Copy {
+                                        text: queueRow.modelData.duration
+                                        font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.caption
+                                        color: Theme.faint; wrapMode: Text.NoWrap
+                                    }
+                                }
+                                HoverHandler { id: queueHover; cursorShape: queueRow.now ? Qt.ArrowCursor : Qt.PointingHandCursor }
+                                TapHandler { onTapped: if (!queueRow.now && !win.appView.busy) backend.preview.previewChapter(queueRow.modelData.row, -1) }
+                            }
+                        }
+                    }
+                }
+                // Position | waveform | length
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 8
+                    Copy {
+                        visible: !bar.loading           // the picture says it is being prepared
                         text: bar.time(player.position); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.caption; color: Theme.muted
                         wrapMode: Text.NoWrap
                     }
-                    Item { Layout.fillWidth: true }
+                    Scrubber {
+                        Layout.fillWidth: true; Layout.minimumWidth: 40; Layout.preferredHeight: waveHeight
+                        waveHeight: bar.waveOn ? Math.round(Math.max(28, Math.min(44, side.height * 0.11))) : 18
+                    }
                     Copy {
+                        visible: !bar.loading
                         text: bar.total(); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.caption; color: Theme.muted
                         wrapMode: Text.NoWrap
                     }
@@ -316,7 +424,15 @@ Item {
                     Layout.fillWidth: true; Layout.topMargin: 8; spacing: 6
                     StepButtons {}
                     SplitButton { Layout.leftMargin: 4 }
-                    Item { Layout.fillWidth: true; Layout.minimumWidth: 4 }
+                    // When the queue has no room: what comes next, in a word
+                    Copy {
+                        readonly property var next: side.info.next
+                        visible: !queue.shown && !!next && side.width >= 400     // squeezed to "下一首 0…" it says nothing
+                        text: next ? win.tr("upNext") + "  " + side.pad(next.number) + " · " + side.nameOf(next) : ""
+                        color: Theme.faint; font.pixelSize: Theme.caption; Layout.leftMargin: 8
+                        Layout.fillWidth: true; Layout.minimumWidth: 0; wrapMode: Text.NoWrap; elide: Text.ElideRight
+                    }
+                    Item { visible: queue.shown || !side.info.next || side.width < 400; Layout.fillWidth: true; Layout.minimumWidth: 4 }
                     VolumeControl { Layout.maximumWidth: 120; Layout.fillWidth: true; Layout.minimumWidth: 60; slim: true }
                 }
             }

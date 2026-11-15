@@ -266,7 +266,7 @@ Rectangle {
                             onClicked: backend.disc.openRecent(index)
                             HoverHandler { cursorShape: Qt.PointingHandCursor }
                             ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: win.nativePath(modelData.folder)
-                            background: Rectangle { radius: 8; color: recentItem.hovered ? Theme.raised : "transparent" }
+                            background: Rectangle { radius: 8; color: recentItem.hovered ? Theme.raised : Theme.clear(Theme.raised) }
                             contentItem: Item {
                                 RowLayout {
                                     id: recentRow; x: 6; y: 5; width: parent.width - 6; spacing: 4
@@ -464,7 +464,7 @@ Rectangle {
                                     width: Math.max(2, span.w - 2)
                                     height: track.height
                                     radius: Math.min(6, width / 2)
-                                    color: on ? Theme.accent : talk ? "transparent"
+                                    color: on ? Theme.accent : talk ? Theme.clear(Theme.chip)
                                          : interlude ? Qt.rgba(fill.r, fill.g, fill.b, 0.45) : fill
                                     border.width: 1
                                     border.color: on || !(talk || interlude) ? "transparent" : unnamed ? Theme.pendingText : Theme.line2
@@ -742,7 +742,7 @@ Rectangle {
                         readonly property bool previewing: index === win.previewView.previewRow
                         property alias titleField: titleField
                         width: ListView.view.width - chapterBar.gutter; height: Theme.rowHeight
-                        color: previewing ? Theme.accentSoft : on || chapterHover.hovered ? Theme.raised : "transparent"
+                        color: previewing ? Theme.accentSoft : on || chapterHover.hovered ? Theme.raised : Theme.clear(Theme.raised)
                         HoverHandler { id: chapterHover }
                         // Rows are divided by a hairline; the selected one also gets an accent edge
                         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line2 }
