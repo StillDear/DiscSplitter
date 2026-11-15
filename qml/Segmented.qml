@@ -1,7 +1,8 @@
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
-// Segmented control with a sliding highlight. `options` is a list of {key, label};
-// `current` may be "" for an action bar (no highlight).
+// Segmented control with a sliding highlight. `options` is a list of {key, label} with an optional `hint`,
+// shown when that option is hovered; `current` may be "" for an action bar (no highlight).
 Rectangle {
     id: seg
     property var options: []
@@ -56,6 +57,8 @@ Rectangle {
                     id: area; anchors.fill: parent; hoverEnabled: true; enabled: seg.enabled
                     cursorShape: Qt.PointingHandCursor; onClicked: seg.picked(opt.modelData.key)
                 }
+                ToolTip.visible: area.containsMouse && !!opt.modelData.hint; ToolTip.delay: 400
+                ToolTip.text: opt.modelData.hint || ""
             }
         }
     }

@@ -13,8 +13,12 @@ from core import models, tools, tracklist
 
 def populate(backend):
     """Exercise delegates with deterministic data; no tools, network or settings writes."""
-    backend.cfg.update(theme='dark', language='zh', accent='#F2A33A', motion='reduced')
-    backend.disc.chapters = [models.Chapter(i, (i-1)*300, i*300, embedded_name=f'Song {i}') for i in range(1, 10)]
+    backend.cfg.update(theme='dark', language='zh', accent='#F2A33A', motion='reduced', waveform=True)
+    # A concert's shape: an intro, songs of different lengths, two spoken breaks (4 and 8), a long closer.
+    lengths = [95, 312, 268, 140, 355, 290, 420, 85, 735]
+    starts = [sum(lengths[:i]) for i in range(9)]
+    backend.disc.chapters = [models.Chapter(i + 1, starts[i], starts[i] + lengths[i], embedded_name=f'Song {i + 1}')
+                             for i in range(9)]
     backend.disc.rebuild_chapters({i: f'Song {i}' for i in range(1, 10) if i not in (3, 7)})
     for i in range(9):
         backend.disc.chapter_model.change(i, origin='disc' if i < 5 else 'edited', file=f'{i+1:02d} - Song {i+1}.mkv',
@@ -24,9 +28,9 @@ def populate(backend):
     backend.disc.update_chapter_selection()
     backend.disc.source_chapters = [models.Chapter(i, (i-1)*300, i*300) for i in range(1, 10)]
     backend.put(chaptersEdited=True, verifyState='done', verified=3, verifyIssues=1)
-    backend.disc.playlist_model.replace([dict(label='00001.mpls', detail='45:00 · 9 章', tracks='TrueHD Atmos 7.1 / LPCM 2.0 · 1920×1080 · 1 条字幕', headline='Dolby Atmos / TrueHD',
+    backend.disc.playlist_model.replace([dict(label='00001.mpls', detail='45:00 · 9 章', tracks='TrueHD Atmos 7.1 / LPCM 2.0 · 1920×1080 · 1 条字幕', headline='Dolby Atmos / TrueHD',
         reasons='Dolby Atmos / TrueHD\n9 chapters · AVC video', chosen=True),
-        dict(label='00002.mpls', detail='05:00 · 1 章', tracks='LPCM 2.0 · 无视频 · 无字幕', headline='LPCM 2.0', reasons='LPCM 2.0', chosen=False)])
+        dict(label='00002.mpls', detail='05:00 · 1 章', tracks='LPCM 2.0 · 无视频 · 无字幕', headline='LPCM 2.0', reasons='LPCM 2.0', chosen=False)])
     backend.disc.audio_model.replace([dict(label='TrueHD Atmos - 7.1, 96kHz, 24-bit [eng]', codec='TrueHD Atmos', details='7.1 · 96kHz · 24-bit [eng]', chosen=True),
                                  dict(label='LPCM - 2.0, 96kHz, 24-bit [eng]', codec='LPCM', details='2.0 · 96kHz · 24-bit [eng]', chosen=False)])
     backend.disc.subtitle_model.replace([dict(label='PGS · eng', chosen=True)])
@@ -44,7 +48,8 @@ def populate(backend):
     backend.put(hasVideo=True, keepVideo=True, canM2ts=True, videoSummary='H.264 · 1920×1080 · 23.976p · SDR')
     # Preview bar open (no clip, so nothing plays): exercises its layout on every screen.
     backend.put(previewRow=1, previewAudio=0, previewTitle='02 · Song 2', previewTrack='TrueHD Atmos - 7.1',
-                previewTracks=['TrueHD Atmos 7.1', 'LPCM 2.0'], previewLoading=False, previewVideo=True)
+                previewTracks=['TrueHD Atmos 7.1', 'LPCM 2.0'], previewLoading=False, previewVideo=True,
+                previewLength=161)
     # Synthetic loudness outlines: the timeline (2 peaks per second) and the preview clip.
     import math
     backend.preview._wave = [round(0.15 + 0.7 * abs(math.sin(i / 37) * math.sin(i / 5.3)), 3) for i in range(2700 * 2)]
@@ -63,7 +68,8 @@ def populate(backend):
                                        '', 'Disc 2', '特典映像', '1. Documentary']))
     backend.tool_model.replace([dict(tool='tsMuxeR', path='tsMuxeR version 3.1.0', available=True, builtin=True, optional=False)]
                                + [dict(tool=t, path=t, available=t != 'ffprobe', builtin=False, optional=t.startswith('mkv'))
-                                  for t in tools.TOOL_PATHS])
+                                  for t in sorted(tools.TOOL_PATHS, key=tools.tool_rank)])
+    backend.put(toolNames=' · '.join(row['tool'] for row in backend.tool_model.rows))
     backend.metadata.meta['album'].update(artist='Dire Straits', album='Brothers In Arms', album_artist='Dire Straits', date='1985', genre='Rock')
     backend.metadata.setTrackArtist(1, 'Dire Straits feat. Sting')
     backend.metadata.publish_metadata()
@@ -80,7 +86,11 @@ def populate(backend):
                 sidecars=['E:/Blurays/Track Listing.txt'], resume=True,
                 resumeText='Brothers In Arms · TrueHD Atmos 7.1 · 4 / 9',
                 logs='Extracting video track 0 + audio track 1\nSplitting chapter 5: Why Worry',
-                collisionFiles=['01 - Song 1.mkv', '02 - Song 2.mkv'], completed=4, current=5, stage='splitting')
+                collisionFiles=['01 - Song 1.mkv', '02 - Song 2.mkv'], completed=4, current=5, chapterFraction=0.4, stage='splitting')
+    # One chapter of each kind the timeline draws (hand-set ones are kept per disc, so after the source above):
+    # 4 and 8 spoken breaks (hollow), 1 an instrumental intro (half fill).
+    for row, kind in ((3, 'talk'), (7, 'talk'), (0, 'interlude')):
+        backend.disc.setChapterKind(row, kind)
 
 
 def run(app, backend, window, warnings, screenshots=None):

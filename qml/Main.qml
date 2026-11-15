@@ -41,15 +41,26 @@ ApplicationWindow {
     function pasteTracklist() { pastePopup.open() }
     function openHelp(button) { helpMenu.popup(button, button.width - helpMenu.width, button.height + 4) }
     // The workspace carries its own header pieces (name, mode, language, settings) in its columns.
-    readonly property bool headerShown: !flush
+    // Only the start page has a title bar (language, settings, help); every other page carries its
+    // own back button and title, and the export / done pages need none.
+    readonly property bool headerShown: appView.page === "start"
     // The workspace is one surface filling the window edge to edge (no frame of background around it).
-    readonly property bool flush: appView.page === "main" || appView.page === "review"
+    readonly property bool flush: appView.page === "main" || appView.page === "review" || appView.page === "metadata"
     readonly property bool previewPlaying: previewBar.playing
     readonly property real previewPosition: previewBar.position
     readonly property real previewDuration: previewBar.duration
     function togglePreview() { previewBar.toggle() }
     readonly property bool previewSeekable: previewBar.seekable
     function seekPreview(ms) { previewBar.seek(ms) }
+    // Play a chapter from `ms` into it: seek when it is already the one playing, else load its clip there.
+    function previewFrom(row, ms) {
+        if (row === previewView.previewRow && previewView.previewUrl !== "") { previewBar.seek(ms); if (!previewPlaying) togglePreview(); return }
+        previewBar.startAt = { row: row, ms: Math.max(0, Math.round(ms)) }
+        backend.preview.previewChapter(row, -1)
+    }
+    // Paths as the system writes them (D:\Music\…), wherever one is shown; breakablePath may wrap after a separator.
+    function nativePath(path) { return Qt.platform.os === "windows" ? String(path || "").replace(/\//g, "\\") : String(path || "") }
+    function breakablePath(path) { return nativePath(path).replace(/([\\/])/g, "$1\u200b") }
     function showTrackInfo(kind, row) { backend.disc.showTrackInfo(kind, row); trackInfoDialog.open() }
     // An open dialog is never replaced: a request that arrives meanwhile waits until it closes, so a
     // pending choice (collision, resume...) cannot be overwritten and lose its cancel-on-dismiss.
@@ -107,6 +118,7 @@ ApplicationWindow {
 
     ColumnLayout {
         anchors.fill: parent; anchors.leftMargin: win.flush ? 0 : 12; anchors.rightMargin: win.flush ? 0 : 12
+        anchors.topMargin: win.flush || win.headerShown ? 0 : 12
         anchors.bottomMargin: win.flush ? 0 : 12; spacing: win.flush ? 0 : 12
 
         // Title bar (every page but the workspace)
@@ -117,7 +129,7 @@ ApplicationWindow {
                 visible: (win.appView.page === "review" || win.appView.page === "settings" || win.appView.page === "metadata") && !win.appView.pipeline
                 ghost: true; text: "  " + win.tr("back"); enabled: !win.appView.working || win.appView.page === "settings"
                 leftPadding: 30; implicitWidth: contentItem.implicitWidth + 40
-                onClicked: backend.navigate(win.discView.album || win.discView.source ? "main" : "start")
+                onClicked: backend.back()
                 Icon { kind: "back"; ink: Theme.text; width: 14; height: 14; anchors.verticalCenter: parent.verticalCenter; x: 10 }
             }
             Item { Layout.fillWidth: true }
@@ -138,7 +150,8 @@ ApplicationWindow {
 
         StackLayout {
             id: stack
-            Layout.fillWidth: true; Layout.fillHeight: true
+            // Gives way to the preview panel below: the pages scroll, the panel's controls must stay in view.
+            Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0
             currentIndex: ["start", "main", "review", "export", "done", "settings", "metadata"].indexOf(win.appView.page)
             // Page entrance: fade in while settling from a slight zoom.
             onCurrentIndexChanged: {
@@ -217,11 +230,11 @@ ApplicationWindow {
             Copy {
                 // A kind's own heading ("discardTitle", "resumeTitle") wins over its button-sized name.
                 text: win.dialogKind === "tools" ? win.tr("missingTools") : (win.t[win.dialogKind + "Title"] || win.tr(win.dialogKind))
-                font.pixelSize: Theme.px(20); font.bold: true; Layout.fillWidth: true
+                font.pixelSize: Theme.title; font.weight: Theme.strong; Layout.fillWidth: true
             }
             Copy {
                 visible: win.dialogKind === "collision"
-                text: win.discView.output; font.family: Theme.mono; font.pixelSize: Theme.px(12); color: Theme.muted; Layout.fillWidth: true; elide: Text.ElideMiddle; maximumLineCount: 1
+                text: win.nativePath(win.discView.output); font.family: Theme.mono; font.pixelSize: Theme.px(12); color: Theme.muted; Layout.fillWidth: true; elide: Text.ElideMiddle; maximumLineCount: 1
             }
             Copy {
                 visible: win.dialogKind === "duplicate" || win.dialogKind === "collision"

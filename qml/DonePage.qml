@@ -7,6 +7,10 @@ RowLayout {
     required property var win
     readonly property bool clean: win.exportView.result === "done" && win.exportView.failed === 0 && win.exportView.remaining === 0
     readonly property int unfinished: win.exportView.failed + win.exportView.remaining
+    readonly property bool flagged: win.exportView.verifyState === "done" && win.exportView.verifyIssues > 0
+    // good: all done and checked · warn: all done, some failed the check · bad: files unfinished
+    readonly property string outcome: unfinished > 0 || (win.exportView.result !== "done" && win.exportView.completed === 0) ? "bad"
+                                      : flagged ? "warn" : "good"
     spacing: 12
     property bool copiedTracklist: false
     onVisibleChanged: if (visible) resultPop.restart()
@@ -34,21 +38,35 @@ RowLayout {
         Layout.preferredWidth: 400; Layout.fillHeight: true; padding: 24
         ColumnLayout {
             anchors.fill: parent; spacing: 18
-            Icon {
+          // What happened scrolls on a short window; the buttons below always stay in view.
+          Flickable {
+            id: doneScroll
+            Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+            contentHeight: doneInfo.implicitHeight; boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: SlimScrollBar {}
+          ColumnLayout {
+            id: doneInfo
+            width: doneScroll.width; spacing: 18
+            Rectangle {
                 id: resultBadge
-                Layout.preferredWidth: 28; Layout.preferredHeight: 28
-                kind: donePage.clean ? "check" : "alert"; ink: donePage.clean ? Theme.good : Theme.danger
+                Layout.preferredWidth: 40; Layout.preferredHeight: 40; radius: 20
+                color: donePage.outcome === "good" ? Theme.goodBg : donePage.outcome === "warn" ? Theme.accentSoft2 : Theme.dangerBg
+                Icon {
+                    anchors.centerIn: parent; width: 20; height: 20
+                    kind: donePage.outcome === "good" ? "check" : "alert"
+                    ink: donePage.outcome === "good" ? Theme.good : donePage.outcome === "warn" ? Theme.accentText : Theme.danger
+                }
             }
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 8
                 Copy {
-                    text: donePage.clean ? win.fmt("doneTitle", { n: win.exportView.completed }) : win.fmt("doneTitlePartial", { n: win.exportView.completed, f: donePage.unfinished })
-                    font.pixelSize: Theme.px(22); font.bold: true; Layout.fillWidth: true; lineHeight: 1.15
+                    text: donePage.unfinished > 0 ? win.fmt("doneTitlePartial", { n: win.exportView.completed, f: donePage.unfinished }) : win.fmt("doneTitle", { n: win.exportView.completed })
+                    font.pixelSize: Theme.display; font.weight: Theme.strong; Layout.fillWidth: true; lineHeight: 1.15
                 }
                 Copy { text: [win.discView.artist, win.discView.album].filter(function(x) { return x }).join(" – ") || win.tr(win.exportView.result); color: Theme.muted; Layout.fillWidth: true }
             }
             Rectangle {
-                visible: !donePage.clean
+                visible: donePage.unfinished > 0
                 Layout.fillWidth: true; Layout.preferredHeight: warnCol.implicitHeight + 28; radius: 10
                 color: Theme.dangerBg; border.color: Theme.dangerLine
                 ColumnLayout {
@@ -87,9 +105,10 @@ RowLayout {
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 5
                 Copy { text: win.tr("location"); font.pixelSize: Theme.px(12); color: Theme.faint }
-                Copy { text: win.exportView.destination; font.family: Theme.mono; font.pixelSize: Theme.px(12); Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; lineHeight: 1.2 }
+                Copy { text: win.nativePath(win.exportView.destination); font.family: Theme.mono; font.pixelSize: Theme.px(12); Layout.fillWidth: true; wrapMode: Text.Wrap; lineHeight: 1.2 }
             }
-            Item { Layout.fillHeight: true }
+          }
+          }
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 8
                 ActionButton { text: win.tr("openOutput"); large: true; font.bold: true; Layout.fillWidth: true; onClicked: backend.exporter.openOutput() }
@@ -105,7 +124,7 @@ RowLayout {
             anchors.fill: parent; spacing: 10
             RowLayout {
                 Layout.fillWidth: true; spacing: 8
-                Copy { text: win.tr("outputFile"); font.pixelSize: Theme.px(20); font.bold: true; Layout.fillWidth: true; wrapMode: Text.NoWrap }
+                Copy { text: win.tr("outputFile"); font.pixelSize: Theme.title; font.weight: Theme.strong; Layout.fillWidth: true; wrapMode: Text.NoWrap }
                 ActionButton {
                     text: win.tr(donePage.copiedTracklist ? "tracklistCopied" : "copyTracklist")
                     enabled: win.exportView.tracklistAvailable && !win.appView.working
@@ -121,8 +140,8 @@ RowLayout {
                     enabled: win.exportView.tracklistAvailable && !win.appView.working
                     onClicked: saveTracklist.open()
                 }
-                Badge { tone: "good"; text: win.exportView.completed + " " + win.tr("done") }
-                Badge { visible: donePage.unfinished > 0; tone: "danger"; text: donePage.unfinished + " " + win.tr("failed") }
+                Badge { tone: "good"; text: win.tr("done") + " " + win.exportView.completed }
+                Badge { visible: donePage.unfinished > 0; tone: "danger"; text: win.tr("unfinishedShort") + " " + donePage.unfinished }
             }
             RowLayout {
                 Layout.fillWidth: true; Layout.leftMargin: 12; Layout.rightMargin: 12 + doneBar.gutter; spacing: 12

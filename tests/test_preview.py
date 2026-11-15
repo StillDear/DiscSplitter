@@ -72,6 +72,10 @@ def test_backend_previews_a_chapter_and_prefetches_the_next(backend, qt_app, mon
     assert not backend.state['previewLoading']
     first = backend.disc.chapters[1]
     assert rendered[0][:2] == (first.start_seconds, first.end_seconds)
+    # The bar's length is the one the chapter list shows, rounded the same way.
+    row = backend.disc.chapter_model.rows[1]
+    assert backend.state['previewLength'] == round(first.duration)
+    assert row['duration'] == f"{backend.state['previewLength'] // 60:02d}:{backend.state['previewLength'] % 60:02d}"
     assert wait_for(qt_app, lambda: len(rendered) == 2)          # next chapter decoded in the background
     rendered_before = len(rendered)
     backend.preview.previewStep(1)
@@ -142,9 +146,22 @@ def test_video_mode_previews_with_picture_and_waveform(backend, qt_app, monkeypa
     assert backend.state['previewVideo'] and backend.state['previewUrl'].endswith('-v.mkv')
     assert backend.preview.previewWave == [0.25, 0.75, 0.5]
     assert calls == [('video', backend.disc.playlist.video_track.track_id)]   # no prefetch of big video clips
-    backend.disc.setOutputFormat('flac')                                      # switching mode restarts as audio
+    # To sound only: the clip playing goes on (it has the same sound), only the picture is put away.
+    playing = backend.state['previewUrl']
+    backend.disc.setOutputFormat('flac')
+    assert not backend.state['previewVideo'] and not backend.state['previewLoading']
+    assert backend.state['previewUrl'] == playing and backend.state['previewRow'] == 0
+    wait_for(qt_app, lambda: len(calls) > 1, 0.5)
+    assert calls == [('video', backend.disc.playlist.video_track.track_id), ('audio', None)]   # only the prefetch
+    assert backend.preview.previewWave == [0.25, 0.75, 0.5]
+    # Back to the picture: that needs the clip with video.
+    backend.disc.setOutputFormat('mkv')
+    assert wait_for(qt_app, lambda: backend.state['previewVideo'] and backend.state['previewUrl'].endswith('-v.mkv'))
+    # The next chapter in sound-only mode is a sound-only clip.
+    backend.disc.setOutputFormat('flac')
+    backend.preview.previewStep(1)
     assert wait_for(qt_app, lambda: backend.state['previewUrl'].endswith('.flac'))
-    assert not backend.state['previewVideo']
+    assert backend.state['previewRow'] == 1 and not backend.state['previewVideo']
     backend.preview.stopPreview()
 
 

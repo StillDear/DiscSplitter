@@ -39,7 +39,7 @@ def test_selected_chapters_keep_multiple_tracks_through_resume(tmp_path, monkeyp
         '-f', 'lavfi', '-i', 'sine=duration=6', '-i', str(subtitles), '-i', str(chapter_file),
         '-map', '0:v', '-map', '1:a', '-map', '1:a', '-map', '1:a',
         '-map', '2:s', '-map', '2:s', '-map_chapters', '3',
-        '-c:v', 'mpeg2video', '-g', '1', '-c:a', 'flac', '-c:s', 'copy',
+        '-c:v', 'mpeg2video', '-g', '1', '-c:a', 'pcm_s16le', '-c:s', 'copy',
         '-metadata:s:a:1', 'title=Stereo', '-metadata:s:a:2', 'title=Alternate',
         '-metadata:s:a:2', 'language=jpn', '-metadata:s:s:1', 'language=chi',
         '-disposition:a:0', 'default', '-disposition:a:1', '0', '-disposition:a:2', '0',
@@ -73,9 +73,9 @@ def test_selected_chapters_keep_multiple_tracks_through_resume(tmp_path, monkeyp
     assert manifest.video_track_id == (playlist.video_track.track_id if keep_video else None)
     first_modified = first.stat().st_mtime_ns
 
-    if not keep_video:
-        # Resume must honour the saved video setting even when a new remux is needed.
-        (work / '_audio_extracted.mkv').unlink()
+    # A Matroska source is cut straight from the file: no intermediate copy for a resume to reuse.
+    assert not (work / '_audio_extracted.mkv').exists()
+    # The resume asks for the other video setting; the saved one must win (the streams checked below).
     paths = core.pipeline.run_full_pipeline(
         playlist, playlist.audio_tracks[0], {}, work, output, resume=True, chapter_indices=[2],
         keep_video=not keep_video,
@@ -83,11 +83,13 @@ def test_selected_chapters_keep_multiple_tracks_through_resume(tmp_path, monkeyp
     assert [p.name for p in paths] == ['Track 01.mkv', 'Finale.mkv']
     assert first.stat().st_mtime_ns == first_modified
     assert set(output.glob('*.mkv')) == set(paths)
-    for track_number, path in enumerate(paths, start=1):
+    # Video files carry only their song titles (no track or album tags).
+    for title, path in zip(['Track 01', 'Finale'], paths):
         probe = subprocess.check_output(['ffprobe', '-v', 'error', '-show_streams', '-show_format',
                                          '-of', 'json', str(path)], encoding='utf-8')
         media = json.loads(probe)
-        assert {k.lower(): v for k, v in media['format']['tags'].items()}['track'] == f'{track_number}/2'
+        tags = {k.lower(): v for k, v in media['format'].get('tags', {}).items()}
+        assert tags.get('title') == title and 'track' not in tags
         assert float(media['format']['duration']) == pytest.approx(2, abs=0.3 if keep_video else 0.12)
         streams = media['streams']
         assert [s['codec_type'] for s in streams] == (['video'] if keep_video else []) + [
@@ -99,6 +101,99 @@ def test_selected_chapters_keep_multiple_tracks_through_resume(tmp_path, monkeyp
         assert subtitle2['tags']['language'] == 'chi'
         assert [s['disposition']['default'] for s in (audio1, audio2, subtitle1, subtitle2)] == [0, 0, 0, 0]
         assert subtitle2['disposition']['forced'] == 1
+
+
+@pytest.mark.skipif(not all(shutil.which(tool) for tool in core.tools.TOOL_PATHS),
+                    reason='MKVToolNix and FFmpeg are required')
+@pytest.mark.parametrize('keep_video,with_pcm', [(True, True), (True, False), (False, True), (False, False)])
+def test_mkv_export_keeps_flac_tracks_of_a_matroska_source(tmp_path, monkeypatch, keep_video, with_pcm):
+    """mkvmerge cannot split FLAC: those tracks are cut by ffmpeg over the span of each part and added to it."""
+    for tool in core.tools.TOOL_PATHS:
+        monkeypatch.setitem(core.tools.TOOL_PATHS, tool, shutil.which(tool))
+    source = tmp_path / 'concert.mkv'
+    subtitles = tmp_path / 'lyrics.srt'
+    subtitles.write_text('1\n00:00:03,400 --> 00:00:03,900\nVerse\n', encoding='utf-8')
+    chapter_file = tmp_path / 'chapters.txt'
+    # Chapter 2 starts and ends between key pictures (one a second): mkvmerge cuts it from 3 s to 5 s.
+    chapter_file.write_text(';FFMETADATA1\n' + ''.join(
+        f'[CHAPTER]\nTIMEBASE=1/1000\nSTART={start}\nEND={end}\ntitle=Song {i + 1}\n'
+        for i, (start, end) in enumerate([(0, 2050), (2050, 4050), (4050, 6000)])), encoding='utf-8')
+    subprocess.run([
+        'ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=s=64x64:r=10:d=6',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=6:sample_rate=48000',
+        '-f', 'lavfi', '-i', 'aevalsrc=sin(1000*t*t):d=6:s=48000', '-i', str(subtitles), '-i', str(chapter_file),
+        '-map', '0:v', '-map', '1:a', '-map', '2:a', '-map', '1:a', '-map', '3:s', '-map_chapters', '4',
+        '-c:v', 'mpeg2video', '-g', '10', '-c:a:0', 'pcm_s16le', '-c:a:1', 'flac', '-sample_fmt:a:1', 's32',
+        '-c:a:2', 'flac', '-c:s', 'srt',
+        '-metadata:s:a:1', 'title=Chirp', '-metadata:s:a:1', 'language=jpn', '-disposition:a:1', 'default',
+        '-disposition:a:0', '0', '-disposition:a:2', '0', str(source),
+    ], check=True, capture_output=True)
+    playlist = core.sources.inspect_playlist(source)
+    pcm, chirp, sine = playlist.audio_tracks
+    audio = [pcm, chirp, sine] if with_pcm else [chirp, sine]
+    output = tmp_path / 'output'
+    path, = core.pipeline.run_full_pipeline(
+        playlist, chirp, {2: 'Two'}, output / '_work', output, chapter_indices=[2], keep_video=keep_video,
+        audio_track_ids=[t.track_id for t in audio], subtitle_track_ids=[playlist.subtitle_tracks[0].track_id])
+    media = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_streams', '-show_format',
+                                                '-of', 'json', str(path)], encoding='utf-8'))
+    streams = media['streams']
+    assert [(s['codec_type'], s['codec_name']) for s in streams] == (
+        [('video', 'mpeg2video')] if keep_video else []) + (
+        [('audio', 'pcm_s16le')] if with_pcm else []) + [('audio', 'flac'), ('audio', 'flac'), ('subtitle', 'subrip')]
+    chirp_out = streams[-3]
+    assert chirp_out['tags']['title'] == 'Chirp' and chirp_out['tags']['language'] == 'jpn'
+    assert chirp_out['disposition']['default'] == 1 and streams[-2]['disposition']['default'] == 0
+    assert chirp_out['bits_per_raw_sample'] == '24'
+    assert {k.lower(): v for k, v in media['format']['tags'].items()}['title'] == 'Two'
+
+    # The FLAC samples are the source's own over the span the part covers: 3 s to 5 s with video, the chapter without.
+    start = 3 if keep_video else 2.05
+
+    def samples(path, stream, *cut):
+        return subprocess.check_output(['ffmpeg', '-v', 'error', *cut, '-i', str(path), '-map', stream,
+                                        '-f', 's32le', '-'])
+    got = samples(path, f'0:{len(streams) - 3}')
+    assert got == samples(source, f'0:{chirp.track_id}', '-ss', str(start), '-t', '2')
+    assert len(got) == 2 * 48000 * 4
+    assert 'Verse' in subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(path), '-map', '0:s', '-f', 'srt',
+                                               '-'], encoding='utf-8')
+    if keep_video:
+        assert float(streams[0].get('duration') or media['format']['duration']) == pytest.approx(2, abs=0.15)
+
+
+@pytest.mark.skipif(not all(shutil.which(tool) for tool in core.tools.TOOL_PATHS),
+                    reason='MKVToolNix and FFmpeg are required')
+def test_flac_reads_the_chosen_track_of_a_matroska_source_without_a_copy(tmp_path, monkeypatch):
+    for tool in core.tools.TOOL_PATHS:
+        monkeypatch.setitem(core.tools.TOOL_PATHS, tool, shutil.which(tool))
+    source = tmp_path / 'concert.mkv'
+    chapter_file = tmp_path / 'chapters.txt'
+    chapter_file.write_text(';FFMETADATA1\n' + ''.join(
+        f'[CHAPTER]\nTIMEBASE=1/1000\nSTART={i * 2000}\nEND={(i + 1) * 2000}\ntitle=Song {i + 1}\n'
+        for i in range(2)), encoding='utf-8')
+    subprocess.run([
+        'ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=s=64x64:r=10:d=4',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4:sample_rate=48000',
+        '-f', 'lavfi', '-i', 'sine=frequency=1000:duration=4:sample_rate=48000', '-i', str(chapter_file),
+        '-map', '0:v', '-map', '1:a', '-map', '2:a', '-map_chapters', '3',
+        '-c:v', 'mpeg2video', '-c:a', 'flac', str(source),
+    ], check=True, capture_output=True)
+    playlist = core.sources.inspect_playlist(source)
+    chosen = playlist.audio_tracks[1]
+    work = tmp_path / 'output' / '_work'
+    paths = core.pipeline.run_full_pipeline(playlist, chosen, {}, work, tmp_path / 'output', container='flac',
+                                            chapter_indices=[2])
+    assert not (work / '_audio_extracted.mkv').exists()
+
+    def samples(path, stream):
+        return subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(path), '-map', stream,
+                                        '-t', '0.5', '-f', 's16le', '-'])
+
+    # The cut is the second chapter of the 1000 Hz track: the same samples as that track two seconds in.
+    expected = subprocess.check_output(['ffmpeg', '-v', 'error', '-ss', '2', '-i', str(source),
+                                        '-map', f'0:{chosen.track_id}', '-t', '0.5', '-f', 's16le', '-'])
+    assert len(paths) == 1 and samples(paths[0], '0:a:0') == expected
 
 
 @pytest.mark.parametrize('suffix', ['.mkv', '.MKV', '.mk3d', '.MK3D', '.mka', '.MKA'])

@@ -13,9 +13,14 @@ SettingRow {
     tinted: !available
     title: builtin ? tool + " · " + win.tr("builtinEngine") : tool
     hint: !available ? win.tr(builtin ? "engineMissing" : optional ? "optionalTool" : "missing")
-                     : (path === tool || path === tool + ".exe" ? "PATH" : path)
+                     : (path === tool || path === tool + ".exe" ? "PATH" : win.nativePath(path))
     implicitHeight: 56
     Copy { text: win.tr(toolRow.available ? "found" : "missing"); color: toolRow.available ? Theme.goodText : toolRow.optional ? Theme.muted : Theme.danger; wrapMode: Text.NoWrap; font.pixelSize: Theme.px(12)}
     ActionButton { text: win.tr("download"); visible: !toolRow.available && !toolRow.builtin; implicitHeight: 28; onClicked: backend.downloadTool(toolRow.tool) }
-    ActionButton { text: win.tr("browse"); visible: !toolRow.builtin; primary: !toolRow.available && !toolRow.optional; implicitHeight: 28; enabled: !win.appView.working; onClicked: win.browseTool(toolRow.tool) }
+    // The built-in engine has nothing to browse for: its button stays, greyed out, so every row looks alike.
+    ActionButton {
+        text: win.tr("browse"); primary: !toolRow.available && !toolRow.optional; implicitHeight: 28
+        enabled: !toolRow.builtin && !win.appView.working
+        onClicked: win.browseTool(toolRow.tool)
+    }
 }

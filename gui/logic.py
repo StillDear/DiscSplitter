@@ -78,6 +78,17 @@ def format_time(seconds: float | None) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
+def format_clock(seconds: float | None, long: bool) -> str:
+    """A position on a disc: mm:ss, or h:mm:ss for every row of a programme that runs past an hour
+    (so one column never mixes "59:12" with "1:02:40", nor shows "61:44")."""
+    if seconds is None:
+        return "—"
+    if not long:
+        return format_time(seconds)
+    total = max(0, round(seconds))
+    return f"{total // 3600}:{total % 3600 // 60:02d}:{total % 60:02d}"
+
+
 def format_length(seconds: float | None) -> str:
     """Playlist lengths: m:ss under an hour, h:mm:ss above (never "137:29")."""
     if not seconds or seconds < 3600:

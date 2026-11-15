@@ -5147,6 +5147,39 @@ static int runTsMuxer(int argc, char** argv)
         // instead of saying what the mode expects.
         if (argc >= 2 && string(argv[1]) == "--bdmv-to-iso")
             return bdmvFolderToGuardedIso(argc, argv);
+        // DiscSplitter: where the bytes of files inside an image are, so that another program (ffmpeg's subfile
+        // protocol) reads them from the image without mounting it. One "File: <path> size=<bytes>" line per file,
+        // then an "Extent: offset=<bytes> length=<bytes>" line per part, "hole" for a part with no data written.
+        if (argc >= 3 && string(argv[1]) == "--extents")
+        {
+            int missing = 0;
+            for (int a = 2; a < argc; ++a)
+            {
+                discImage::FileView view;
+                if (!discImage::isInside(argv[a]) || !discImage::openFile(argv[a], &view))
+                {
+                    LTRACE(LT_ERROR, 2, "No such file inside an image: " << argv[a]);
+                    ++missing;
+                    continue;
+                }
+                cout << "File: " << argv[a] << " size=" << view.size << (view.inEntry ? " in-entry" : "") << endl;
+                if (view.inEntry && view.data)  // a small file kept in its entry: its bytes, in hex
+                {
+                    static const char digits[] = "0123456789abcdef";
+                    std::string hex;
+                    for (const uint8_t b : *view.data)
+                    {
+                        hex += digits[b >> 4];
+                        hex += digits[b & 15];
+                    }
+                    cout << "Data: " << hex << endl;
+                }
+                for (const discImage::Extent& e : view.extents)
+                    cout << "Extent: offset=" << e.offset << " length=" << e.length << (e.hole ? " hole" : "")
+                         << (e.file != 0 ? " other-file" : "") << endl;
+            }
+            return missing == 0 ? 0 : -1;
+        }
         // A Blu-ray or DVD disc folder or image given alone lists its titles (discTitles.h, dvdTitles.h);
         // --all-playlists and --min-title-length=<seconds> may come before it, and --show-title=<number or main> lists
         // the tracks of that title instead.
@@ -5427,6 +5460,7 @@ static int runTsMuxer(int argc, char** argv)
                     if (!mplsParser.m_playItems.empty())
                         LTRACE(LT_INFO, 2, "start-time: " << mplsParser.m_playItems[0].IN_time);
                     int marksPerFile = 0;
+                    std::string markTicks;  // DiscSplitter: the same marks unrounded, in 45 kHz ticks
                     for (; markIndex < mplsParser.m_marks.size(); markIndex++)
                     {
                         PlayListMark& curMark = mplsParser.m_marks[markIndex];
@@ -5441,9 +5475,12 @@ static int runTsMuxer(int argc, char** argv)
                         }
                         marksPerFile++;
                         LTRACE2(LT_INFO, floatToTime((double)time / 45000.0) << " ")
+                        markTicks += std::to_string(time) + " ";
                     }
                     if (marksPerFile > 0)
                         LTRACE(LT_INFO, 2, "");
+                    if (marksPerFile > 0)
+                        LTRACE(LT_INFO, 2, "Mark ticks (45 kHz): " << markTicks);
                     prevFileOffset += mplsParser.m_playItems[i].OUT_time - mplsParser.m_playItems[i].IN_time;
                 }
                 if (!missingClips.empty())

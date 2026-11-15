@@ -358,7 +358,8 @@ def subtitle_card(track, lang: str, tr) -> dict:
     name = short_language(track.language, track.properties.get('language_ietf', ''), lang) or tr('streamNoLang')
     extra = [track.title, tr('streamForced') if track.properties.get('forced_track') else '',
              tr('streamDefault') if track.default_track else '']
-    return dict(title=name, chips=[c for c in (codec, track.language) if c], extra=' · '.join(e for e in extra if e))
+    # Built like an audio card: the format as the title, the language as a chip.
+    return dict(title=codec or name, chips=[name] if codec else [], extra=' · '.join(e for e in extra if e))
 
 
 def video_extra(playlist, source_size, tr) -> str:

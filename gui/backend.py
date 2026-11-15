@@ -58,7 +58,7 @@ class Backend(View):
 
     def __init__(self, smoke=False):
         cfg = settings.load()
-        super().__init__(None, page='start', busy=False, working=False, pipeline=False, status='ready', toolMissing=False,
+        super().__init__(None, page='start', returnPage='start', toolNames='', busy=False, working=False, pipeline=False, status='ready', toolMissing=False,
                          systemAccent='', systemScale=100, startScale=str(cfg.get('interface_scale', 'system')),
                          recentExports=[], netTest=[])
         self.smoke = smoke
@@ -243,12 +243,29 @@ class Backend(View):
         """Tell the user a job failed."""
         self.notify(self.error_text(exc))
 
+    SUB_PAGES = ('settings', 'metadata', 'review')
+
+    def has_disc(self):
+        """A disc has been read: the workspace has something to show."""
+        return bool(self.disc.playlists or self.disc.chapters)
+
     @Slot(str)
     def navigate(self, page):
-        if not self.state['pipeline']:
-            self.put(page=page)
-            if page == 'settings':
-                self.metadata.refresh_cover_cache()
+        if self.state['pipeline']:
+            return
+        if page == 'main' and not self.has_disc():
+            page = 'start'      # an empty workspace is never a destination
+        here = self.state['page']
+        if page in self.SUB_PAGES and here not in self.SUB_PAGES:
+            self.put(returnPage=here)
+        self.put(page=page)
+        if page == 'settings':
+            self.metadata.refresh_cover_cache()
+
+    @Slot()
+    def back(self):
+        """Leave a sub-page for the page it was opened from."""
+        self.navigate(self.state['returnPage'] or 'start')
 
     @Slot(str, str)
     def setPreference(self, key, value):
@@ -384,8 +401,9 @@ class Backend(View):
             paths = {**tools.tool_paths(), 'tsMuxeR': engine.version() or engine.path()}
             self.tool_model.replace([dict(tool=t, path=paths.get(t, t), available=ok, builtin=t == 'tsMuxeR',
                                           optional=t in self.OPTIONAL_TOOLS and found.get('tsMuxeR', False))
-                                     for t, ok in found.items()])
-            # MKVToolNix only makes MKV files (and reads MKV sources) once the engine reads Blu-rays.
+                                     for t, ok in sorted(found.items(), key=lambda item: tools.tool_rank(item[0]))])
+            self.put(toolNames=' · '.join(row['tool'] for row in self.tool_model.rows))
+            # With the engine, Blu-rays need no MKVToolNix: it reads MKV sources and cuts DVDs to MKV only.
             needed = [ok for t, ok in found.items() if not (t in self.OPTIONAL_TOOLS and found.get('tsMuxeR'))]
             self.put(toolMissing=not all(needed))
             if not all(needed):

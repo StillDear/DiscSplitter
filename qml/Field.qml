@@ -5,11 +5,22 @@ TextField {
     property bool mono: false
     property bool quiet: false   // borderless until hovered or focused (table cells)
     property bool releaseOnOutsideClick: quiet   // a click elsewhere ends editing (gui/focus.py)
-    implicitHeight: Math.round(34 * Math.max(1, Theme.fontScale)); color: Theme.text; placeholderTextColor: Theme.faint
+    property color textColor: Theme.text
+    // A text field never elides, so a long value would be cut mid-letter. While it is not being
+    // edited and does not fit, the same text is drawn ending in "…" in its place.
+    readonly property bool elided: !activeFocus && text !== "" && idleText.implicitWidth > width + 0.5   // implicitWidth includes the padding
+    implicitHeight: Math.round(34 * Math.max(1, Theme.fontScale)); color: elided ? "transparent" : textColor; placeholderTextColor: Theme.faint
     selectionColor: Theme.accent; selectedTextColor: Theme.accentInk
     font.family: mono ? Theme.mono : Theme.ui; font.pixelSize: Theme.px(mono ? 12 : 13)
     leftPadding: 10; rightPadding: 10; selectByMouse: true
     HoverHandler { id: hover }
+    Text {
+        id: idleText
+        visible: field.elided
+        anchors.fill: parent; leftPadding: field.leftPadding; rightPadding: field.rightPadding
+        verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+        text: field.text; font: field.font; color: field.textColor; textFormat: Text.PlainText
+    }
     ContextMenu.menu: EditMenu { target: field }
     onTextChanged: if (!activeFocus) cursorPosition = 0
     onActiveFocusChanged: if (!activeFocus) cursorPosition = 0

@@ -10,8 +10,11 @@ Popup {
     readonly property int cropHeight: artwork.height - topTrim.value - bottomTrim.value
     readonly property bool changedCrop: leftTrim.value + rightTrim.value + topTrim.value + bottomTrim.value > 0
     readonly property bool suggested: artwork.left > 0 || artwork.right > 0 || artwork.top > 0 || artwork.bottom > 0
-    // Fixed (not themed) backdrop, so white or black borders stand out against it
-    readonly property string backdrop: backend.config.crop_backdrop || "dark"
+    // Fixed (not themed) backdrop, so white or black borders stand out against it. Until one is
+    // picked here, a found border chooses the contrasting one: dark for white, light for black.
+    property string autoBackdrop: ""
+    readonly property string backdrop: autoBackdrop || backend.config.crop_backdrop || "dark"
+    readonly property string border: artwork.border || ""
 
     parent: win.contentItem
     anchors.centerIn: parent
@@ -34,6 +37,7 @@ Popup {
         const info = backend.metadata.coverCropInfo()
         if (!info.url) return
         artwork = info
+        autoBackdrop = info.border === "black" ? "light" : info.border === "white" ? "dark" : ""
         setMargins(info.left, info.right, info.top, info.bottom)
         mag = 1
         open()
@@ -69,10 +73,13 @@ Popup {
 
     contentItem: ColumnLayout {
         spacing: 12
-        Copy { text: editor.win.tr("cropCover"); font.pixelSize: Theme.px(20); font.bold: true }
+        Copy { text: editor.win.tr("cropCover"); font.pixelSize: Theme.title; font.weight: Theme.strong }
         Copy {
             Layout.fillWidth: true
-            text: editor.win.tr(editor.suggested ? "cropSuggested" : "cropManual")
+            text: editor.suggested
+                  ? (editor.border === "white" ? editor.win.tr("cropFoundWhite") : editor.border === "black" ? editor.win.tr("cropFoundBlack")
+                     : editor.border === "mixed" ? editor.win.tr("cropFoundMixed") : "") + editor.win.tr("cropSuggested")
+                  : editor.win.tr("cropManual")
             color: Theme.muted
         }
 
@@ -87,14 +94,14 @@ Popup {
                           { key: "light", label: editor.win.tr("cropBackdropLight") },
                           { key: "checker", label: editor.win.tr("cropBackdropChecker") }]
                 current: editor.backdrop
-                onPicked: function(key) { backend.setPreference("crop_backdrop", key) }
+                onPicked: function(key) { editor.autoBackdrop = ""; backend.setPreference("crop_backdrop", key) }
                 HoverHandler { id: backdropHover }
                 ToolTip.visible: backdropHover.hovered; ToolTip.delay: 400; ToolTip.text: editor.win.tr("cropBackdropHint")
             }
             Item { Layout.preferredWidth: 10 }
             ActionButton { text: "−"; implicitHeight: 28; implicitWidth: 34; enabled: editor.mag > 1; onClicked: editor.zoomBy(1 / 1.5) }
             Copy {
-                text: Math.round(editor.pixelScale * 100) + "%"; font.family: Theme.mono; font.pixelSize: Theme.px(12)
+                text: Math.round(editor.pixelScale * 100) + "%"; font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12)
                 horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 52
             }
             ActionButton { text: "+"; implicitHeight: 28; implicitWidth: 34; enabled: editor.mag < editor.maxMag; onClicked: editor.zoomBy(1.5) }

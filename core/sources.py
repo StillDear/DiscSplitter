@@ -240,8 +240,8 @@ class PlayItem:
 
 
 def read_play_items(mpls: Path) -> list[PlayItem]:
-    """The playlist's PlayItems, in order (angles beyond the first are ignored)."""
-    data = mpls.read_bytes()
+    """The playlist's PlayItems, in order (angles beyond the first are ignored). Also inside an image."""
+    data = engine.read_file(mpls)
     if data[:4] != b"MPLS":
         raise ValueError(f"{mpls.name} is not a Blu-ray playlist")
     start = struct.unpack_from(">I", data, 8)[0]
@@ -254,6 +254,61 @@ def read_play_items(mpls: Path) -> list[PlayItem]:
         items.append(PlayItem(clip, in_time / MPLS_CLOCK, out_time / MPLS_CLOCK))
         pos += 2 + length
     return items
+
+
+def clip_file(stream_folder: Path, clip: str) -> Path:
+    """A clip's .m2ts in a STREAM folder (on a drive or inside an image), whichever case its name is in."""
+    file = stream_folder / f"{clip}.m2ts"
+    if not engine.file_exists(file) and engine.file_exists(file.with_suffix(".M2TS")):
+        return file.with_suffix(".M2TS")
+    return file
+
+
+def clip_info_file(stream_folder: Path, clip: str) -> Path:
+    """A clip's .clpi (BDMV/CLIPINF), next to its STREAM folder, whichever case its name is in."""
+    file = stream_folder.parent / "CLIPINF" / f"{clip}.clpi"
+    if not engine.file_exists(file) and engine.file_exists(file.with_suffix(".CLPI")):
+        return file.with_suffix(".CLPI")
+    return file
+
+
+SOURCE_PACKET = 192      # bytes per packet of a Blu-ray transport stream (.m2ts)
+
+
+def read_key_pictures(clpi: Path) -> list[tuple[float, int]]:
+    """
+    The key pictures of a clip, from its entry point map: (seconds on the clip's own clock, byte offset in the .m2ts)
+    in order. Opening the clip at one of these offsets starts it at that picture, without asking ffmpeg to seek.
+    """
+    data = engine.read_file(clpi)
+    if data[:4] != b"HDMV":
+        raise ValueError(f"{clpi.name} is not a Blu-ray clip information file")
+    cpi = struct.unpack_from(">I", data, 16)[0]
+    if not cpi or struct.unpack_from(">I", data, cpi)[0] == 0:
+        return []
+    ep_map = cpi + 6                                   # after the length and the CPI type
+    if not data[ep_map + 1]:                           # number of streams with entry points
+        return []
+    # The first stream (the main video): its entry points' coarse and fine tables.
+    # 16 bits PID, then 48: reserved 10, stream type 4, coarse entries 16, fine entries 18; then the table's address.
+    counts = int.from_bytes(data[ep_map + 4:ep_map + 10], "big")
+    coarse_count, fine_count = (counts >> 18) & 0xFFFF, counts & 0x3FFFF
+    table = ep_map + struct.unpack_from(">I", data, ep_map + 10)[0]
+    fine_table = table + struct.unpack_from(">I", data, table)[0]
+    coarse = []
+    for i in range(coarse_count):
+        head, spn = struct.unpack_from(">II", data, table + 4 + 8 * i)
+        coarse.append((head >> 14, head & 0x3FFF, spn))      # first fine entry, PTS bits 32..19, SPN
+    pictures = []
+    for c, (first, pts_coarse, spn_coarse) in enumerate(coarse):
+        last = coarse[c + 1][0] if c + 1 < len(coarse) else fine_count
+        for f in range(first, last):
+            entry = struct.unpack_from(">I", data, fine_table + 4 * f)[0]
+            # The coarse part holds PTS bits 32..19 and the fine part 19..9: bit 19 is the fine part's.
+            pts = ((pts_coarse & ~1) << 19) + (((entry >> 17) & 0x7FF) << 9)
+            spn = (spn_coarse & ~0x1FFFF) + (entry & 0x1FFFF)
+            pictures.append((pts / 90_000, spn * SOURCE_PACKET))
+    return pictures
 
 
 def locate_play_item(items: list[PlayItem], seconds: float) -> tuple[PlayItem, float]:

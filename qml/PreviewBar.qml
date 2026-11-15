@@ -21,6 +21,8 @@ Item {
     property real volume: 0.8
     property int lastRow: -1
     property int pendingSeek: -1
+    // Where to start the next chapter's clip (a click on the timeline): {row, ms}
+    property var startAt: null
 
     Layout.fillWidth: true
     // Video panel height: dragged live, else the saved share of the window, else the automatic size.
@@ -31,6 +33,8 @@ Item {
     readonly property real videoHeight: Math.round(Math.max(minimumVideoHeight, Math.min(maximumVideoHeight,
         heightLive > 0 ? heightLive : ratio > 0 ? win.height * ratio : Math.min(400, Math.max(220, win.height * 0.35)))))
     Layout.preferredHeight: !active ? 0 : video ? videoHeight : 64
+    // Never squeezed by the page above (it scrolls instead): the controls along the bottom stay in the window.
+    Layout.minimumHeight: Layout.preferredHeight
     Behavior on Layout.preferredHeight {
         enabled: bar.heightLive < 0
         NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic }
@@ -47,16 +51,24 @@ Item {
             player.play()
         }
     }
-    function time(ms) {
-        const s = Math.max(0, Math.floor(ms / 1000))
+    // Whole seconds rounded as the chapter list rounds them: the length is the chapter's own (from the backend,
+    // so it matches the list exactly), and the position never reads past it.
+    readonly property int totalSeconds: win.previewView.previewLength > 0 ? win.previewView.previewLength
+                                                                          : Math.round(player.duration / 1000)
+    function clock(s) {
+        s = Math.max(0, s)
         return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0")
     }
+    function time(ms) { return clock(Math.min(totalSeconds, Math.round(ms / 1000))) }
+    function total() { return clock(totalSeconds) }
 
     // A new clip for the same chapter (another audio track) keeps the position: easy A/B listening.
     readonly property string url: win.previewView.previewUrl
     onUrlChanged: {
         const sameChapter = win.previewView.previewRow === lastRow && player.source.toString() !== ""
-        pendingSeek = sameChapter ? player.position : -1
+        const wanted = startAt && startAt.row === win.previewView.previewRow ? startAt.ms : -1
+        pendingSeek = wanted >= 0 ? wanted : sameChapter ? player.position : -1
+        if (url !== "") startAt = null
         lastRow = win.previewView.previewRow
         player.source = url
         if (url !== "") player.play()
@@ -204,11 +216,11 @@ Item {
                 }
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
-                    Copy { text: bar.time(player.position); font.family: Theme.mono; font.pixelSize: Theme.px(11); color: Theme.muted; Layout.preferredWidth: 40 }
+                    Copy { text: bar.time(player.position); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(11); color: Theme.muted; Layout.preferredWidth: 40 }
                     Scrubber { Layout.fillWidth: true; waveHeight: bar.waveOn ? 22 : 18 }
                     Copy {
-                        text: bar.loading ? bar.loadingText : bar.time(player.duration)
-                        font.family: bar.loading ? Theme.ui : Theme.mono; font.pixelSize: Theme.px(11); color: Theme.muted
+                        text: bar.loading ? bar.loadingText : bar.total()
+                        font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(11); color: Theme.muted
                         Layout.preferredWidth: bar.loading ? implicitWidth : 40; horizontalAlignment: Text.AlignRight
                     }
                 }
@@ -249,30 +261,50 @@ Item {
                 }
                 HoverHandler { id: screenHover }
             }
+            // Title on top, the timeline in the middle, the controls along the bottom: about 160 px, so the
+            // whole column fits the smallest panel (minimumVideoHeight) and nothing is ever cut off.
             ColumnLayout {
-                Layout.fillWidth: true; Layout.fillHeight: true; spacing: 10
+                id: side
+                Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
                     ColumnLayout {
-                        Layout.fillWidth: true; spacing: 2
-                        Copy { text: win.previewView.previewTitle; font.pixelSize: Theme.px(17); font.bold: true; elide: Text.ElideRight; wrapMode: Text.NoWrap; Layout.fillWidth: true }
+                        Layout.fillWidth: true; spacing: 3
+                        Copy { text: win.previewView.previewTitle; font.pixelSize: Theme.heading; font.weight: Theme.strong; elide: Text.ElideRight; wrapMode: Text.NoWrap; Layout.fillWidth: true }
                         Copy { text: win.previewView.previewTrack; color: Theme.muted; font.pixelSize: Theme.px(12); elide: Text.ElideRight; wrapMode: Text.NoWrap; Layout.fillWidth: true }
                     }
                     CloseButton { Layout.alignment: Qt.AlignTop }
                 }
-                TrackSwitch { Layout.maximumWidth: parent.width }
-                Item { Layout.fillHeight: true }
-                Scrubber { Layout.fillWidth: true; Layout.preferredHeight: waveHeight; waveHeight: bar.waveOn ? Math.max(36, Math.min(72, bar.height * 0.22)) : 18 }
+                Item { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 10 }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 10
+                    Copy {
+                        visible: !bar.loading
+                        text: bar.time(player.position); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12); color: Theme.muted
+                        wrapMode: Text.NoWrap; Layout.preferredWidth: Math.max(implicitWidth, 40)
+                    }
+                    Scrubber {
+                        Layout.fillWidth: true; Layout.preferredHeight: waveHeight
+                        waveHeight: bar.waveOn ? Math.round(Math.max(32, Math.min(64, bar.height * 0.2))) : 18
+                    }
+                    Copy {
+                        visible: !bar.loading           // the picture says it is being prepared
+                        text: bar.total(); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12); color: Theme.muted
+                        wrapMode: Text.NoWrap; horizontalAlignment: Text.AlignRight
+                        Layout.preferredWidth: Math.max(implicitWidth, 40)
+                    }
+                }
+                Item { Layout.preferredHeight: 10 }
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
                     StepButtons {}
-                    SplitButton {}
-                    Copy {
-                        text: bar.loading ? bar.loadingText : bar.time(player.position) + " / " + bar.time(player.duration)
-                        font.family: Theme.mono; font.pixelSize: Theme.px(12); color: Theme.muted; Layout.leftMargin: 6
+                    SplitButton { Layout.leftMargin: 6 }
+                    Item { Layout.fillWidth: true; Layout.minimumWidth: 8 }
+                    TrackSwitch {
+                        fill: true; itemHeight: Math.round(26 * Math.max(1, Theme.fontScale))
+                        Layout.maximumWidth: Math.max(180, bar.width * 0.3)     // not the column's own width: a loop
                     }
-                    Item { Layout.fillWidth: true }
-                    VolumeControl {}
+                    VolumeControl { Layout.leftMargin: 8 }
                 }
             }
         }
@@ -293,7 +325,7 @@ Item {
             anchors.fill: parent; spacing: 14
             RowLayout {
                 Layout.fillWidth: true
-                Copy { text: win.previewView.previewTitle; color: "#FFFFFF"; font.pixelSize: Theme.px(18); font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight; wrapMode: Text.NoWrap }
+                Copy { text: win.previewView.previewTitle; color: "#FFFFFF"; font.pixelSize: Theme.title; font.weight: Theme.strong; Layout.fillWidth: true; elide: Text.ElideRight; wrapMode: Text.NoWrap }
                 Copy { text: win.previewView.previewTrack; color: "#9BA3AE"; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
                 IconButton {
                     iconKind: "shrink"; ink: "#FFFFFF"; Layout.leftMargin: 8
@@ -310,9 +342,9 @@ Item {
             RowLayout {
                 Layout.fillWidth: true; spacing: 12
                 StepButtons {}
-                Copy { text: bar.time(player.position); color: "#C9CED6"; font.family: Theme.mono; font.pixelSize: Theme.px(12) }
+                Copy { text: bar.time(player.position); color: "#C9CED6"; font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12) }
                 Scrubber { Layout.fillWidth: true; waveHeight: bar.waveOn ? 44 : 18; rest: Qt.rgba(1, 1, 1, 0.22) }
-                Copy { text: bar.time(player.duration); color: "#C9CED6"; font.family: Theme.mono; font.pixelSize: Theme.px(12) }
+                Copy { text: bar.total(); color: "#C9CED6"; font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12) }
                 VolumeControl {}
             }
         }

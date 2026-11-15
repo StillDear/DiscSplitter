@@ -4,13 +4,9 @@
 
 把蓝光、DVD、MKV 按章节无损拆成带曲名的音频或视频，曲名自动对上章节。蓝光由内置的 tsMuxeR 引擎直接读取（ISO 无需挂载），并可按章节原样切成 M2TS。
 
-<p align="center">
-  <img src="screenshot.png" alt="DiscSplitter" width="900">
-</p>
-
 A Windows desktop app (PySide6 / Qt Quick). Open a disc or an MKV, pick the chapters, audio and subtitle tracks you want, get the titles in, and export one file per chapter. Nothing is re-encoded unless you ask for FLAC.
 
-Blu-rays are handled by a built-in engine: [tsMuxeR](https://github.com/teaching-droid/tsMuxer), compiled from source in `engine/` and shipped with the app. It reads Blu-ray folders and ISO images directly (no mounting), finds the main title, and cuts chapters into M2TS straight from the disc.
+Blu-rays are handled by a built-in engine: [tsMuxeR](https://github.com/teaching-droid/tsMuxer), compiled from source in `engine/` and shipped with the app. It reads Blu-ray folders and ISO images directly (no mounting), finds the main title, and cuts chapters into M2TS or MKV straight from the disc. Previews, the waveform and track details read an ISO the same way, without mounting it.
 
 ## Features
 
@@ -20,7 +16,7 @@ Blu-rays are handled by a built-in engine: [tsMuxeR](https://github.com/teaching
 - **Content guess:** from the waveform, each chapter is marked as music, interlude, talk or unsure, so MCs and interludes can be taken out of the list. It is a guess and can be changed by hand.
 - **Chapters:** merge, split at the playhead, or move a boundary; a built-in preview player with waveform shows where you are.
 - **Export:** MKV with video, MKV audio-only, M2TS straight from a Blu-ray, or FLAC with tags and cover art. Files are named after the titles, each disc goes into its own album folder, free space is checked first, and every file is read back and verified afterwards (length, streams, and that sound and picture start together).
-- **M2TS (Blu-ray):** each chapter is cut straight from the disc with the picture, every audio track (TrueHD with its AC-3 core, DTS-HD with its extensions, LPCM) and PGS subtitles exactly as the disc has them, a Dolby Vision enhancement layer included, and the disc's own timestamps, so sound and picture stay in step as on the disc. Chapters that follow one another are cut in one pass. FLAC from a Blu-ray reads only the span the chosen chapters cover.
+- **M2TS (Blu-ray):** each chapter is cut straight from the disc with the picture, every audio track (TrueHD with its AC-3 core, DTS-HD with its extensions, LPCM) and PGS subtitles exactly as the disc has them, a Dolby Vision enhancement layer included, and the disc's own timestamps, so sound and picture stay in step as on the disc. Chapters are cut at the disc's exact marks (its 45 kHz ticks), and the engine starts reading at the first chosen chapter's mark instead of at the start of the disc, so a chapter near the end takes seconds, not minutes; chapters near one another are cut in one pass. MKV from a Blu-ray is cut the same way, each file titled with its song. FLAC from a Blu-ray reads only the span the chosen chapters cover. Progress follows the position in the chapter being cut.
 - **Resumable:** progress is saved as it goes; a cancelled or crashed export picks up where it stopped.
 - Chinese and English interface; dark, light or system theme.
 
@@ -41,7 +37,7 @@ python -m venv .venv
 
 `engine\build_engine.py` compiles the Blu-ray engine into `engine\bin\tsMuxeR.exe`; it needs Visual Studio 2022 or its Build Tools with the C++ workload (see [engine/UPSTREAM.md](engine/UPSTREAM.md)). Without it Blu-rays are read with MKVToolNix as before, and M2TS export is not offered.
 
-Running from source uses ffmpeg (`ffmpeg`, `ffprobe`) and MKVToolNix (`mkvmerge`, `mkvextract`, `mkvpropedit`, all three from the same folder) from your `PATH`, or from paths set in the app (Settings → External tools). With the engine built, MKVToolNix is only needed for MKV output and MKV sources. DVD sources need an ffmpeg build with `dvdvideo` support.
+Running from source uses ffmpeg (`ffmpeg`, `ffprobe`) and MKVToolNix (`mkvmerge`, `mkvextract`, `mkvpropedit`, all three from the same folder) from your `PATH`, or from paths set in the app (Settings → External tools). With the engine built, Blu-rays need no MKVToolNix at all; it is only needed for MKV sources and MKV from a DVD. DVD sources need an ffmpeg build with `dvdvideo` support.
 
 Settings, logs and caches are kept in `%USERPROFILE%\.disc_splitter`.
 

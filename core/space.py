@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import dvd
+from . import engine
 from . import sources
 from .models import Chapter, Playlist, Track
 from .sources import is_mkv_source
@@ -31,7 +32,7 @@ def source_size_bytes(path: Path) -> Optional[int]:
         if path.suffix.lower() == ".mpls":
             stream = path.parent.parent / "STREAM"
             clips = {item.clip for item in sources.read_play_items(path)}
-            sizes = [(stream / f"{clip}.m2ts").stat().st_size for clip in clips]
+            sizes = [engine.file_size(sources.clip_file(stream, clip)) for clip in clips]   # also in an image
             return sum(sizes) or None
         if is_mkv_source(path):
             return path.stat().st_size or None

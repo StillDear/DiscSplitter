@@ -51,7 +51,16 @@ Item {
         ColumnLayout {
             id: nav
             width: 184; y: 16; spacing: 4
-            Copy { text: win.tr("settings"); font.pixelSize: Theme.px(20); font.bold: true; Layout.bottomMargin: 14 }
+            // Back and title in the page, as on the review and metadata pages
+            RowLayout {
+                Layout.fillWidth: true; Layout.bottomMargin: 14; spacing: 10
+                IconButton {
+                    visible: !win.appView.pipeline; iconKind: "back"; implicitWidth: 32; implicitHeight: 32; Layout.leftMargin: -6
+                    onClicked: backend.back()
+                    ToolTip.visible: hovered; ToolTip.delay: 400; ToolTip.text: win.tr("back"); Accessible.name: win.tr("back")
+                }
+                Copy { text: win.tr("settings"); font.pixelSize: Theme.display; font.weight: Theme.strong; wrapMode: Text.NoWrap }
+            }
             Repeater {
                 model: page.groups
                 AbstractButton {
@@ -99,7 +108,7 @@ Item {
                 // Appearance
                 ColumnLayout {
                     id: appearanceBlock; Layout.fillWidth: true; spacing: 10
-                    Copy { text: win.tr("appearanceShort"); font.pixelSize: Theme.px(15); font.weight: Font.DemiBold }
+                    Copy { text: win.tr("appearanceShort"); font.pixelSize: Theme.heading; font.weight: Theme.strong }
                     SettingGroup {
                         SettingRow {
                             first: true; title: win.tr("theme")
@@ -190,11 +199,11 @@ Item {
                 // Output
                 ColumnLayout {
                     id: outputBlock; Layout.fillWidth: true; spacing: 10
-                    Copy { text: win.tr("outputSection"); font.pixelSize: Theme.px(15); font.weight: Font.DemiBold }
+                    Copy { text: win.tr("outputSection"); font.pixelSize: Theme.heading; font.weight: Theme.strong }
                     SettingGroup {
                         SettingRow {
                             first: true; title: win.tr("defaultOutput")
-                            hint: win.discView.output || win.tr("notSet")
+                            hint: win.nativePath(win.discView.output) || win.tr("notSet")
                             ActionButton { text: win.tr("browse"); enabled: !win.appView.working; onClicked: win.openFolder("output") }
                         }
                     }
@@ -225,7 +234,7 @@ Item {
                 // Title matching
                 ColumnLayout {
                     id: matchingBlock; Layout.fillWidth: true; spacing: 10
-                    Copy { text: win.tr("matching"); font.pixelSize: Theme.px(15); font.weight: Font.DemiBold }
+                    Copy { text: win.tr("matching"); font.pixelSize: Theme.heading; font.weight: Theme.strong }
                     SettingGroup {
                         SettingRow {
                             first: true; title: win.tr("chapterLang"); hint: win.tr("chapterLangHint")
@@ -252,7 +261,7 @@ Item {
                 // Preview
                 ColumnLayout {
                     id: previewBlock; Layout.fillWidth: true; spacing: 10
-                    Copy { text: win.tr("previewSection"); font.pixelSize: Theme.px(15); font.weight: Font.DemiBold }
+                    Copy { text: win.tr("previewSection"); font.pixelSize: Theme.heading; font.weight: Theme.strong }
                     SettingGroup {
                         SettingRow {
                             first: true; title: win.tr("waveform"); hint: win.tr("waveformSettingHint")
@@ -277,7 +286,7 @@ Item {
                 // Online metadata
                 ColumnLayout {
                     id: onlineBlock; Layout.fillWidth: true; spacing: 10
-                    Copy { text: win.tr("onlineSection"); font.pixelSize: Theme.px(15); font.weight: Font.DemiBold }
+                    Copy { text: win.tr("onlineSection"); font.pixelSize: Theme.heading; font.weight: Theme.strong }
                     SettingGroup {
                         SettingRow {
                             first: true; title: win.tr("proxy")
@@ -383,7 +392,7 @@ Item {
                     id: toolsBlock; Layout.fillWidth: true; spacing: 10
                     RowLayout {
                         Layout.fillWidth: true
-                        Copy { text: win.tr("tools"); font.pixelSize: Theme.px(15); font.weight: Font.DemiBold; Layout.fillWidth: true }
+                        Copy { text: win.tr("tools"); font.pixelSize: Theme.heading; font.weight: Theme.strong; Layout.fillWidth: true }
                         ActionButton { text: win.tr("checkTools"); ghost: true; enabled: !win.appView.working; onClicked: backend.checkTools() }
                     }
                     SettingGroup {

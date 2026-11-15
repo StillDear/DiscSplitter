@@ -23,7 +23,7 @@ Item {
                 ColumnLayout {
                     Layout.fillWidth: true; spacing: 4
                     Copy { text: win.tr("resumeTitle"); font.pixelSize: Theme.px(12); color: Theme.accentText }
-                    Copy { text: win.exportView.resumeText; font.pixelSize: Theme.px(15); font.bold: true; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideMiddle }
+                    Copy { text: win.exportView.resumeText; font.pixelSize: Theme.heading; font.weight: Theme.strong; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideMiddle }
                     Copy { text: win.tr("resumeHint"); font.pixelSize: Theme.px(12); color: Theme.sub; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight }
                 }
                 ActionButton { text: win.tr("discard"); enabled: !win.appView.working; onClicked: backend.exporter.requestDiscard() }
@@ -33,13 +33,14 @@ Item {
 
         // Drop zone
         Rectangle {
-            Layout.fillWidth: true; Layout.preferredHeight: startPage.dropHeight; radius: 14; color: Theme.panel; border.color: Theme.line
+            // One frame only: the drop target's own line (an outer card border made it a box in a box)
+            Layout.fillWidth: true; Layout.preferredHeight: startPage.dropHeight; radius: 14; color: "transparent"; border.color: "transparent"
             DropArea {
                 id: drop; anchors.fill: parent
                 onDropped: function(event) { if (event.hasUrls) backend.disc.setSource(event.urls[0].toString()) }
             }
             Rectangle {
-                anchors.fill: parent; anchors.margins: 6; radius: 10; color: drop.containsDrag ? Theme.accentSoft : "transparent"
+                anchors.fill: parent; radius: 14; color: drop.containsDrag ? Theme.accentSoft : Theme.panel
                 Behavior on color { ColorAnimation { duration: Theme.normal } }
                 Behavior on border.color { ColorAnimation { duration: Theme.normal } }
                 border.color: drop.containsDrag ? Theme.accent : Theme.line2; border.width: 1
@@ -58,11 +59,11 @@ Item {
                             onRunningChanged: if (!running) dropDisc.rotation = 0
                         }
                     }
-                    Copy { text: win.tr("startTitle"); font.pixelSize: Theme.px(20); font.bold: true; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter }
+                    Copy { text: win.tr("startTitle"); font.pixelSize: Theme.display; font.weight: Theme.strong; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter }
                     Copy { text: win.tr("startHint"); color: Theme.muted; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; lineHeight: 1.3 }
                     RowLayout {
                         Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 6; spacing: 8
-                        Field { id: pathField; mono: true; Layout.preferredWidth: 360; placeholderText: "E:/Blurays/…"; enabled: !win.appView.working; onAccepted: backend.disc.setSource(text) }
+                        Field { id: pathField; mono: true; Layout.preferredWidth: 360; placeholderText: win.nativePath("E:/Blurays/…"); enabled: !win.appView.working; onAccepted: backend.disc.setSource(text) }
                         ActionButton { text: win.tr("chooseFolder"); large: true; implicitHeight: 34; enabled: !win.appView.working; onClicked: win.openFolder("source") }
                         ActionButton { text: win.tr("chooseSourceFile"); large: true; implicitHeight: 34; enabled: !win.appView.working; onClicked: win.openSourceFile() }
                     }
@@ -78,7 +79,7 @@ Item {
                 anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 10; spacing: 12
                 Icon { kind: "folder"; ink: Theme.muted; Layout.preferredWidth: 16; Layout.preferredHeight: 16 }
                 Copy { text: win.tr("recent"); color: Theme.muted; wrapMode: Text.NoWrap }
-                Copy { text: win.discView.source; font.family: Theme.mono; font.pixelSize: Theme.px(12); Layout.fillWidth: true; elide: Text.ElideMiddle; wrapMode: Text.NoWrap }
+                Copy { text: win.nativePath(win.discView.source); font.family: Theme.mono; font.pixelSize: Theme.px(12); Layout.fillWidth: true; elide: Text.ElideMiddle; wrapMode: Text.NoWrap }
                 ActionButton { text: win.tr("reopen"); ghost: true; enabled: !win.appView.working; onClicked: backend.disc.scan() }
             }
         }
@@ -87,7 +88,9 @@ Item {
     // Status line
     RowLayout {
         id: statusLine
-        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 20
+        // Quiet status in the window's bottom-left corner, out of the way of the drop zone
+        anchors.left: parent.left; anchors.right: parent.right
+        anchors.bottom: parent.bottom; spacing: 20
         Repeater {
             model: toolModel
             RowLayout {

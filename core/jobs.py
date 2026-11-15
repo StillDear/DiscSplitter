@@ -44,19 +44,24 @@ class ProgressEvent(str):
     status:  that chapter's (or, without a chapter, the job's) state:
              "running" | "done" | "failed" | "cancelled" | ""
 
+    fraction: how far into that chapter the job is (0..1), on the frequent
+             updates of a running chapter only; these are not worth a log line
+
     Messages without a meaning (mkvmerge warnings, resume notes) stay plain str.
     """
     stage: str
     chapter: Optional[int]
     status: str
+    fraction: Optional[float]
 
-    def __new__(cls, text: str, stage: str = "", chapter: Optional[int] = None, status: str = ""):
+    def __new__(cls, text: str, stage: str = "", chapter: Optional[int] = None, status: str = "",
+                fraction: Optional[float] = None):
         event = super().__new__(cls, text)
-        event.stage, event.chapter, event.status = stage, chapter, status
+        event.stage, event.chapter, event.status, event.fraction = stage, chapter, status, fraction
         return event
 
     def __reduce__(self):   # keep the meaning when copied or pickled
-        return (ProgressEvent, (str(self), self.stage, self.chapter, self.status))
+        return (ProgressEvent, (str(self), self.stage, self.chapter, self.status, self.fraction))
 
 
 def extracting(text: str) -> ProgressEvent:
@@ -65,6 +70,10 @@ def extracting(text: str) -> ProgressEvent:
 
 def splitting(index: int, name: str) -> ProgressEvent:
     return ProgressEvent(f"Splitting chapter {index}: {name}", "splitting", index, "running")
+
+
+def chapter_progress(index: int, fraction: float) -> ProgressEvent:
+    return ProgressEvent(f"Chapter {index}: {fraction:.0%}", "splitting", index, "running", fraction)
 
 
 def already_done(index: int, name: str) -> ProgressEvent:

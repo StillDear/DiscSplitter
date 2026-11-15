@@ -46,7 +46,7 @@ class PreviewController(Controller):
 
     def __init__(self, app):
         super().__init__(app, previewRow=-1, previewAudio=-1, previewUrl='', previewLoading=False, previewError='',
-                         previewTitle='', previewTrack='', previewTracks=[], previewVideo=False,
+                         previewTitle='', previewTrack='', previewTracks=[], previewVideo=False, previewLength=0,
                          waveState='off', waveProgress=0)
         self._wave = []
         self.ripple = []        # level swing per outline step (see preview._ripple)
@@ -286,7 +286,11 @@ class PreviewController(Controller):
         ready = target.is_file()
         session.want(str(target), ready)
         self.set_preview_wave(self.clip_wave(target) if ready else [])
+        # The clip's length in whole seconds, rounded as the chapter list rounds it, so the two always agree
+        # (the clip itself may run a picture longer than the chapter).
+        length = min(job['end'] - job['start'], preview.MAX_PREVIEW_SECONDS) if job['end'] is not None else 0
         self.publish_preview(previewRow=row, previewAudio=job['audio_row'], previewTitle=f"{job['number']:02d} · {title}",
+                             previewLength=round(max(0.0, length)),
                              previewVideo=job['video'] is not None, previewTrack=track.display_label,
                              previewUrl=QUrl.fromLocalFile(str(target)).toString() if ready else '',
                              previewTracks=[t.codec + (f' {t.channel_layout}' if t.channel_layout else '')
@@ -316,8 +320,16 @@ class PreviewController(Controller):
             self.publish_preview()
 
     def restart_preview(self):
-        if self.preview_session.active and self.state['previewVideo'] != self.preview_wants_video():
-            self.previewChapter(self.state['previewRow'], self.state['previewAudio'])
+        """The output format or the picture setting changed: the preview follows it."""
+        if not self.preview_session.active or self.state['previewVideo'] == self.preview_wants_video():
+            return
+        if self.state['previewVideo'] and self.state['previewUrl']:
+            # To sound only: the clip playing carries the same track, as the same stereo FLAC a sound-only clip
+            # has. It goes on playing where it is; only the picture is put away.
+            self.publish_preview(previewVideo=False)
+            self.prefetch_next()        # sound-only clips are small: the next chapter is decoded ahead, as usual
+            return
+        self.previewChapter(self.state['previewRow'], self.state['previewAudio'])
 
     @Slot(int)
     def previewStep(self, delta):

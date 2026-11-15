@@ -43,16 +43,19 @@ Rectangle {
             RowLayout {
                 id: titleRow
                 Layout.fillWidth: true; spacing: 8
-                // The title keeps its full width; when space runs out the tag gives way first.
+                // The tag sits beside the title when both fit whole; otherwise it moves to the start of the
+                // line of extra facts, so neither is ever cut short.
+                readonly property bool tagInline: card.tag === ""
+                    || width >= titleText.implicitWidth + tagText.implicitWidth + 24 + 2 * spacing
                 Copy {
-                    text: card.title; font.pixelSize: Theme.px(14); font.weight: Font.DemiBold
+                    id: titleText
+                    text: card.title; font.pixelSize: Theme.item; font.weight: Font.DemiBold
                     Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
-                    Layout.minimumWidth: Math.min(implicitWidth, Math.max(0, titleRow.width - 24 - 16))
                 }
                 Copy {
-                    visible: card.tag !== ""; text: card.tag; font.pixelSize: Theme.px(12); color: Theme.accentText
-                    wrapMode: Text.NoWrap; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight
-                    Layout.fillWidth: true; Layout.maximumWidth: implicitWidth; Layout.minimumWidth: 0
+                    id: tagText
+                    visible: card.tag !== "" && titleRow.tagInline; text: card.tag; font.pixelSize: Theme.small; color: Theme.accentText
+                    wrapMode: Text.NoWrap
                 }
                 IconButton {
                     iconKind: "info"; implicitWidth: 24; implicitHeight: 22
@@ -61,13 +64,30 @@ Rectangle {
                     Accessible.name: card.detailsTip + " " + card.accessibleName
                 }
             }
+            // One row of chips: when the row runs short they tighten (less padding and spacing) before
+            // any chip has to wrap onto a second line.
             Flow {
-                Layout.fillWidth: true; spacing: 6; visible: card.chips.length > 0
-                Repeater { model: card.chips; Chip { required property string modelData; text: modelData } }
+                id: chipRow
+                Layout.fillWidth: true; visible: card.chips.length > 0
+                readonly property real labels: {
+                    let sum = 0
+                    for (let i = 0; i < chipRepeater.count; i++) { const c = chipRepeater.itemAt(i); if (c) sum += c.labelWidth }
+                    return sum
+                }
+                readonly property bool tight: width < labels + chipRepeater.count * 14 + (chipRepeater.count - 1) * 6
+                spacing: tight ? 4 : 6
+                Repeater { id: chipRepeater; model: card.chips; Chip { required property string modelData; text: modelData; pad: chipRow.tight ? 8 : 14 } }
             }
+            // Extra facts, led by the tag when it moved down; a second line rather than a cut-off fact.
             Copy {
-                visible: card.extra !== ""; text: card.extra; color: Theme.muted; font.pixelSize: Theme.px(12)
-                Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
+                function escaped(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") }
+                visible: card.extra !== "" || !titleRow.tagInline
+                textFormat: titleRow.tagInline ? Text.PlainText : Text.StyledText
+                text: titleRow.tagInline ? card.extra
+                    : "<font color='" + Theme.accentText + "'>" + escaped(card.tag) + "</font>"
+                      + (card.extra !== "" ? " · " + escaped(card.extra) : "")
+                color: Theme.muted; font.pixelSize: Theme.small
+                Layout.fillWidth: true; wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
             }
         }
     }

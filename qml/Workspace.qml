@@ -24,6 +24,9 @@ Rectangle {
     readonly property bool kindsShown: kindMode === "show" ? kindValues.length > 0
                                      : kindMode === "auto" && kindValues.some(function(k) { return k !== "music" })
     readonly property bool originsShown: !!win.discView.originsMixed
+    // The three columns' top rows share one height and line up across the window:
+    // format switch | title + "Get titles" | language, settings, help.
+    readonly property int headerHeight: Math.round(32 * Math.max(1, Theme.fontScale))
     readonly property real rightWidth: rightLive > 0 ? rightLive : fit(layoutSizes.work_right || 312, 0.36)
 
     // Merge / split / move one chapter. One menu for every row; `row` says which.
@@ -106,7 +109,7 @@ Rectangle {
         anchors.fill: parent; spacing: 0
         // ---------- Left: disc + playlists ----------
         Card {
-            flat: true
+            flat: true; padding: 20
             Layout.preferredWidth: page.leftWidth; Layout.fillHeight: true
             // Like the streams column: every candidate stays readable and the column scrolls as a whole when short.
             Flickable {
@@ -118,36 +121,22 @@ Rectangle {
             ColumnLayout {
                 id: discColumn
                 width: discFlick.width - discBar.gutter; height: Math.max(discFlick.height, implicitHeight); spacing: 16
-                // What the workspace produces: video chapters or audio tracks. Short labels when the
-                // column is too narrow for the full ones (measured off screen, so the switch never flickers).
+                // What the workspace produces, named by its format; each button tells what it makes when hovered.
                 RowLayout {
                     id: modeRow
-                    Layout.fillWidth: true; spacing: 8
-                    // Video (MKV), the disc as it is (M2TS, a Blu-ray read by the built-in engine only), audio (FLAC)
-                    function modes(short) {
-                        const s = short ? "Short" : ""
-                        const list = [{ key: "mkv", label: win.tr("modeVideo" + s) }]
-                        if (win.discView.canM2ts || win.discView.outputFormat === "m2ts")
-                            list.push({ key: "m2ts", label: win.tr("modeM2ts" + s) })
-                        list.push({ key: "flac", label: win.tr("modeAudio" + s) })
-                        return list
-                    }
+                    Layout.fillWidth: true; Layout.preferredHeight: page.headerHeight; spacing: 8
                     Segmented {
-                        id: modeMeasure
-                        visible: false; itemHeight: Math.round(30 * Math.max(1, Theme.fontScale))
-                        options: modeRow.modes(false)
-                    }
-                    Segmented {
-                        readonly property bool short: modeRow.width - (busyMark.visible ? busyMark.width + 8 : 0) < modeMeasure.implicitWidth
-                        Layout.fillWidth: true; fill: true; itemHeight: Math.round(30 * Math.max(1, Theme.fontScale))
-                        options: modeRow.modes(short)
+                        Layout.fillWidth: true; fill: true; itemHeight: page.headerHeight - 6
+                        // M2TS: the disc as it is (a Blu-ray read by the built-in engine only); MKV; FLAC
+                        options: [
+                            ...(win.discView.canM2ts || win.discView.outputFormat === "m2ts"
+                                ? [{ key: "m2ts", label: "M2TS", hint: win.tr("modeM2tsHint") }] : []),
+                            { key: "mkv", label: "MKV", hint: win.tr("modeMkvHint") },
+                            { key: "flac", label: "FLAC", hint: win.tr("modeFlacHint") }
+                        ]
                         current: win.discView.outputFormat
                         enabled: !win.appView.busy
                         onPicked: function(key) { backend.disc.setOutputFormat(key) }
-                        HoverHandler { id: modeHover }
-                        ToolTip.visible: modeHover.hovered && short; ToolTip.delay: 400
-                        ToolTip.text: win.discView.outputFormat === "m2ts" ? win.tr("modeM2tsHint")
-                            : win.tr(win.discView.outputFormat === "flac" ? "modeAudio" : "modeVideo")
                     }
                     BusyIndicator {
                         id: busyMark
@@ -172,13 +161,13 @@ Rectangle {
                     }
                     ColumnLayout {
                         Layout.fillWidth: true; spacing: 3
-                        Copy { text: win.discView.album || win.tr("source"); font.pixelSize: Theme.px(15); font.bold: true; Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight }
+                        Copy { text: win.discView.album || win.tr("source"); font.pixelSize: Theme.heading; font.weight: Theme.strong; Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight }
                         Copy { text: win.discView.artist; color: Theme.muted; Layout.fillWidth: true; visible: text !== "" }
                     }
                 }
                 ColumnLayout {
                     Layout.fillWidth: true; spacing: 8
-                    Copy { text: win.discView.source; font.family: Theme.mono; font.pixelSize: Theme.px(11); color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; maximumLineCount: 3; elide: Text.ElideMiddle; lineHeight: 1.2 }
+                    Copy { text: win.breakablePath(win.discView.source); font.family: Theme.mono; font.pixelSize: Theme.px(11); color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.Wrap; maximumLineCount: 3; elide: Text.ElideMiddle; lineHeight: 1.2 }
                     Copy { visible: text !== ""; text: win.discView.sourceSummary || ""; font.pixelSize: Theme.px(12); color: Theme.sub; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight }
                     RowLayout {
                         spacing: 8
@@ -260,7 +249,7 @@ Rectangle {
                             Accessible.name: modelData.album
                             onClicked: backend.disc.openRecent(index)
                             HoverHandler { cursorShape: Qt.PointingHandCursor }
-                            ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: modelData.folder
+                            ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: win.nativePath(modelData.folder)
                             background: Rectangle { radius: 8; color: recentItem.hovered ? Theme.raised : "transparent" }
                             contentItem: Item {
                                 RowLayout {
@@ -292,7 +281,7 @@ Rectangle {
                     Copy { text: win.tr("toolsAllFound"); font.pixelSize: Theme.px(12); color: Theme.muted; wrapMode: Text.NoWrap; Layout.fillWidth: true }
                     HoverHandler { id: toolsHover }
                     ToolTip.visible: toolsHover.hovered; ToolTip.delay: 400
-                    ToolTip.text: "mkvmerge · mkvextract · ffmpeg · ffprobe"
+                    ToolTip.text: win.appView.toolNames
                 }
                 ColumnLayout {
                     visible: !!win.appView.toolMissing
@@ -331,14 +320,14 @@ Rectangle {
                 // room, otherwise on a line of their own. Nothing is cut short.
                 Item {
                     id: chapterHeader
-                    readonly property real topHeight: Math.max(chapterTitle.implicitHeight, sourceBar.implicitHeight)
-                    readonly property bool inline: width >= chapterTitle.implicitWidth + countBadge.implicitWidth + selectRow.implicitWidth
+                    readonly property real topHeight: page.headerHeight
+                    readonly property bool inline: width >= chapterTitle.implicitWidth + (countBadge.visible ? countBadge.implicitWidth : 0) + selectRow.implicitWidth
                                                             + sourceBar.implicitWidth + 3 * 10 + 16
                     Layout.fillWidth: true
                     implicitHeight: inline ? topHeight : topHeight + 8 + selectRow.implicitHeight
                     RowLayout {
                         anchors.left: parent.left; anchors.right: parent.right; height: chapterHeader.topHeight; spacing: 10
-                        Copy { id: chapterTitle; text: win.tr("chapters"); font.pixelSize: Theme.px(20); font.bold: true; wrapMode: Text.NoWrap }
+                        Copy { id: chapterTitle; text: win.tr("chapters"); font.pixelSize: Theme.display; font.weight: Theme.strong; wrapMode: Text.NoWrap }
                         Badge { id: countBadge; tone: "good"; text: win.fmt("chapterCount", { n: chapterList.count }); visible: chapterList.count > 0 }
                         Item { Layout.fillWidth: true }
                         ActionButton {
@@ -350,7 +339,7 @@ Rectangle {
                     RowLayout {
                         id: selectRow
                         spacing: 6
-                        x: chapterHeader.inline ? countBadge.x + countBadge.width + 10 : 0
+                        x: chapterHeader.inline ? (countBadge.visible ? countBadge.x + countBadge.width : chapterTitle.x + chapterTitle.width) + 10 : 0
                         y: chapterHeader.inline ? (chapterHeader.topHeight - height) / 2 : chapterHeader.topHeight + 8
                         ActionButton {
                             readonly property bool allSelected: win.discView.chapterSelected === chapterList.count
@@ -380,15 +369,33 @@ Rectangle {
                     readonly property bool waveShown: waveOn && win.previewView.waveState === "ready" && backend.preview.waveform.length > 1
                     // With few chapters the list leaves room below it: the waveform takes part of that room.
                     readonly property real spare: centerColumn.height - chapterHeader.height - listHeader.height
-                                                  - centerColumn.spacing * 3 - chapterList.contentHeight - 96
+                                                  - centerColumn.spacing * 3 - chapterList.contentHeight - 116
                     Layout.fillWidth: true; radius: 10; color: Theme.deep; border.color: Theme.line
-                    Layout.preferredHeight: waveShown ? Math.round(Math.max(96, Math.min(220, 96 + spare * 0.6))) : 76
+                    Layout.preferredHeight: (waveShown ? Math.round(Math.max(96, Math.min(220, 96 + spare * 0.6))) : 76) + ruler.height + 6
                     Behavior on Layout.preferredHeight { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
                     ColumnLayout {
                         anchors.fill: parent; anchors.margins: 12; spacing: 6
-                        RowLayout {
-                            Layout.fillWidth: true; Layout.fillHeight: true; spacing: 3
+                        // Chapters laid out on the programme's own clock: x is when, width is how long.
+                        Item {
+                            id: track
+                            Layout.fillWidth: true; Layout.fillHeight: true
+                            readonly property real total: Math.max(1, win.discView.timelineSeconds || 1)
+                            function secondsAt(x) { return Math.max(0, Math.min(total, x / Math.max(1, width) * total)) }
+                            function rowAt(seconds) {
+                                for (let i = segments.count - 1; i >= 0; i--) {
+                                    const s = segments.itemAt(i)
+                                    if (s && seconds >= s.begin) return i
+                                }
+                                return segments.count ? 0 : -1
+                            }
+                            function clock(s) {
+                                s = Math.floor(Math.max(0, s))
+                                const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = String(s % 60).padStart(2, "0")
+                                return win.discView.longClock ? h + ":" + String(m).padStart(2, "0") + ":" + sec
+                                                              : String(Math.floor(s / 60)).padStart(2, "0") + ":" + sec
+                            }
                             Repeater {
+                                id: segments
                                 model: chapterModel
                                 Rectangle {
                                     id: segment
@@ -400,8 +407,21 @@ Rectangle {
                                     readonly property bool on: index === page.selectedChapter
                                     readonly property bool unnamed: title.trim() === ""
                                     readonly property bool previewing: index === win.previewView.previewRow
-                                    Layout.fillWidth: true; Layout.preferredWidth: Math.max(1, seconds); Layout.fillHeight: true
-                                    radius: 6; color: on ? Theme.accent : unnamed ? Theme.pendingBg : Theme.chip
+                                    // Each kind its own texture, so the songs stand out along the programme:
+                                    // music solid, interlude (instrumental, not a song) half-filled, talk hollow,
+                                    // unsure hollow with a "?" until someone decides.
+                                    readonly property string kind: (win.discView.chapterKinds || {})[String(number)] || "music"
+                                    readonly property bool talk: kind === "talk" || kind === "unsure"
+                                    readonly property bool interlude: kind === "interlude"
+                                    readonly property color fill: unnamed ? Theme.pendingBg : Theme.chip
+                                    x: begin / track.total * track.width
+                                    width: Math.max(2, seconds / track.total * track.width - 2)
+                                    height: track.height
+                                    radius: Math.min(6, width / 2)
+                                    color: on ? Theme.accent : talk ? "transparent"
+                                         : interlude ? Qt.rgba(fill.r, fill.g, fill.b, 0.45) : fill
+                                    border.width: 1
+                                    border.color: on || !(talk || interlude) ? "transparent" : unnamed ? Theme.pendingText : Theme.line2
                                     clip: true
                                     Behavior on color { ColorAnimation { duration: Theme.normal } }
                                     // This chapter's slice of the whole-programme outline (2 peaks per second)
@@ -410,7 +430,7 @@ Rectangle {
                                         anchors.fill: parent; anchors.topMargin: 4; anchors.bottomMargin: 4
                                         visible: timeline.waveShown
                                         readonly property color ink: segment.on ? Theme.accentInk : segment.unnamed ? Theme.pendingText : Theme.muted
-                                        opacity: segment.on ? 0.55 : 0.6
+                                        opacity: segment.on ? 0.55 : segment.talk ? 0.3 : segment.interlude ? 0.45 : 0.6
                                         onPaint: {
                                             const ctx = getContext("2d")
                                             ctx.reset()
@@ -437,7 +457,7 @@ Rectangle {
                                         Connections { target: backend.preview; function onWaveChanged() { segmentWave.requestPaint() } }
                                     }
                                     Rectangle {
-                                        visible: timeline.waveShown && numberLabel.visible
+                                        visible: timeline.waveShown && numberLabel.visible && !segment.talk
                                         x: 3; y: 3; width: numberLabel.implicitWidth + 6; height: numberLabel.implicitHeight + 2; radius: 4
                                         color: segment.color; opacity: 0.85
                                     }
@@ -445,8 +465,22 @@ Rectangle {
                                         id: numberLabel
                                         x: timeline.waveShown ? 6 : (parent.width - width) / 2
                                         y: timeline.waveShown ? 4 : (parent.height - height) / 2
-                                        text: number.toString().padStart(2, "0"); font.family: Theme.mono; font.pixelSize: Theme.px(11)
-                                        color: parent.on ? Theme.accentInk : parent.unnamed ? Theme.pendingText : Theme.muted; visible: parent.width > 22
+                                        text: segment.number.toString().padStart(2, "0"); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.caption
+                                        color: segment.on ? Theme.accentInk : segment.unnamed ? Theme.pendingText : Theme.muted
+                                        visible: parent.width >= implicitWidth + 10
+                                    }
+                                    // Too narrow for its number: a dot in the number's place, so every chapter has a mark
+                                    Rectangle {
+                                        visible: !numberLabel.visible && parent.width >= 5
+                                        width: 4; height: 4; radius: 2; color: numberLabel.color
+                                        x: (parent.width - width) / 2
+                                        y: timeline.waveShown ? numberLabel.y + (numberLabel.height - height) / 2 : (parent.height - height) / 2
+                                    }
+                                    Text {
+                                        visible: segment.kind === "unsure" && parent.width >= implicitWidth + 10
+                                        anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 4
+                                        text: "?"; font.pixelSize: Theme.caption; font.weight: Font.DemiBold
+                                        color: segment.on ? Theme.accentInk : Theme.sub
                                     }
                                     // Where the preview is playing
                                     Rectangle {
@@ -455,13 +489,65 @@ Rectangle {
                                         width: 2; height: parent.height
                                         color: segment.on ? Theme.accentInk : Theme.accent
                                     }
-                                    MouseArea { anchors.fill: parent; onClicked: { page.selectedChapter = parent.index; chapterList.positionViewAtIndex(parent.index, ListView.Contain) } }
+                                }
+                            }
+                            // Hover: a hairline and the time under the pointer. Click selects the chapter and, while
+                            // the preview is open, plays from there; double-click always plays.
+                            Rectangle {
+                                visible: trackArea.containsMouse
+                                x: Math.round(trackArea.mouseX); width: 1; height: parent.height
+                                color: Theme.text; opacity: 0.4
+                            }
+                            MouseArea {
+                                id: trackArea
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                readonly property real hoverSeconds: track.secondsAt(mouseX)
+                                readonly property int hoverRow: containsMouse ? track.rowAt(hoverSeconds) : -1
+                                function pick(seconds, play) {
+                                    const row = track.rowAt(seconds)
+                                    if (row < 0) return
+                                    page.selectedChapter = row
+                                    chapterList.positionViewAtIndex(row, ListView.Contain)
+                                    if ((play || win.previewView.previewRow >= 0) && !win.appView.busy && audioList.count > 0)
+                                        win.previewFrom(row, (seconds - segments.itemAt(row).begin) * 1000)
+                                }
+                                onClicked: function(mouse) { pick(track.secondsAt(mouse.x), false) }
+                                onDoubleClicked: function(mouse) { pick(track.secondsAt(mouse.x), true) }
+                                ToolTip.visible: hoverRow >= 0; ToolTip.delay: 300
+                                ToolTip.text: {
+                                    const s = hoverRow >= 0 ? segments.itemAt(hoverRow) : null
+                                    return s ? track.clock(hoverSeconds) + "  ·  " + s.number.toString().padStart(2, "0")
+                                               + (s.title.trim() ? " " + s.title : "") : ""
+                                }
+                            }
+                        }
+                        // Time ruler: a label every 1, 2, 5, 10… minutes, as many as fit
+                        Item {
+                            id: ruler
+                            Layout.fillWidth: true; Layout.preferredHeight: rulerProbe.implicitHeight
+                            visible: chapterList.count > 0
+                            readonly property real step: {
+                                const steps = [60, 120, 300, 600, 900, 1200, 1800, 3600, 7200]
+                                for (let i = 0; i < steps.length; i++)
+                                    if (steps[i] / track.total * width >= rulerProbe.implicitWidth + 24) return steps[i]
+                                return 7200
+                            }
+                            Text { id: rulerProbe; visible: false; text: track.clock(track.total); font.family: Theme.num; font.pixelSize: Theme.caption }
+                            Repeater {
+                                model: Math.floor(track.total / ruler.step) + 1
+                                Text {
+                                    required property int index
+                                    readonly property real at: index * ruler.step / track.total * ruler.width
+                                    text: track.clock(index * ruler.step)
+                                    x: index === 0 ? 0 : at - width / 2
+                                    visible: x + width <= ruler.width
+                                    font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.caption; color: Theme.faint
+                                    Rectangle { visible: parent.index > 0; x: parent.width / 2; y: -3; width: 1; height: 3; color: Theme.line2 }
                                 }
                             }
                         }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 8
-                            Copy { text: "0:00:00"; font.family: Theme.mono; font.pixelSize: Theme.px(11); color: Theme.faint; wrapMode: Text.NoWrap }
                             // Waveform: quick on/off, and how far the background read has got
                             Rectangle {
                                 implicitWidth: waveToggle.implicitWidth + 16; implicitHeight: 20; radius: 10
@@ -547,18 +633,26 @@ Rectangle {
                     }
                 }
 
+                // Column heads over a hairline, as on the review page
+                Item {
+                    Layout.fillWidth: true; Layout.preferredHeight: listHeader.implicitHeight + 10
+                    Rectangle { anchors.bottom: parent.bottom; width: parent.width - chapterBar.gutter; height: 1; color: Theme.line2 }
                 RowLayout {
                     id: listHeader
-                    Layout.fillWidth: true; Layout.leftMargin: 12; Layout.rightMargin: 12 + chapterBar.gutter; spacing: 12
+                    x: 12; width: parent.width - 24 - chapterBar.gutter; spacing: 12
                     Item { Layout.preferredWidth: 30 }
                     Item { Layout.preferredWidth: 28 }
                     Copy { text: "#"; Layout.preferredWidth: 26; color: Theme.faint; font.pixelSize: Theme.px(12) }
                     Copy { text: win.tr("startTime"); Layout.preferredWidth: 64; color: Theme.faint; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
                     Copy { text: win.tr("titleColumn"); Layout.fillWidth: true; color: Theme.faint; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
-                    // "Content" is a guess: an asterisk-like mark and the reason on hover
-                    Copy {
-                        visible: page.kindsShown; text: win.tr("kindColumn") + "*"; Layout.preferredWidth: 64
-                        horizontalAlignment: Text.AlignRight; color: Theme.faint; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap
+                    // "Content" is a guess: the info mark the track cards use, and the reason on hover
+                    Item {
+                        visible: page.kindsShown; Layout.preferredWidth: 64; implicitHeight: kindHead.implicitHeight
+                        Row {
+                            id: kindHead; anchors.right: parent.right; spacing: 3
+                            Copy { text: win.tr("kindColumn"); color: Theme.faint; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
+                            Icon { kind: "info"; ink: Theme.faint; width: 12; height: 12; anchors.verticalCenter: parent.verticalCenter }
+                        }
                         HoverHandler { id: kindHeaderHover }
                         ToolTip.visible: kindHeaderHover.hovered; ToolTip.delay: 200; ToolTip.text: win.tr("kindHint")
                     }
@@ -566,9 +660,12 @@ Rectangle {
                     Copy { visible: page.originsShown; text: win.tr("origin"); Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight; color: Theme.faint; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
                     Item { Layout.preferredWidth: 28 }
                 }
+                }
                 ListView {
                     id: chapterList
-                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 2; model: chapterModel
+                    // Sits right under the heads' hairline, as one table
+                    Layout.topMargin: -centerColumn.spacing
+                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 0; model: chapterModel
                     ScrollBar.vertical: SlimScrollBar { id: chapterBar }
                     // No populate/add transition here: every chapter edit resets this model, and a
                     // populate transition still running while the view scrolls to the edited row
@@ -586,9 +683,12 @@ Rectangle {
                         readonly property bool on: index === page.selectedChapter
                         readonly property bool previewing: index === win.previewView.previewRow
                         property alias titleField: titleField
-                        width: ListView.view.width - chapterBar.gutter; height: Theme.rowHeight; radius: 8
-                        color: previewing ? Theme.accentSoft : on ? Theme.raised : "transparent"
+                        width: ListView.view.width - chapterBar.gutter; height: Theme.rowHeight
+                        color: previewing ? Theme.accentSoft : on || chapterHover.hovered ? Theme.raised : "transparent"
                         HoverHandler { id: chapterHover }
+                        // Rows are divided by a hairline; the selected one also gets an accent edge
+                        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line2 }
+                        Rectangle { visible: chapterRow.on; width: 2; height: parent.height - 1; color: Theme.accent }
                         TapHandler {
                             acceptedButtons: Qt.RightButton; enabled: !win.appView.busy
                             onTapped: function(point) { page.openChapterMenu(chapterRow.index, chapterRow.seconds, chapterRow, point.position.x, point.position.y) }
@@ -621,8 +721,8 @@ Rectangle {
                                 ToolTip.visible: hovered; ToolTip.delay: 400; ToolTip.text: win.playTr("listenChapter", win.videoMode)
                                 Accessible.name: win.playTr("listenChapter", win.videoMode) + " " + chapterRow.number
                             }
-                            Copy { text: chapterRow.number.toString().padStart(2, "0"); font.family: Theme.mono; font.weight: Font.Medium; color: chapterRow.on ? Theme.accentText : Theme.muted; Layout.preferredWidth: 26; wrapMode: Text.NoWrap }
-                            Copy { text: chapterRow.start; font.family: Theme.mono; font.pixelSize: Theme.px(12); color: Theme.muted; Layout.preferredWidth: 64; wrapMode: Text.NoWrap }
+                            Copy { text: chapterRow.number.toString().padStart(2, "0"); font.family: Theme.num; font.features: Theme.tabular; font.weight: Font.Medium; color: chapterRow.on ? Theme.accentText : Theme.muted; Layout.preferredWidth: 26; wrapMode: Text.NoWrap }
+                            Copy { text: chapterRow.start; font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12); color: Theme.muted; Layout.preferredWidth: 64; wrapMode: Text.NoWrap }
                             Field {
                                 id: titleField
                                 // the title as it was when editing began, for Esc
@@ -630,7 +730,7 @@ Rectangle {
                                 property string beforeOrigin: ""
                                 quiet: true; text: chapterRow.title; implicitHeight: Theme.compact ? 28 : 32; Layout.leftMargin: -10
                                 placeholderText: "Track " + chapterRow.number.toString().padStart(2, "0")
-                                font.pixelSize: Theme.px(14); font.weight: Font.Medium; Layout.fillWidth: true; enabled: !win.appView.busy
+                                font.pixelSize: Theme.item; font.weight: Font.Medium; Layout.fillWidth: true; enabled: !win.appView.busy
                                 onActiveFocusChanged: if (activeFocus) {
                                     page.selectedChapter = chapterRow.index
                                     before = chapterRow.title
@@ -673,10 +773,10 @@ Rectangle {
                                 ToolTip.visible: kindHover.hovered; ToolTip.delay: 500
                                 ToolTip.text: (kindCell.manual ? win.tr("kindManualTip") + " · " : "") + win.tr("kindSetTip")
                             }
-                            Copy { text: chapterRow.duration; font.family: Theme.mono; font.pixelSize: Theme.px(12); color: Theme.sub; Layout.preferredWidth: 52; horizontalAlignment: Text.AlignRight; wrapMode: Text.NoWrap }
+                            Copy { text: chapterRow.duration; font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12); color: Theme.sub; Layout.preferredWidth: 52; horizontalAlignment: Text.AlignRight; wrapMode: Text.NoWrap }
                             Copy {
                                 visible: page.originsShown
-                                text: chapterRow.origin ? win.tr(chapterRow.origin) : ""
+                                text: chapterRow.origin ? win.tr("origin_" + chapterRow.origin) : ""
                                 color: chapterRow.origin === "edited" ? Theme.sub : Theme.faint; font.pixelSize: Theme.px(12)
                                 Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight; wrapMode: Text.NoWrap
                             }
@@ -706,7 +806,7 @@ Rectangle {
         }
         // ---------- Right: streams ----------
         Card {
-            flat: true
+            flat: true; padding: 20
             Layout.preferredWidth: page.rightWidth; Layout.fillHeight: true
             // Every stream stays visible: when the column outgrows the card it scrolls as a whole,
             // instead of the audio list collapsing to nothing.
@@ -720,10 +820,10 @@ Rectangle {
                 id: streamColumn
                 width: streamFlick.width - streamBar.gutter; height: Math.max(streamFlick.height, implicitHeight); spacing: 18
                 RowLayout {
-                    Layout.fillWidth: true; Layout.preferredHeight: 28; spacing: 6
+                    Layout.fillWidth: true; Layout.preferredHeight: page.headerHeight; spacing: 6
                     Item { Layout.fillWidth: true }
                     Segmented {
-                        itemHeight: 24
+                        itemHeight: page.headerHeight - 6
                         options: [{ key: "zh", label: "中文" }, { key: "en", label: "EN" }]
                         current: backend.config.language
                         onPicked: function(key) { backend.setPreference("language", key) }
@@ -752,6 +852,14 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         SectionTitle { text: win.tr("audioTitle"); Layout.fillWidth: true }
+                        // Same toggle as the subtitles' (FLAC takes one track, so it has none)
+                        ActionButton {
+                            visible: audioList.count > 1 && win.discView.outputFormat !== "flac"
+                            readonly property bool allSelected: win.discView.audioSelected === audioList.count
+                            text: win.tr(allSelected ? "selectNone" : "selectAll")
+                            implicitHeight: 28; enabled: !win.appView.busy
+                            onClicked: backend.disc.setAllTracks("audio", !allSelected)
+                        }
                     }
                     ListView {
                         id: audioList
@@ -784,7 +892,7 @@ Rectangle {
                             visible: subList.count > 0
                             readonly property bool allSelected: win.discView.subtitleSelected === subList.count
                             text: win.tr(allSelected ? "selectNone" : "selectAll")
-                            implicitHeight: 26; ghost: true; enabled: !win.appView.busy && subList.count > 0
+                            implicitHeight: 28; enabled: !win.appView.busy && subList.count > 0
                             onClicked: backend.disc.setAllTracks("subtitle", !allSelected)
                         }
                     }
@@ -884,7 +992,7 @@ Rectangle {
                             Layout.fillWidth: true; Layout.topMargin: 2; spacing: 6
                             Icon { kind: "folder"; ink: Theme.faint; Layout.preferredWidth: 13; Layout.preferredHeight: 13 }
                             Copy {
-                                text: estCard.est.folder || win.discView.output || win.tr("chooseFolder")
+                                text: win.nativePath(estCard.est.folder || win.discView.output) || win.tr("chooseFolder")
                                 font.family: Theme.mono; font.pixelSize: Theme.px(11)
                                 color: estCard.est.folder || win.discView.output ? Theme.faint : Theme.pendingText
                                 Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideMiddle
@@ -909,8 +1017,10 @@ Rectangle {
                     Copy {
                         text: win.discView.outputFormat === "flac"
                             ? win.fmt("flacExportSummary", { n: win.discView.chapterSelected, a: win.discView.audioSelected })
-                            : win.fmt("exportSummary", { n: win.discView.chapterSelected, a: win.discView.audioSelected, s: win.discView.subtitleSelected,
-                                                         f: win.discView.outputFormat.toUpperCase() })
+                            // A disc with no subtitles at all does not need "0 subtitles" spelled out
+                            : win.fmt(subList.count > 0 ? "exportSummary" : "exportSummaryNoSubs",
+                                      { n: win.discView.chapterSelected, a: win.discView.audioSelected, s: win.discView.subtitleSelected,
+                                        f: win.discView.outputFormat.toUpperCase() })
                               + (win.discView.keepVideo ? "" : " · " + win.tr("videoExcluded"))
                         color: Theme.muted; font.pixelSize: Theme.px(12); Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
                         wrapMode: Text.NoWrap; elide: Text.ElideRight

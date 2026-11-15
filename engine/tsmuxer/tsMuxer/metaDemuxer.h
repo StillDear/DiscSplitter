@@ -274,6 +274,11 @@ class METADemuxer final : public AbstractDemuxer
     void setKeepEditions(const bool value) { m_keepEditions = value; }
     // --playlist-clips: true when a clip of a playlist is cut to the part its play item plays (cutPlayItems)
     void setPlaylistClipsPlayed(const bool value) { m_playlistClipsPlayed = value; }
+    void setPlaylistWindow(const double start, const double end)
+    {
+        m_windowStart = start;
+        m_windowEnd = end;
+    }
     // The output is Matroska (1) or WebM (2), known before the meta is read: a subtitle of a Matroska source is then
     // copied in its own form (MatroskaCopyStreamReader) instead of being converted.
     void setMatroskaOutput(const int kind) { m_matroskaOutput = kind; }
@@ -287,6 +292,8 @@ class METADemuxer final : public AbstractDemuxer
     {
         m_keepEditions = other.m_keepEditions;
         m_playlistClipsPlayed = other.m_playlistClipsPlayed;
+        m_windowStart = other.m_windowStart;
+        m_windowEnd = other.m_windowEnd;
         m_matroskaOutput = other.m_matroskaOutput;
         m_demuxOutput = other.m_demuxOutput;
     }
@@ -339,6 +346,11 @@ class METADemuxer final : public AbstractDemuxer
     // to those parts; the listing does it as the mux does by default, so that the lengths and marks it gives are the
     // ones of the output
     static void cutPlayItems(MPLSParser& mpls, const std::string& mplsFileName, bool played);
+    // DiscSplitter: --playlist-window=<start>[,<end>], seconds on the playlist's timeline. The playlist is narrowed to
+    // that span before its play items are cut to the parts they play, so a mux reads the clips from the key picture
+    // at or before the start (by the clip's entry point map) instead of from the start of the playlist.
+    void applyPlaylistWindow(MPLSParser& mpls, const std::string& mplsFileName) const;
+    void reportPlaylistWindow(const MPLSParser& before, const MPLSParser& after) const;
     bool m_HevcFound;
     bool m_MvcFound;  // a 3D (MVC) track is in the mux
     // The source of the first MVC track (see checkSubtitlePlanes)
@@ -356,6 +368,9 @@ class METADemuxer final : public AbstractDemuxer
     std::set<std::string> m_timelinesReported;  // the Matroska files whose play timeline was said in the log
     bool m_keepEditions = false;                // --keep-editions (setKeepEditions)
     bool m_playlistClipsPlayed = PLAYLIST_CLIPS_PLAYED_BY_DEFAULT;  // --playlist-clips (setPlaylistClipsPlayed)
+    double m_windowStart = -1;  // DiscSplitter: --playlist-window (setPlaylistWindow), seconds
+    int64_t m_reachedDts = -1;  // DiscSplitter: the decoding time of the last packet handed on (Position: lines)
+    double m_windowEnd = -1;
     int m_matroskaOutput = 0;                                       // setMatroskaOutput: 0 other, 1 Matroska, 2 WebM
     bool m_demuxOutput = false;                                     // setDemuxOutput
     bool m_quiet = false;                                           // setQuiet

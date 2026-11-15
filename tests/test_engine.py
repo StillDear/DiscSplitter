@@ -106,6 +106,18 @@ def test_a_playlist_listing_gives_length_and_marks_on_the_playlist_timeline():
     assert listing.marks[:3] == [0.0, 127.336, 407.991]
     assert listing.marks[-1] == 4200.0           # a mark in the second clip, counted from the playlist's start
     assert len(listing.clips) == 2
+    assert not listing.exact
+
+
+def test_mark_ticks_give_the_marks_unrounded():
+    text = LISTING.replace("Marks: 00:16:33.618\n", "Marks: 00:16:33.618\nMark ticks (45 kHz): 0 5730099 18359591 "
+                           "24369345 31595313 44712793 \n").replace(
+        "Marks: 01:10:00.000\n", "Marks: 01:10:00.000\nMark ticks (45 kHz): 189000000 \n")
+    listing = engine.parse_listing(text)
+    assert listing.exact
+    assert listing.marks[1] == pytest.approx(127.335533, abs=1e-6)       # listed as 00:02:07.336
+    assert listing.marks[-1] == 4200.0
+    assert split.cut_slack(Playlist(path=Path("x.mpls"), marks_exact=True)) == split.EXACT_CUT_SLACK
 
 
 def test_engine_codecs_are_named_as_the_rest_of_the_app_expects():
@@ -117,7 +129,8 @@ def test_engine_codecs_are_named_as_the_rest_of_the_app_expects():
     assert (truehd.codec, truehd.codec_id, truehd.channels, truehd.sample_rate) == ("TrueHD Atmos", "A_TRUEHD", 8, 48000)
     assert truehd.is_atmos and truehd.is_lossless and truehd.bitrate_kbps is None    # a peak rate is no average
     dts = by_pid[4353]
-    assert (dts.codec, dts.channels, dts.sample_rate, dts.bitrate_kbps) == ("DTS-HD Master Audio", 6, 96000, 1509)
+    # 1509 kbps is only the lossy core's rate: the lossless stream's is unknown, like a peak rate
+    assert (dts.codec, dts.channels, dts.sample_rate, dts.bitrate_kbps) == ("DTS-HD Master Audio", 6, 96000, None)
     assert dts.is_lossless
     eac3 = by_pid[4354]
     assert (eac3.codec, eac3.title, eac3.properties["secondary"]) == ("E-AC-3", "Secondary", "1")
@@ -155,9 +168,54 @@ def planned(*spans):
     return [PlannedOutput(Chapter(i, s, e), Path(f"{i}.m2ts")) for i, (s, e) in enumerate(spans, start=1)]
 
 
-def test_chapters_that_follow_one_another_are_cut_in_one_pass():
-    items = planned((0, 10), (10, 20), (30, 40), (40, None))
-    assert [[p.chapter.index for p in run] for run in split.chapter_runs(items)] == [[1, 2], [3, 4]]
+def test_chapters_near_one_another_are_cut_in_one_pass_and_the_gap_thrown_away():
+    items = planned((0, 10), (10, 20), (30, 40), (40, 3000), (4300, None))
+    passes = split.cut_passes(items, max_gap=1200)
+    assert [[(p.chapter.index if p else None, ch.start_seconds) for p, ch in pieces] for pieces in passes] == \
+        [[(1, 0), (2, 10), (None, 20), (3, 30), (4, 40)], [(5, 4300)]]
+    gap = passes[0][2][1]
+    assert (gap.start_seconds, gap.end_seconds) == (20, 30)
+
+
+def test_the_meter_tells_how_far_into_the_chapter_the_cut_is():
+    events = []
+    meter = split.ChapterMeter(1000.0, events.append)
+    meter.begin(Chapter(3, 100.0, 200.0))
+    for percent in (5, 10, 15, 15.05, 19.9, 30):
+        meter.update(percent)
+    assert [round(e.fraction, 3) for e in events] == [0.5, 0.99]
+    assert all(e.chapter == 3 and e.stage == "splitting" for e in events)
+
+
+def test_the_meter_takes_the_time_the_engine_has_reached_over_its_percentage():
+    events = []
+    meter = split.ChapterMeter(1000.0, events.append)
+    meter.origin = 90.0                  # a window opened at 90 s
+    meter.begin(Chapter(3, 100.0, 200.0))
+    meter.at(10.0)                       # 100 s on the playlist: the chapter's start
+    meter.at(35.0)
+    meter.update(99.0)                   # the bytes read say nothing once a time is given
+    meter.at(60.0)
+    assert [round(e.fraction, 2) for e in events] == [0.25, 0.5]
+
+
+def test_a_cut_opens_a_window_at_the_mark_it_starts_at():
+    marks = [0.0, 127.335533, 407.990911, 541.541, 702.118067]
+    by_pid = {t.track_id: t for t in tracks()}
+    plain = [by_pid[4113], by_pid[4352]]
+    assert split.window_for("d.iso/BDMV/PLAYLIST/1.mpls", 407.990911, 702.118067, marks, plain) ==         (407.990911, 702.118067)
+    assert split.window_for("x.mpls", 450.0, 600.0, marks, plain) == (407.990911, 702.118067)   # an edited cut
+    assert split.window_for("x.mpls", 100.0, 200.0, marks, plain) is None          # nothing before it to skip
+    assert split.window_for("x.mpls", 407.990911, None, None, plain) is None       # no exact marks
+    assert split.window_for("x.m2ts", 407.990911, None, marks, plain) is None      # no playlist
+    assert split.window_for("x.mpls", 407.990911, None, marks, [by_pid[6144]]) is None   # TextST: a sub path
+    lines = split.engine_meta("x.mpls", [Chapter(3, 407.990911, 541.541), Chapter(4, 541.541, 702.118067)],
+                              video_tracks=plain[:1], audio_tracks=plain[1:], subtitle_tracks=[], duration=5400.0,
+                              slack=split.EXACT_CUT_SLACK, window=(407.990911, 702.118067))
+    options = lines[0].split()
+    assert "--playlist-window=407.990911,702.118067" in options
+    assert not any(o.startswith(("--cut-start", "--cut-end")) for o in options)
+    assert "--custom-chapters=00:00:00.000000;00:02:13.550059" in options     # from the window's opening
 
 
 def test_a_run_starts_at_its_key_picture_and_splits_at_each_mark():
@@ -236,8 +294,8 @@ def test_the_engine_route_hands_the_chosen_streams_to_the_cutter(tmp_path, monke
 
     def fake(source, chapters, output_folder, **kw):
         seen.update(source=source, chapters=[(c.index, c.start_seconds, c.end_seconds, c.name) for c in chapters], **kw)
-        return [output_folder / "x.m2ts"]
-    monkeypatch.setattr(split, "split_m2ts", fake)
+        return [output_folder / f"x.{kw['container']}"]
+    monkeypatch.setattr(split, "split_with_engine", fake)
     monkeypatch.setattr(engine, "version", lambda: "tsMuxeR version test")
     pipeline.run_full_pipeline(playlist, by_pid[4352], {2: "Two"}, tmp_path / "_work", tmp_path, container="m2ts",
                                audio_track_ids=[4352, 4353], subtitle_track_ids=[4608], chapter_indices=[2, 3])
@@ -246,7 +304,12 @@ def test_the_engine_route_hands_the_chosen_streams_to_the_cutter(tmp_path, monke
     assert [t.track_id for t in seen["video_tracks"]] == [4113, 4117]
     assert [t.track_id for t in seen["audio_tracks"]] == [4352, 4353]
     assert [t.track_id for t in seen["subtitle_tracks"]] == [4608]
-    assert seen["duration"] == 90.0
+    assert seen["duration"] == 90.0 and seen["container"] == "m2ts"
+    # MKV goes the same way, with the main picture only
+    seen.clear()
+    pipeline.run_full_pipeline(playlist, by_pid[4352], {2: "Two"}, tmp_path / "_work2", tmp_path / "mkv",
+                               container="mkv", audio_track_ids=[4352], chapter_indices=[2])
+    assert seen["container"] == "mkv" and [t.track_id for t in seen["video_tracks"]] == [4113]
 
 
 def test_disc_view_offers_m2ts_only_for_an_engine_read_bluray(backend, qt_app, monkeypatch):
@@ -272,3 +335,26 @@ def test_disc_view_offers_m2ts_only_for_an_engine_read_bluray(backend, qt_app, m
     disc.selectPlaylist(0)
     wait_idle(backend, qt_app)
     assert not disc.state['canM2ts'] and disc.state['outputFormat'] == 'mkv'
+
+
+def test_a_file_in_an_image_is_read_through_its_span_when_it_lies_in_one_piece():
+    whole = engine.ImageFile(Path("d.iso"), 300, ((1000, 200, False), (1200, 100, False)))
+    assert whole.span == (1000, 1300)
+    assert engine.ImageFile(Path("d.iso"), 300, ((1000, 200, False), (5000, 100, False))).span is None
+    assert engine.ImageFile(Path("d.iso"), 300, ((1000, 300, True),)).span is None
+    assert engine.ImageFile(Path("d.iso"), 10, (), b"0123456789").span is None
+
+
+def test_a_stream_in_an_image_is_sampled_part_way_in_on_an_aligned_unit():
+    from core import preview
+    moved = preview._part_way("subfile,,start,6144,end,6150144,,:D:/x/disc.iso", 0.5)
+    start = int(moved.split(",")[3])
+    assert (start - 6144) % preview.ALIGNED_UNIT == 0 and 3_000_000 < start < 3_100_000
+    assert moved.endswith(",end,6150144,,:D:/x/disc.iso")
+
+
+def test_dts_master_audio_bit_depth_is_read_from_the_channel_note():
+    block = {"Track ID": "4353", "Stream ID": "A_DTS", "Stream type": "DTS",
+             "Stream info": "Bitrate: 1536Kbps  core + MLP data.Sample Rate: 96KHz  Channels: 5.1 (DTS Master Audio 24bit)"}
+    track = engine.to_track(block, 0)
+    assert (track.bits_per_sample, track.channels, track.bitrate_kbps) == (24, 6, None)

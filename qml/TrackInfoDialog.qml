@@ -29,7 +29,7 @@ Popup {
         anchors.fill: parent; spacing: 14
         ColumnLayout {
             Layout.fillWidth: true; spacing: 4
-            Copy { text: dialog.info.title; font.pixelSize: Theme.px(20); font.bold: true }
+            Copy { text: dialog.info.title; font.pixelSize: Theme.title; font.weight: Theme.strong }
             Copy { text: dialog.info.heading; color: Theme.muted; font.pixelSize: Theme.px(12); Layout.fillWidth: true; wrapMode: Text.Wrap }
         }
         ScrollView {

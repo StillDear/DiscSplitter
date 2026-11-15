@@ -1,4 +1,4 @@
-"""Suggest conservative white-border crops for cover artwork."""
+"""Suggest conservative white- or black-border crops for cover artwork."""
 
 import hashlib
 import json
@@ -15,27 +15,38 @@ def read_cover(path: str) -> QImage:
     return reader.read()
 
 
-def suggest_crop(image: QImage) -> dict[str, int]:
-    """Suggest only paired, similarly sized margins with a visible transition."""
+# A border line is (almost) all one flat colour: near-white paper or near-black letterbox.
+BORDER_TESTS = {
+    'white': lambda low, high: low >= 242 and high - low <= 10,
+    'black': lambda low, high: high <= 24 and high - low <= 12,
+}
+
+
+def detect_borders(image: QImage) -> tuple[dict[str, int], str]:
+    """
+    Paired, similarly sized white or black margins with a visible transition, and which colour
+    they are ('white', 'black', or '' when none). Each axis is checked on its own, so a cover
+    with black bars at the top and bottom and white ones at the sides is found too.
+    """
     sample = image.scaled(320, 320, Qt.KeepAspectRatio, Qt.FastTransformation)
 
-    def paired_margins(horizontal: bool) -> tuple[int, int]:
+    def paired_margins(horizontal: bool, is_border) -> tuple[int, int]:
         length = sample.width() if horizontal else sample.height()
         cross = sample.height() if horizontal else sample.width()
         if length < 32 or cross < 32:
             return 0, 0
 
-        def white_fraction(line: int) -> float:
-            white = 0
+        def border_fraction(line: int) -> float:
+            hits = 0
             for offset in range(0, cross, 2):
                 pixel = sample.pixelColor(line, offset) if horizontal else sample.pixelColor(offset, line)
                 low = min(pixel.red(), pixel.green(), pixel.blue())
                 high = max(pixel.red(), pixel.green(), pixel.blue())
-                white += pixel.alpha() == 255 and low >= 242 and high - low <= 10
-            return white / ((cross + 1) // 2)
+                hits += pixel.alpha() == 255 and is_border(low, high)
+            return hits / ((cross + 1) // 2)
 
         def margin(reverse: bool) -> int:
-            fractions = [white_fraction(length - 1 - i if reverse else i)
+            fractions = [border_fraction(length - 1 - i if reverse else i)
                          for i in range(length // 4 + 4)]
             end = next((i for i, value in enumerate(fractions) if value < 0.98), 0)
             if not max(3, length // 50) <= end <= length // 4:
@@ -48,9 +59,37 @@ def suggest_crop(image: QImage) -> dict[str, int]:
         original = image.width() if horizontal else image.height()
         return round(first * original / length), round(last * original / length)
 
-    left, right = paired_margins(True)
-    top, bottom = paired_margins(False)
-    return dict(left=left, right=right, top=top, bottom=bottom)
+    margins, colours = dict(left=0, right=0, top=0, bottom=0), []
+    for horizontal, edges in ((True, ('left', 'right')), (False, ('top', 'bottom'))):
+        for colour, is_border in BORDER_TESTS.items():
+            pair = paired_margins(horizontal, is_border)
+            if any(pair):
+                margins.update(zip(edges, pair))
+                colours.append(colour)
+                break
+    colour = colours[0] if len(set(colours)) == 1 else 'mixed' if colours else ''
+    return margins, colour
+
+
+def suggest_crop(image: QImage) -> dict[str, int]:
+    """Suggest only paired, similarly sized white or black margins with a visible transition."""
+    return detect_borders(image)[0]
+
+
+def describe(path: str) -> str:
+    """'1400 × 1400 · JPEG · 512 KB' for the cover panel (reads only the image header)."""
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    size = reader.size()
+    if not size.isValid():
+        return ''
+    parts = [f'{size.width()} × {size.height()}', bytes(reader.format()).decode('ascii', 'replace').upper()]
+    try:
+        kib = Path(path).stat().st_size / 1024
+        parts.append(f'{kib / 1024:.1f} MB' if kib >= 1024 else f'{kib:.0f} KB')
+    except OSError:
+        pass
+    return ' · '.join(p for p in parts if p)
 
 
 def save_crop(image: QImage, path: Path, left: int, right: int, top: int, bottom: int) -> bool:

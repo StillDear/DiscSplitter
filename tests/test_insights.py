@@ -19,7 +19,7 @@ def loaded(backend, tmp_path):
 
 def test_estimate_counts_selected_chapters_and_free_space(loaded):
     est = loaded.disc.export_estimate()
-    assert est['files'] == 6 and est['duration'] == '30:00'       # six 5-minute chapters
+    assert est['files'] == 6 and est['duration'] == '24:20'       # the sample concert's first six chapters
     assert est['size'] and est['free'] and est['enough'] is True
     assert est['folder'].startswith(loaded.state['output'])
 

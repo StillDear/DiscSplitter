@@ -222,7 +222,7 @@ Popup {
             onClicked: stepper.step(-1); Accessible.name: stepper.downName
         }
         Copy {
-            text: String(stepper.value).padStart(2, "0"); font.family: Theme.mono; font.pixelSize: Theme.px(13)
+            text: String(stepper.value).padStart(2, "0"); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(13)
             horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 24
         }
         IconButton {
@@ -244,7 +244,7 @@ Popup {
             width: 24; height: 16; radius: 4; color: legend.fill; border.color: legend.edge
             opacity: legend.faded ? 0.4 : 1; anchors.verticalCenter: parent.verticalCenter
             Text {
-                anchors.centerIn: parent; text: "01"; font.family: Theme.mono; font.pixelSize: Theme.px(9)
+                anchors.centerIn: parent; text: "01"; font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(9)
                 font.strikeout: legend.struck; color: legend.ink
             }
         }
@@ -257,7 +257,7 @@ Popup {
             Layout.fillWidth: true; spacing: 8
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 4
-                Copy { text: win.tr("paste"); font.pixelSize: Theme.px(20); font.bold: true }
+                Copy { text: win.tr("paste"); font.pixelSize: Theme.title; font.weight: Theme.strong }
                 Copy { text: win.tr("pasteHint"); color: Theme.muted; font.pixelSize: Theme.px(12); Layout.fillWidth: true }
             }
             ActionButton { text: win.tr("pasteFromClipboard"); implicitHeight: 30; enabled: !win.appView.working; onClicked: dialog.pasteSmart() }
@@ -553,13 +553,13 @@ Popup {
                                             anchors.centerIn: parent; spacing: 1
                                             Text {
                                                 anchors.horizontalCenter: parent.horizontalCenter; text: cell.c.n
-                                                font.family: Theme.mono; font.pixelSize: Theme.px(11); font.weight: Font.DemiBold
+                                                font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(11); font.weight: Font.DemiBold
                                                 font.strikeout: cell.c.skipped
                                                 color: cell.c.skipped ? Theme.faint : cell.c.title !== "" ? Theme.accentText : Theme.sub
                                             }
                                             Text {
                                                 anchors.horizontalCenter: parent.horizontalCenter; text: cell.c.length || "—"
-                                                font.family: Theme.mono; font.pixelSize: Theme.px(10)
+                                                font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(10)
                                                 color: Theme.faint
                                             }
                                         }
@@ -661,7 +661,7 @@ Popup {
                                 }
                                 Copy {
                                     text: dialog.clock(win.previewPosition) + " / " + dialog.clock(win.previewDuration)
-                                    font.family: Theme.mono; font.pixelSize: Theme.px(11); color: Theme.muted; wrapMode: Text.NoWrap
+                                    font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(11); color: Theme.muted; wrapMode: Text.NoWrap
                                 }
                                 IconButton {
                                     iconKind: "close"; implicitWidth: 26; implicitHeight: 26
@@ -743,7 +743,7 @@ Popup {
                                     color: !line.lands ? "transparent" : line.r.kind === "song" ? Theme.accentSoft2 : Theme.chip
                                     border.color: line.lands ? "transparent" : Theme.line2
                                     Text {
-                                        anchors.centerIn: parent; font.family: Theme.mono; font.pixelSize: Theme.px(11)
+                                        anchors.centerIn: parent; font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(11)
                                         text: line.lands ? line.r.chapter : "—"
                                         color: line.lands && line.r.kind === "song" ? Theme.accentText : Theme.faint
                                     }
@@ -771,7 +771,7 @@ Popup {
                                 Copy {
                                     visible: line.r.time !== "" || line.r.chapterTime !== ""
                                     horizontalAlignment: Text.AlignRight
-                                    font.family: Theme.mono; font.pixelSize: Theme.px(11); wrapMode: Text.NoWrap; color: Theme.faint
+                                    font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(11); wrapMode: Text.NoWrap; color: Theme.faint
                                     text: line.r.time !== "" && line.r.chapterTime !== "" ? line.r.time + " / " + line.r.chapterTime
                                         : line.r.time !== "" ? line.r.time : line.r.chapterTime
                                 }

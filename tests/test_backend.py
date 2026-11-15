@@ -484,3 +484,12 @@ def test_importing_from_the_workspace_applies_titles_without_the_review(backend,
     # "Get titles" reopens that file's list for adjusting instead of an empty import tab.
     backend.names.openTitles()
     assert (backend.state['page'], backend.state['reviewSource'], backend.state['reviewCount']) == ('review', 'import', 2)
+
+
+def test_back_from_settings_returns_to_the_page_it_was_opened_from(backend):
+    backend.disc.put(source='E:/Discs/Last used')       # remembered source, nothing read yet
+    backend.navigate('settings')
+    backend.back()
+    assert backend.state['page'] == 'start'
+    backend.navigate('main')                            # no disc read: never an empty workspace
+    assert backend.state['page'] == 'start'

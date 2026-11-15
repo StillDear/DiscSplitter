@@ -761,6 +761,7 @@ int METADemuxer::readPacket(AVPacket& avPacket)
                 chosen.m_lastDTS =
                     avPacket.dts +
                     (avPacket.codecID == CODEC_S_SRT || avPacket.codecID == CODEC_S_MKVCOPY ? 0 : avPacket.duration);
+                m_reachedDts = (std::max)(m_reachedDts, avPacket.dts);
                 if (!m_quiet)
                     updateReport(true);
                 return 0;
@@ -839,6 +840,7 @@ int METADemuxer::readPacket(AVPacket& avPacket)
                 m_codecInfo[minDtsIndex].m_streamReader->flushPacket(avPacket);
                 m_codecInfo[minDtsIndex].m_flushed = true;
             }
+            m_reachedDts = (std::max)(m_reachedDts, avPacket.dts);
             if (!m_quiet)
                 updateReport(true);
             return 0;
@@ -5946,7 +5948,15 @@ std::vector<MPLSParser> METADemuxer::getMplsInfo(const string& mplsFileName, con
             m_playlistAngle[i] = angle;
             if (!m_quiet)
                 parser.reportLeftOut(unquoteStr(i), false);
-            cutPlayItems(parser, unquoteStr(i), m_playlistClipsPlayed);
+            if (m_windowStart > 0 || m_windowEnd > 0)
+            {
+                applyPlaylistWindow(parser, unquoteStr(i));
+                const MPLSParser windowed = parser;
+                cutPlayItems(parser, unquoteStr(i), true);
+                reportPlaylistWindow(windowed, parser);
+            }
+            else
+                cutPlayItems(parser, unquoteStr(i), m_playlistClipsPlayed);
             m_mplsStreamMap[i] = parser;
             result.push_back(parser);
         }
@@ -6224,6 +6234,66 @@ void METADemuxer::cutPlayItems(MPLSParser& mpls, const string& mplsFileName, con
                           "to the key picture at or after where it ends (--playlist-clips=played).");
 }
 
+// DiscSplitter: --playlist-window. The play items outside the window are left out, and the first and the last one kept
+// are moved to its ends; the marks outside it go with them. cutPlayItems then cuts the clips to the key pictures at or
+// before the start and at or after the end, reading from the bytes the entry point map gives.
+void METADemuxer::applyPlaylistWindow(MPLSParser& mpls, const string& mplsFileName) const
+{
+    const int64_t start = m_windowStart > 0 ? llround(m_windowStart * 45000.0) : 0;
+    const int64_t end = m_windowEnd > 0 ? llround(m_windowEnd * 45000.0) : INT64_MAX;
+    if (mpls.isDependStreamExist)
+        THROW(ERR_COMMON, "--playlist-window does not take the 3D playlist " << mplsFileName << ".")
+    std::vector<MPLSPlayItem> kept;
+    std::vector<int> moved(mpls.m_playItems.size(), -1);
+    std::vector<int64_t> placed;  // where each kept item starts on the playlist's timeline, as it was
+    int64_t at = 0;
+    for (size_t i = 0; i < mpls.m_playItems.size(); ++i)
+    {
+        MPLSPlayItem item = mpls.m_playItems[i];
+        const int64_t from = at;
+        const int64_t to = at + (static_cast<int64_t>(item.OUT_time) - item.IN_time);
+        at = to;
+        if (to <= start || from >= end)
+            continue;
+        if (start > from)
+            item.IN_time += static_cast<uint32_t>(start - from);
+        if (end < to)
+            item.OUT_time -= static_cast<uint32_t>(to - end);
+        moved[i] = static_cast<int>(kept.size());
+        kept.push_back(item);
+        placed.push_back((std::max)(from, start));
+    }
+    if (kept.empty())
+        THROW(ERR_COMMON, "--playlist-window lies outside the playlist " << mplsFileName << ".")
+    std::vector<PlayListMark> marks;
+    for (const PlayListMark& m : mpls.m_marks)
+    {
+        if (m.m_playItemID < 0 || static_cast<size_t>(m.m_playItemID) >= moved.size() || moved[m.m_playItemID] < 0)
+            continue;
+        const MPLSPlayItem& item = kept[moved[m.m_playItemID]];
+        if (m.m_markTime >= item.IN_time && m.m_markTime < item.OUT_time)
+            marks.emplace_back(moved[m.m_playItemID], m.m_markTime);
+    }
+    if (marks.empty() || marks.front().m_playItemID != 0 || marks.front().m_markTime != kept.front().IN_time)
+        marks.insert(marks.begin(), PlayListMark(0, kept.front().IN_time));
+    mpls.m_playItems = kept;
+    mpls.m_marks = marks;
+    mpls.m_windowPlaced = placed;
+}
+
+// Where the window starts on the playlist's timeline once cut at a key picture: the output's time 0. A caller places
+// its cut and its chapters from there, and checks that it is where it expected the key picture to be.
+void METADemuxer::reportPlaylistWindow(const MPLSParser& before, const MPLSParser& after) const
+{
+    if (m_quiet || before.m_playItems.empty() || after.m_playItems.empty() || before.m_windowPlaced.empty())
+        return;
+    const int64_t moved = static_cast<int64_t>(after.m_playItems[0].IN_time) - before.m_playItems[0].IN_time;
+    const int64_t ticks = before.m_windowPlaced[0] + moved;
+    LTRACE(LT_INFO, 2,
+           "Playlist window: start=" << doubleToStr(static_cast<double>(ticks) / 45000.0, 6) << " ticks=" << ticks
+                                     << " (45 kHz, on the playlist's timeline)");
+}
+
 // Where a playlist of the disc plays a TextST clip, for its Stream delay: the lowest playlist that has it
 int METADemuxer::textStClipShift(const string& clip)
 {
@@ -6307,6 +6377,10 @@ void METADemuxer::updateReport(const bool checkTime)
         lineBack();
         cout << doubleToStr(progress, 1) << "% complete" << std::endl;
         diagReport::progress(progress);
+        // DiscSplitter: the time the mux has reached (the decoding time of the last packet handed on), so a caller can
+        // tell how far into a stretch of the timeline it is; a share of the bytes read runs unevenly with the bitrate
+        if (m_reachedDts >= 0)
+            cout << "Position: " << doubleToStr(static_cast<double>(m_reachedDts) / INTERNAL_PTS_FREQ, 3) << std::endl;
         m_lastReportTime = currentTime;
     }
 }

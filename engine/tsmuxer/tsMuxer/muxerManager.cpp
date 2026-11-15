@@ -1611,6 +1611,7 @@ void MuxerManager::warnUnknownMuxOpts(const string& opts)
                                                       "--no-layer-break-guard",
                                                       "--no-pcr-on-video-pid",
                                                       "--playlist-clips",
+                                                      "--playlist-window",
                                                       "--right-eye",
                                                       "--split-chapters",
                                                       "--split-duration",
@@ -1671,6 +1672,20 @@ void MuxerManager::parseMuxOpt(const string& opts)
                 THROW(ERR_COMMON, "--playlist-clips takes played or whole, not \""
                                       << (paramPair.size() > 1 ? paramPair[1] : "") << "\".")
             m_metaDemuxer.setPlaylistClipsPlayed(how == "played");
+        }
+        else if (paramPair[0] == "--playlist-window")
+        {
+            // DiscSplitter: <start>[,<end>] in seconds or as a clock time
+            if (paramPair.size() < 2)
+                THROW(ERR_COMMON, "Missing value for " << paramPair[0]);
+            const vector<string> ends = splitStr(paramPair[1].c_str(), ',');
+            const auto seconds = [](const string& t)
+            { return t.find(':') != string::npos ? timeToFloat(t) : strToDouble(t.c_str()); };
+            const double start = ends.empty() || ends[0].empty() ? 0.0 : seconds(ends[0]);
+            const double end = ends.size() > 1 && !ends[1].empty() ? seconds(ends[1]) : -1.0;
+            if (start < 0 || (end >= 0 && end <= start))
+                THROW(ERR_COMMON, "--playlist-window takes <start>[,<end>] with the end after the start.")
+            m_metaDemuxer.setPlaylistWindow(start, end);
         }
         else if (paramPair[0] == "--cut-pictures")
         {

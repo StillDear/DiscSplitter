@@ -10,11 +10,16 @@ REM
 REM Needs the build tools first: python -m pip install -r requirements-dev.txt
 REM
 REM NOTE: this bundles the Python app and its built-in Blu-ray engine (tsMuxeR,
-REM compiled from engine\ first when needed), but NOT mkvmerge/mkvextract/
+REM rebuilt from engine\ first when its source changed), but NOT mkvmerge/mkvextract/
 REM ffmpeg/ffprobe - those still need to be installed separately and
 REM reachable on PATH (or located in the app's Settings > External tools).
 
-if not exist "engine\bin\tsMuxeR.exe" python engine\build_engine.py
+cd /d "%~dp0"
+set PY=python
+if exist ".venv\Scripts\python.exe" set PY=.venv\Scripts\python.exe
+
+REM Incremental: quick when the engine is up to date, rebuilds it when its source changed.
+%PY% engine\build_engine.py
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo Engine build FAILED - see the error above.
@@ -23,7 +28,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 set DISCSPLITTER_ONEFILE=1
-python -m PyInstaller --noconfirm packaging\installer.spec
+%PY% -m PyInstaller --noconfirm packaging\installer.spec
 
 if %ERRORLEVEL% NEQ 0 (
     echo.

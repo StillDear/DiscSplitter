@@ -48,7 +48,20 @@ QtObject {
     readonly property int rowHeight: Math.round((compact ? 36 : 44) * Math.max(1, fontScale))
     readonly property color accentSoft: Qt.tint(panel, Qt.rgba(accent.r, accent.g, accent.b, light ? 0.14 : 0.12))
     readonly property color accentSoft2: Qt.tint(panel, Qt.rgba(accent.r, accent.g, accent.b, light ? 0.26 : 0.22))
-    // Type
+    // Type. Chinese falls back from Segoe UI to Microsoft YaHei UI, whose own Latin letters run wider
+    // and would crowd the chips and cards, so the family stays Segoe UI in both languages.
     readonly property string ui: "Segoe UI"
-    readonly property string mono: "Consolas"
+    // Heading weight: YaHei has no semibold, so a DemiBold Chinese title would come out regular.
+    readonly property int strong: backend.config.language === "zh" ? Font.Bold : Font.DemiBold
+    readonly property string mono: "Consolas"       // paths, file names, logs
+    readonly property string num: ui                // times, counts and sizes, with tabular digits so columns line up
+    readonly property var tabular: ({ "tnum": 1 })
+    // Type scale: page title, dialog title, section heading, list item, body, small, caption
+    readonly property int display: px(24)
+    readonly property int title: px(18)
+    readonly property int heading: px(15)
+    readonly property int item: px(14)
+    readonly property int body: px(13)
+    readonly property int small: px(12)
+    readonly property int caption: px(11)
 }

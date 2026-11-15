@@ -167,6 +167,12 @@ def verify_tool_at_path(path: str, tool_name: str, timeout: float = 10.0) -> tup
 # Tools that are always installed together in the same folder, so once the
 # user locates one the others are found next to it instead of browsing again.
 TOOL_FAMILIES = (("ffmpeg", "ffprobe"), ("mkvmerge", "mkvextract", "mkvpropedit"))
+# How the tools are listed: the engine, then FFmpeg (always needed), then MKVToolNix (MKV only).
+TOOL_ORDER = ("tsMuxeR",) + tuple(t for family in TOOL_FAMILIES for t in family)
+
+
+def tool_rank(name: str) -> int:
+    return TOOL_ORDER.index(name) if name in TOOL_ORDER else len(TOOL_ORDER)
 
 
 def tool_family(tool_name: str) -> tuple[str, ...]:

@@ -26,7 +26,7 @@ class DiscController(Controller):
         super().__init__(
             app, source=cfg.get('last_source_folder', ''), output=cfg.get('last_output_folder', ''),
             sidecars=[], album='', artist='',
-            chapterSelected=0, audioSelected=0, subtitleSelected=0, unnamedRows=[], originsMixed=False, chaptersEdited=False,
+            chapterSelected=0, longClock=False, timelineSeconds=0, audioSelected=0, subtitleSelected=0, unnamedRows=[], originsMixed=False, chaptersEdited=False,
             hasVideo=False, keepVideo=False, videoSummary='', videoExtra='', exportEstimate={}, sourceSummary='', chapterKinds={}, chapterKindsManual=[],
             outputFormat=cfg.get('output_container') if cfg.get('output_container') in self.FORMATS else 'mkv',
             canM2ts=False,
@@ -116,11 +116,13 @@ class DiscController(Controller):
                 self.selectPlaylist(0)
             else:
                 self.chapter_model.replace([])
+                self.show('start')          # nothing to work on: back where the disc was chosen
                 self.notify(self.tr('noPlaylists'))
         def failed(exc):
             self.chapters = []
             self.chapter_model.replace([])
             self.put(sidecars=[], artist='', album='')
+            self.show('start')
             self.report(exc)
         self.task(work, done, failed, label='scanning')
 
@@ -151,14 +153,15 @@ class DiscController(Controller):
 
     def track_summary(self, playlist):
         """What a candidate holds, for comparing them side by side: "TrueHD Atmos 7.1 / LPCM 2.0 · 1920×1080 · 2 subtitles"."""
-        audio = list(dict.fromkeys(' '.join(x for x in (t.codec, t.channel_layout) if x) for t in playlist.audio_tracks))
+        audio = list(dict.fromkeys(' '.join(x for x in (t.codec, t.channel_layout) if x) for t in playlist.audio_tracks))
         audio_text = ' / '.join(audio[:2]) + (f' +{len(audio) - 2}' if len(audio) > 2 else '') if audio else self.tr('plNoAudio')
         video = playlist.video_track
         size = track_info.resolution(video, {}) if video is not None else None
         video_text = (f'{size[0]}×{size[1]}' if size else video.codec) if video is not None else self.tr('plNoVideo')
         subtitles = len(playlist.subtitle_tracks)
         subtitle_text = self.tr('plSubs').replace('{n}', str(subtitles)) if subtitles else self.tr('plNoSubs')
-        return ' · '.join((audio_text, video_text, subtitle_text))
+        # A no-break space keeps each "·" with the item before it, so a wrapped line never starts with one
+        return ' · '.join((audio_text, video_text, subtitle_text))
 
     def playlist_label(self, playlist):
         title = dvd.title_of(playlist.path)
@@ -208,7 +211,8 @@ class DiscController(Controller):
             at = min(self.VIDEO_SAMPLE_AT, length / 3) if length else 0
             if sources.is_mkv_source(path) or dvd.is_title(path):
                 start = 0.0          # these seek on their own timeline; m2ts clocks start elsewhere
-            probe['sampled_kbps'] = preview.sample_bitrate(path, track, 0, 'video', at=start + at)
+            probe['sampled_kbps'] = preview.sample_bitrate(path, track, 0, 'video', at=start + at,
+                                                           share=at / length if length else 0.0)
         return probe
 
     def refresh_video_summary(self):
@@ -298,7 +302,7 @@ class DiscController(Controller):
         language = self.cfg.get('chapter_language') or 'eng'
         self.source_size = None
         def work(progress):
-            with self.app.preview_mounts.use(playlist.path, playlist.iso_image) as path:
+            with self.app.preview_mounts.use(playlist.path, playlist.iso_image, direct=playlist.by_engine) as path:
                 # The engine's scan brought the marks along: nothing to read for them.
                 return (chapter_marks.playlist_chapters(playlist) if playlist.by_engine and playlist.marks
                         else chapter_marks.read_chapters_from_source(path, preferred_language=language),
@@ -459,9 +463,13 @@ class DiscController(Controller):
     def rebuild_chapters(self, names=None, chapter_indices=None):
         names = names or {}
         selected = set(chapter_indices) if chapter_indices is not None else None
+        total = max([self.playlist.duration_seconds or 0 if self.playlist else 0]
+                    + [c.end_seconds or c.start_seconds for c in self.chapters])
+        long = total >= 3600
+        self.put(longClock=long, timelineSeconds=total)     # the timeline's scale
         self.chapter_model.replace([dict(number=c.index, title=names.get(c.index, ''), origin='',
             duration=logic.format_time(c.duration), seconds=max(1, c.duration or 1),
-            start=logic.format_time(c.start_seconds), begin=c.start_seconds, status='pending', file='',
+            start=logic.format_clock(c.start_seconds, long), begin=c.start_seconds, status='pending', file='',
             included=selected is not None and c.index in selected, verify='', verifyText='',
             artist=self.app.metadata.track_artist(c.index)) for c in self.chapters])
         self.update_chapter_selection()

@@ -21,10 +21,10 @@ ColumnLayout {
                     Copy { text: (win.discView.album ? win.discView.album + " · " : "") + win.fmt("stageOf", { i: Math.max(1, exportPage.stageIndex + 1) }); color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight }
                     Copy {
                         text: win.tr(win.exportView.stage) + (win.exportView.current ? " · " + win.fmt("chapterN", { n: win.exportView.current }) : "")
-                        font.pixelSize: Theme.px(22); font.bold: true; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
+                        font.pixelSize: Theme.display; font.weight: Theme.strong; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
                     }
                 }
-                Copy { text: Math.round(exportPage.shownCompleted) + " / " + progressList.count; color: Theme.text; font.pixelSize: Theme.px(22); font.bold: true; wrapMode: Text.NoWrap }
+                Copy { text: Math.round(exportPage.shownCompleted) + " / " + progressList.count; color: Theme.text; font.pixelSize: Theme.display; font.weight: Theme.strong; font.features: Theme.tabular; wrapMode: Text.NoWrap }
                 ActionButton {
                     large: true; text: win.tr(win.exportView.result === "cancelling" ? "cancelling" : "cancelJob")
                     enabled: win.exportView.result !== "cancelling"; onClicked: backend.exporter.cancel()
@@ -37,10 +37,19 @@ ColumnLayout {
                     Rectangle {
                         required property real seconds
                         required property string status
+                        required property int number
+                        // How far into this chapter the cut is, when the tool says (M2TS and MKV do; FLAC does not)
+                        readonly property real fraction: status === "running" && number === win.exportView.current ? win.exportView.chapterFraction : 0
                         Layout.fillWidth: true; Layout.preferredWidth: Math.max(1, seconds); Layout.fillHeight: true; radius: 5
                         id: seg
-                        color: status === "done" ? Theme.good : status === "running" ? Theme.accent : status === "failed" ? Theme.danger : Theme.chip
+                        color: status === "done" ? Theme.good : status === "running" ? (fraction > 0 ? Theme.accentSoft : Theme.accent) : status === "failed" ? Theme.danger : Theme.chip
                         Behavior on color { ColorAnimation { duration: Theme.slow } }
+                        Rectangle {
+                            visible: seg.fraction > 0; radius: 5; color: Theme.accent
+                            anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                            width: Math.max(height, parent.width * seg.fraction)
+                            Behavior on width { NumberAnimation { duration: Theme.normal } }
+                        }
                         // The chapter being split breathes gently.
                         SequentialAnimation on opacity {
                             running: Theme.animate && seg.status === "running"; loops: Animation.Infinite
@@ -89,54 +98,55 @@ ColumnLayout {
         }
     }
 
-    RowLayout {
-        Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
-        Card {
-            Layout.fillWidth: true; Layout.fillHeight: true; padding: 16
-            ColumnLayout {
-                anchors.fill: parent; spacing: 6
-                RowLayout {
-                    Layout.fillWidth: true; Layout.leftMargin: 12; Layout.rightMargin: 12 + progressBar.gutter; spacing: 12
-                    Copy { text: "#"; Layout.preferredWidth: 24; color: Theme.faint; font.pixelSize: Theme.px(12)}
-                    Copy { text: win.tr("outputFile"); Layout.fillWidth: true; color: Theme.faint; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
-                    Copy { text: win.tr("duration"); Layout.preferredWidth: 52; horizontalAlignment: Text.AlignRight; color: Theme.faint; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
-                    Copy { text: win.tr("status"); Layout.preferredWidth: 90; horizontalAlignment: Text.AlignRight; color: Theme.faint; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
-                }
-                ListView {
-                    id: progressList; Layout.fillWidth: true; Layout.fillHeight: true; model: exportModel; clip: true; spacing: 2
-                    ScrollBar.vertical: SlimScrollBar { id: progressBar }
-                    populate: ListEnter {}
-                    add: ListEnter {}
-                    delegate: ProgressRow { width: ListView.view.width - progressBar.gutter }
+    // The songs take the page; the log stays one quiet line until asked for.
+    Card {
+        Layout.fillWidth: true; Layout.fillHeight: true; padding: 16
+        ColumnLayout {
+            anchors.fill: parent; spacing: 6
+            RowLayout {
+                Layout.fillWidth: true; Layout.leftMargin: 12; Layout.rightMargin: 12 + progressBar.gutter; spacing: 12
+                Copy { text: "#"; Layout.preferredWidth: 24; color: Theme.faint; font.pixelSize: Theme.small }
+                Copy { text: win.tr("outputFile"); Layout.fillWidth: true; color: Theme.faint; font.pixelSize: Theme.small; wrapMode: Text.NoWrap }
+                Copy { text: win.tr("duration"); Layout.preferredWidth: 52; horizontalAlignment: Text.AlignRight; color: Theme.faint; font.pixelSize: Theme.small; wrapMode: Text.NoWrap }
+                Copy { text: win.tr("status"); Layout.preferredWidth: 90; horizontalAlignment: Text.AlignRight; color: Theme.faint; font.pixelSize: Theme.small; wrapMode: Text.NoWrap }
+            }
+            ListView {
+                id: progressList; Layout.fillWidth: true; Layout.fillHeight: true; model: exportModel; clip: true; spacing: 2
+                ScrollBar.vertical: SlimScrollBar { id: progressBar }
+                populate: ListEnter {}
+                add: ListEnter {}
+                delegate: ProgressRow { width: ListView.view.width - progressBar.gutter }
+            }
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
+            ScrollView {
+                id: logScroll
+                visible: logToggle.open
+                Layout.fillWidth: true; Layout.preferredHeight: 180; clip: true
+                rightPadding: logBar.gutter
+                ScrollBar.vertical: SlimScrollBar { id: logBar; parent: logScroll; x: logScroll.mirrored ? 0 : logScroll.width - width; y: logScroll.topPadding; height: logScroll.availableHeight }
+                TextArea {
+                    id: logText; ContextMenu.menu: EditMenu { target: logText }
+                    text: win.exportView.logs; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; color: Theme.muted
+                    font.family: Theme.mono; font.pixelSize: Theme.caption; padding: 12
+                    background: Rectangle { color: Theme.deep; radius: 10; border.color: Theme.line }
                 }
             }
-        }
-        Card {
-            Layout.preferredWidth: 420; Layout.fillHeight: true
-            ColumnLayout {
-                anchors.fill: parent; spacing: 12
-                RowLayout {
-                    Layout.fillWidth: true
-                    SectionTitle { text: win.tr("log"); Layout.fillWidth: true }
-                    ActionButton { text: win.tr("openLog"); implicitHeight: 28; onClicked: backend.exporter.openLog() }
+            RowLayout {
+                Layout.fillWidth: true; Layout.leftMargin: 4; spacing: 12
+                Disclosure { id: logToggle; text: win.tr("log") }
+                Copy {
+                    // The newest log line, so progress is legible without the full log
+                    readonly property string all: win.exportView.logs.replace(/\s+$/, "")
+                    text: logToggle.open ? "" : all.slice(all.lastIndexOf("\n") + 1)
+                    color: Theme.faint; font.family: Theme.mono; font.pixelSize: Theme.caption
+                    Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
                 }
-                ScrollView {
-                    id: logScroll
-                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-                    rightPadding: logBar.gutter
-                    ScrollBar.vertical: SlimScrollBar { id: logBar; parent: logScroll; x: logScroll.mirrored ? 0 : logScroll.width - width; y: logScroll.topPadding; height: logScroll.availableHeight }
-                    TextArea {
-                        id: logText; ContextMenu.menu: EditMenu { target: logText }
-                        text: win.exportView.logs; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; color: Theme.muted
-                        font.family: Theme.mono; font.pixelSize: Theme.px(11); padding: 12
-                        background: Rectangle { color: Theme.deep; radius: 10; border.color: Theme.line }
-                    }
+                ActionButton { visible: logToggle.open; text: win.tr("openLog"); implicitHeight: 28; onClicked: backend.exporter.openLog() }
+                Copy {
+                    text: win.nativePath(win.exportView.destination); color: Theme.muted; font.family: Theme.mono; font.pixelSize: Theme.caption
+                    Layout.maximumWidth: 320; elide: Text.ElideMiddle; wrapMode: Text.NoWrap
                 }
-                RowLayout {
-                    Layout.fillWidth: true; spacing: 10
-                    Copy { text: win.exportView.destination; color: Theme.muted; Layout.fillWidth: true; font.family: Theme.mono; font.pixelSize: Theme.px(11); elide: Text.ElideMiddle; wrapMode: Text.NoWrap }
-                    ActionButton { text: win.tr("openOutput"); implicitHeight: 28; onClicked: backend.exporter.openOutput() }
-                }
+                ActionButton { text: win.tr("openOutput"); implicitHeight: 28; onClicked: backend.exporter.openOutput() }
             }
         }
     }

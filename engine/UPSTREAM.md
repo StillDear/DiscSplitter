@@ -18,8 +18,25 @@ lists a playlist's tracks (by PID) and chapter marks, and cuts a playlist into M
 - Licence: Apache 2.0 (`tsmuxer/LICENSE`, `tsmuxer/NOTICE`). The GUI (Qt), documentation and packaging of
   upstream are not included; nothing here links Qt, libass or libdovi (the last two are only loaded at run time
   when present, and are not shipped).
-- Local changes to the upstream sources: **none**. Any future change goes into `patches/` as a `git diff`
-  against the snapshot and is listed here, so that an update can re-apply it.
+- Local changes to the upstream sources: one, `patches/0001-discsplitter-listings.patch` (in `tsMuxer/main.cpp`,
+  `metaDemuxer.cpp/.h`, `muxerManager.cpp` and `tsPacket.h`, already applied to the snapshot). It adds output
+  and one opt-in option; without that option nothing upstream does changes:
+  - a playlist listing adds `Mark ticks (45 kHz): …` after each clip's `Marks:` lines: the same marks unrounded,
+    so chapters are cut at the disc's own times rather than at times rounded to the millisecond;
+  - `tsMuxeR --extents <image.iso/path> …` prints where the bytes of files inside an image are
+    (`File: … size=…`, `Extent: offset=… length=…`, `Data: <hex>` for a small file kept in its entry), so the
+    app's previews, probes and outlines read a disc image with ffmpeg's subfile protocol instead of mounting it;
+  - `MUXOPT --playlist-window=<start>[,<end>]` (seconds or `H:MM:SS.sss` on the playlist's timeline, both at
+    chapter marks) keeps only that stretch of a `.mpls` input: play items outside it are dropped and the first
+    one starts at the key picture of the mark, found in the clip's EP map. The engine then starts reading there
+    instead of from the start of the disc (a `--cut-start` deep into a disc reads everything before it twice).
+    The muxer prints `Playlist window: start=<s> ticks=<t>` with where the stretch really starts, and times in
+    the meta (`--cut-*`, `--custom-chapters`) are counted from it. Refused for 3D playlists;
+  - every progress report is followed by `Position: <seconds>`, the timestamp the muxer has reached (from the
+    window start when there is one), so the app shows progress by time instead of by bytes read.
+
+  Any further change goes into `patches/` as a `git diff` against the upstream snapshot and is listed here, so
+  that an update can re-apply it.
 
 ## Building
 
@@ -39,9 +56,13 @@ too:
 
 - `tsMuxeR <disc folder or image>`: `Title N  00001.mpls  H:MM:SS  N chapters … (main film)` lines
 - `tsMuxeR <playlist>`: `Track ID / Stream type / Stream ID / Stream info / Stream lang` blocks,
-  `Duration:` per clip and `Marks:` on the playlist's own timeline (milliseconds)
+  `Duration:` per clip and `Marks:` on the playlist's own timeline (milliseconds), with `Mark ticks (45 kHz):`
+  from the local patch (the app falls back to `Marks:` when an engine without it is used)
+- `tsMuxeR --extents …` (local patch): files inside an image, for ffmpeg's subfile protocol
 - muxing: `tsMuxeR <file.meta> <output>`, `NN.N% complete` progress lines, exit code 0 on success,
-  split parts named `<output>.split.N.m2ts`
+  split parts named `<output>.split.N.m2ts`; with the local patch, `Playlist window:` and `Position:` lines
+  (the app needs an engine built with the patch for `--playlist-window`; without `Position:` lines it falls back
+  to the percentage)
 
 `tests/test_engine.py` checks the parsers against recorded listings; `tests/test_engine_disc.py` builds a small
 Blu-ray with ffmpeg and the engine and runs the whole export on it (skipped when the engine is not built).
@@ -51,5 +72,6 @@ Blu-ray with ffmpeg and the engine and runs the whole export on it (skipped when
 1. Download the new upstream commit, replace `tsmuxer/tsMuxer`, `tsmuxer/libmediation` and the three licence files.
 2. Compare upstream's `tsMuxer/CMakeLists.txt` source list with the old one; `engine/CMakeLists.txt` only adds
    the subdirectories, so new sources are picked up as long as upstream lists them.
-3. Re-apply anything in `patches/`, set `UPSTREAM_COMMIT` in `CMakeLists.txt`, update the commit above.
+3. Re-apply `patches/` (`git apply --directory=engine/tsmuxer engine/patches/*.patch`), set `UPSTREAM_COMMIT`
+   in `CMakeLists.txt`, update the commit above.
 4. `python engine\build_engine.py --clean`, then `pytest -q` (the engine tests run against the new build).

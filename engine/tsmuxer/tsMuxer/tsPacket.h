@@ -775,6 +775,7 @@ struct MPLSParser
     std::vector<MPLSStreamInfo> m_streamInfo;
     std::vector<MPLSStreamInfo> m_streamInfoMVC;
     std::vector<PlayListMark> m_marks;
+    std::vector<int64_t> m_windowPlaced;  // DiscSplitter: --playlist-window, where each play item kept was placed
     int m_m2tsOffset;
     bool isDependStreamExist;
     bool mvc_base_view_r;

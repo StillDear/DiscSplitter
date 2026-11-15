@@ -19,7 +19,7 @@ class MetadataController(Controller):
 
     def __init__(self, app):
         super().__init__(app, meta=tagging.empty_metadata(), metaStatus='idle', metaError='', metaChosen=-1,
-                         canRestoreCover=False, coverCache='')
+                         canRestoreCover=False, coverCache='', coverInfo='')
         self.meta = tagging.empty_metadata()
         self.meta_model = Rows(['source', 'label', 'detail', 'thumb', 'chosen'], self)
         self.original_cover = ''
@@ -31,7 +31,9 @@ class MetadataController(Controller):
     COVER_CACHE = settings.SETTINGS_PATH.parent / 'covers'
 
     def publish_metadata(self):
-        self.put(meta=copy.deepcopy(self.meta), canRestoreCover=bool(self.original_cover))
+        cover = self.meta.get('cover') or ''
+        self.put(meta=copy.deepcopy(self.meta), canRestoreCover=bool(self.original_cover),
+                 coverInfo=cover_crop.describe(cover) if cover else '')
 
     def reset_metadata(self, owner, artist='', album='', year=None):
         self.meta = tagging.empty_metadata()
@@ -128,9 +130,12 @@ class MetadataController(Controller):
         if image is None or image.isNull():
             self.notify(self.tr('coverInvalid'))
             return {}
-        margins = self.cover_crop_margins if self.original_cover else cover_crop.suggest_crop(image)
+        if self.original_cover:
+            margins, border = self.cover_crop_margins, ''
+        else:
+            margins, border = cover_crop.detect_borders(image)
         return dict(url=QUrl.fromLocalFile(source).toString(), width=image.width(), height=image.height(),
-                    **margins)
+                    border=border, **margins)
 
     @Slot(int, int, int, int, result=bool)
     def applyCoverCrop(self, left, right, top, bottom):

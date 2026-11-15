@@ -12,6 +12,7 @@ It runs as a child process: a crash or a cancel never takes the app down with it
 
 from __future__ import annotations
 
+import functools
 import re
 import sys
 import threading
@@ -89,6 +90,130 @@ def source_for(playlist: Playlist) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Files inside a disc image, read without mounting it
+# ---------------------------------------------------------------------------
+# A file inside an image is named as the engine names it: film.iso/BDMV/STREAM/00001.m2ts. The engine says where
+# its bytes are in the image (--extents, a line this app's build adds: engine/patches); Python reads small files
+# from there, and ffmpeg reads a stream file whose bytes lie in one piece through its subfile protocol.
+
+@dataclass(frozen=True)
+class ImageFile:
+    image: Path
+    size: int
+    extents: tuple[tuple[int, int, bool], ...] = ()     # (offset, length, unreadable) in the file's order
+    data: Optional[bytes] = None                        # a small file kept in its entry
+
+    @property
+    def span(self) -> Optional[tuple[int, int]]:
+        """(start, end) of the file's bytes in the image when they lie there in one piece."""
+        start = end = None
+        for offset, length, unreadable in self.extents:
+            if unreadable or (end is not None and offset != end):
+                return None
+            start = offset if start is None else start
+            end = offset + length
+        return None if start is None else (start, start + self.size)
+
+
+def image_of(file: Path) -> Optional[tuple[Path, str]]:
+    """(image, path inside it) for film.iso/BDMV/..., None for a file on a drive."""
+    parts = Path(file).parts
+    for i in range(len(parts) - 1, 0, -1):
+        candidate = Path(*parts[:i])
+        if candidate.suffix.lower() == ".iso" and candidate.is_file():
+            return candidate, "/".join(parts[i:])
+    return None
+
+
+_EXTENT_RE = re.compile(r"^Extent: offset=(\d+) length=(\d+)(.*)$")
+
+
+@functools.lru_cache(maxsize=512)
+def _image_file(image: str, inner: str, stamp: int) -> Optional[ImageFile]:
+    result = tools.run([require(), "--extents", f"{Path(image).as_posix()}/{inner}"], timeout=60)
+    size, data, extents = None, None, []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("File:"):
+            m = re.search(r" size=(\d+)", line)
+            size = int(m.group(1)) if m else None
+        elif line.startswith("Data:"):
+            data = bytes.fromhex(line[5:].strip())
+        else:
+            m = _EXTENT_RE.match(line)
+            if m:
+                extents.append((int(m.group(1)), int(m.group(2)), bool(m.group(3).strip())))
+    if size is None:
+        return None
+    return ImageFile(Path(image), size, tuple(extents), data)
+
+
+def image_file(file: Path) -> Optional[ImageFile]:
+    """Where a file inside an image is; None for a file on a drive or one the image does not have."""
+    located = image_of(file)
+    if located is None:
+        return None
+    image, inner = located
+    return _image_file(str(image), inner, image.stat().st_mtime_ns)
+
+
+def file_exists(file: Path) -> bool:
+    return image_file(file) is not None if image_of(file) else Path(file).is_file()
+
+
+def file_size(file: Path) -> int:
+    found = image_file(file)
+    if found is not None:
+        return found.size
+    if image_of(file):
+        raise FileNotFoundError(str(file))
+    return Path(file).stat().st_size
+
+
+def read_file(file: Path) -> bytes:
+    """The bytes of a (small) file, also inside an image."""
+    if not image_of(file):
+        return Path(file).read_bytes()
+    found = image_file(file)
+    if found is None:
+        raise FileNotFoundError(str(file))
+    if found.data is not None:
+        return found.data
+    chunks = []
+    with open(found.image, "rb") as f:
+        for offset, length, unreadable in found.extents:
+            if unreadable:
+                raise OSError(f"{file} is not stored in the image in a way it can be read from it")
+            f.seek(offset)
+            chunks.append(f.read(length))
+    return b"".join(chunks)[:found.size]
+
+
+def media_input(file: Path, first: int = 0, last: Optional[int] = None) -> str:
+    """
+    What ffmpeg opens for a file: its path, or for a file inside an image its bytes there (subfile protocol).
+    first / last: only these bytes of a file inside an image (last exclusive, None: to its end).
+    """
+    if not image_of(file):
+        return str(file)
+    found = image_file(file)
+    span = found.span if found is not None else None
+    if span is None:
+        raise FileNotFoundError(f"{file} cannot be read from the image without mounting it")
+    start, end = span[0] + max(0, first), span[1] if last is None else min(span[1], span[0] + last)
+    return f"subfile,,start,{start},end,{end},,:{found.image.as_posix()}"
+
+
+def readable_in_image(files: list[Path]) -> bool:
+    """Whether ffmpeg can read all these files straight from their image (the engine is there, each in one piece)."""
+    try:
+        return available() and all((f := image_file(file)) is not None and (f.span is not None or f.data is not None)
+                                   for file in files)
+    except (OSError, Failure):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Listings
 # ---------------------------------------------------------------------------
 
@@ -138,6 +263,8 @@ class Listing:
     duration: float = 0.0                               # every clip's Duration added up
     marks: list[float] = field(default_factory=list)   # chapter starts on the playlist's own timeline
     clips: list[str] = field(default_factory=list)
+    ticks: list[int] = field(default_factory=list)     # the marks in 45 kHz ticks, when the engine gives them
+    exact: bool = False                                 # marks taken from their ticks
 
 
 _FIELD_RE = re.compile(r"^(Track ID|Stream type|Stream ID|Stream info|Stream lang|Stream delay|Stream file|"
@@ -176,7 +303,14 @@ def parse_listing(text: str) -> Listing:
             listing.duration += seconds_of(line.split(":", 1)[1])
         elif line.startswith("Marks:"):
             listing.marks += [seconds_of(t) for t in line.split(":", 1)[1].split()]
-    listing.marks = sorted(set(round(m, 3) for m in listing.marks))
+        elif line.startswith("Mark ticks (45 kHz):"):
+            listing.ticks += [int(t) for t in line.split(":", 1)[1].split() if t.isdigit()]
+    if listing.ticks and len(listing.ticks) == len(listing.marks):
+        # The same marks unrounded (a line this app's build of the engine adds: engine/patches)
+        listing.marks = sorted(set(round(t / 45000, 6) for t in listing.ticks))
+        listing.exact = True
+    else:
+        listing.marks = sorted(set(round(m, 3) for m in listing.marks))
     return listing
 
 
@@ -245,8 +379,11 @@ def to_track(block: dict, place: int) -> Optional[Track]:
     if program.startswith("A_"):
         codec, codec_id = _audio_codec(kind, info)
         rate = _number(r"Sample Rate:\s*(\d+)\s*KHz", info)
-        bits = _number(r"Bits per sample:\s*(\d+)\s*bit", info)
-        bitrate = None if "Peak bitrate" in info else _number(r"(?<!Peak )Bitrate:\s*(\d+)\s*Kbps", info)
+        # PCM says "Bits per sample: 24bit"; DTS-HD MA puts it with the channels: "5.1 (DTS Master Audio 24bit)".
+        bits = _number(r"Bits per sample:\s*(\d+)\s*bit", info) or _number(r"\(DTS[^)]*?(\d+)\s*bit\)", info)
+        # A "core + …" rate is only the lossy core's (DTS-HD MA's 1536 kbps): unknown, like a peak rate.
+        bitrate = (None if "Peak bitrate" in info or re.search(r"Kbps\s+core\s*\+", info, re.I)
+                   else _number(r"(?<!Peak )Bitrate:\s*(\d+)\s*Kbps", info))
         track = Track(pid, "audio", codec, codec_id, language, channels=_channels(info),
                       sample_rate=int(rate * 1000) if rate else None, bits_per_sample=int(bits) if bits else None,
                       bitrate_kbps=bitrate, stream_id=pid, properties=props)
@@ -267,6 +404,7 @@ def inspect(source: str) -> Playlist:
     playlist.duration_seconds = listing.duration
     # A stream file on its own has no chapters: it is one, to be split by hand.
     playlist.marks = listing.marks or ([0.0] if listing.duration > 0 else [])
+    playlist.marks_exact = listing.exact
     playlist.chapter_count = len(listing.marks)
     playlist.measured = True        # bitrates come with the listing; nothing more to measure with ffprobe
     return playlist
@@ -313,15 +451,26 @@ def track_line(source: str, track: Track, *, matroska: bool = False, drop_core: 
 
 
 _PERCENT_RE = re.compile(r"^(\d+(?:\.\d+)?)% complete")
+_POSITION_RE = re.compile(r"^Position: (\d+(?:\.\d+)?)$")
+_WINDOW_RE = re.compile(r"^Playlist window: start=(\d+(?:\.\d+)?)")
+
+
+class WindowMoved(Exception):
+    """The engine opened a --playlist-window somewhere else than the caller placed its times from."""
 
 
 def run_meta(meta_lines: list[str], meta_path: Path, output: Path, *,
              on_progress: Optional[Callable[[float], None]] = None,
+             on_position: Optional[Callable[[float], None]] = None,
+             on_window: Optional[Callable[[float], None]] = None,
              on_tick: Optional[Callable[[], None]] = None,
              on_message: Optional[Callable[[str], None]] = None,
              cancel_event: Optional[threading.Event] = None) -> list[str]:
     """
-    Write the .meta file and run the mux. on_progress gets the engine's percentage (of the whole source);
+    Write the .meta file and run the mux. on_progress gets the engine's percentage (of the bytes to read);
+    on_position the time it has reached on the source's timeline (from the window's start with
+    --playlist-window; these two are lines this app's build adds); on_window where a --playlist-window
+    starts on the playlist, as soon as the playlist is read (it may raise WindowMoved to stop the mux);
     on_tick is called with every line, so a caller can look at the files written so far. Returns the
     engine's warnings. Raises Failure with the engine's own words when the mux fails.
     """
@@ -335,10 +484,17 @@ def run_meta(meta_lines: list[str], meta_path: Path, output: Path, *,
             if not piece:
                 continue
             m = _PERCENT_RE.match(piece)
+            position = _POSITION_RE.match(piece)
             if m:
                 if on_progress:
                     on_progress(float(m.group(1)))
+            elif position:
+                if on_position:
+                    on_position(float(position.group(1)))
             else:
+                window = _WINDOW_RE.match(piece)
+                if window and on_window:
+                    on_window(float(window.group(1)))
                 messages.append(piece)
                 if piece.lower().startswith(("warning", "error")):
                     warnings.append(piece)

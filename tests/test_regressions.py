@@ -229,3 +229,12 @@ def test_a_resumed_job_shows_its_own_playlist_card(backend, qt_app, monkeypatch,
     assert [s.playlist.path for s in backend.disc.playlists] == [playlist.path]
     assert [r['chosen'] for r in backend.disc.playlist_model.rows] == [True]
     assert backend.disc.scanned_source == str(tmp_path / 'disc')
+
+
+def test_the_timeline_spans_the_whole_programme(backend):
+    from test_backend import setup_disc
+    setup_disc(backend)
+    assert backend.state['timelineSeconds'] == 300          # the playlist's length, not just the chapters'
+    backend.disc.chapters = [core.models.Chapter(1, 0, 200), core.models.Chapter(2, 200, 4000)]
+    backend.disc.rebuild_chapters()
+    assert backend.state['timelineSeconds'] == 4000 and backend.state['longClock']

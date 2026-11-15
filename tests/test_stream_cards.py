@@ -25,9 +25,10 @@ def test_audio_card_keeps_a_real_track_name():
 def test_subtitle_card():
     t = core.models.Track(3, 'subtitles', 'HDMV PGS', 'S_HDMV/PGS', 'jpn', properties={'forced_track': True})
     card = track_info.subtitle_card(t, 'zh', tr)
-    assert card['title'] == '日语' and card['chips'] == ['PGS', 'jpn'] and card['extra'] == '强制'
+    # Like an audio card: the format as the title, the language as a chip (no raw "jpn" repeat)
+    assert card['title'] == 'PGS' and card['chips'] == ['日语'] and card['extra'] == '强制'
     blank = track_info.subtitle_card(core.models.Track(4, 'subtitles', 'HDMV PGS', 'S_HDMV/PGS', 'und'), 'zh', tr)
-    assert blank['title'] == '未标语言'
+    assert blank['title'] == 'PGS' and blank['chips'] == ['未标语言']
 
 
 def test_ocr_joins_split_track_numbers():

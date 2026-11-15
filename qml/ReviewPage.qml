@@ -38,10 +38,10 @@ ColumnLayout {
                     IconButton {
                         visible: !win.appView.pipeline; iconKind: "back"; implicitWidth: 32; implicitHeight: 32
                         enabled: !win.appView.busy; Layout.leftMargin: -6
-                        onClicked: backend.navigate(win.discView.album || win.discView.source ? "main" : "start")
+                        onClicked: backend.back()
                         ToolTip.visible: hovered; ToolTip.delay: 400; ToolTip.text: win.tr("back"); Accessible.name: win.tr("back")
                     }
-                    Copy { text: win.tr("review"); font.pixelSize: Theme.px(20); font.bold: true; wrapMode: Text.NoWrap }
+                    Copy { text: win.tr("review"); font.pixelSize: Theme.display; font.weight: Theme.strong; wrapMode: Text.NoWrap }
                     Badge {
                         tone: "accent"; visible: win.namesView.mbRelease !== "" && win.namesView.reviewSource === "online"
                         text: win.fmt("mbFrom", { name: win.namesView.mbRelease })
@@ -56,14 +56,14 @@ ColumnLayout {
                         onPicked: function(key) { backend.names.realignReview(key) }
                     }
                     ActionButton {
-                        ghost: true; text: win.tr("stripBrackets")
+                        implicitHeight: 28; text: win.tr("stripBrackets")
                         visible: win.namesView.reviewStrippable && reviewList.count > 0 && !reviewList.waiting
                         enabled: !win.appView.busy
                         onClicked: backend.names.stripReviewBrackets()
                         ToolTip.visible: hovered; ToolTip.delay: 400; ToolTip.text: win.tr("stripBracketsHint")
                     }
-                    ActionButton { ghost: true; text: win.tr("selectAll"); visible: reviewList.count > 0 && !reviewList.waiting; onClicked: backend.names.checkAllReview(true) }
-                    ActionButton { ghost: true; text: win.tr("selectNone"); visible: reviewList.count > 0 && !reviewList.waiting; onClicked: backend.names.checkAllReview(false) }
+                    ActionButton { implicitHeight: 28; text: win.tr("selectAll"); visible: reviewList.count > 0 && !reviewList.waiting; onClicked: backend.names.checkAllReview(true) }
+                    ActionButton { implicitHeight: 28; text: win.tr("selectNone"); visible: reviewList.count > 0 && !reviewList.waiting; onClicked: backend.names.checkAllReview(false) }
                 }
                 Rectangle {
                     Layout.fillWidth: true; Layout.preferredHeight: hintText.implicitHeight + 18; radius: 10; color: Theme.raised
@@ -96,7 +96,7 @@ ColumnLayout {
                     }
                     Item { Layout.fillWidth: true }
                     ActionButton {
-                        ghost: true; implicitHeight: 28
+                        implicitHeight: 28
                         visible: reviewPage.talkLeft > 0
                         text: win.tr("reviewRemoveTalk") + " (" + reviewPage.talkLeft + ")"
                         enabled: !win.appView.busy
@@ -104,7 +104,7 @@ ColumnLayout {
                         ToolTip.visible: hovered; ToolTip.delay: 400; ToolTip.text: win.tr("reviewRemoveTalkHint")
                     }
                     ActionButton {
-                        ghost: true; implicitHeight: 28
+                        implicitHeight: 28
                         visible: win.namesView.reviewRemoved > 0
                         text: win.fmt("reviewRestoreAll", { n: win.namesView.reviewRemoved })
                         enabled: !win.appView.busy
@@ -126,8 +126,13 @@ ColumnLayout {
                                 Item { Layout.preferredWidth: 24 }
                                 HeadText { text: "#"; Layout.preferredWidth: 22 }
                                 HeadText { text: win.tr("duration"); Layout.preferredWidth: 46 }
-                                HeadText {
-                                    text: win.tr("kindColumn") + "*"; Layout.preferredWidth: 56; visible: reviewPage.kindsKnown
+                                Item {
+                                    Layout.preferredWidth: 56; implicitHeight: reviewKindHead.implicitHeight; visible: reviewPage.kindsKnown
+                                    Row {
+                                        id: reviewKindHead; spacing: 3
+                                        HeadText { text: win.tr("kindColumn") }
+                                        Icon { kind: "info"; ink: Theme.faint; width: 12; height: 12; anchors.verticalCenter: parent.verticalCenter }
+                                    }
                                     HoverHandler { id: reviewKindHover }
                                     ToolTip.visible: reviewKindHover.hovered; ToolTip.delay: 200; ToolTip.text: win.tr("kindHint")
                                 }
@@ -232,10 +237,10 @@ ColumnLayout {
                                     Accessible.name: win.tr("reviewListen") + " " + reviewRow.number
                                 }
                                 Copy {
-                                    text: reviewRow.number.toString().padStart(2, "0"); Layout.preferredWidth: 22; font.family: Theme.mono
+                                    text: reviewRow.number.toString().padStart(2, "0"); Layout.preferredWidth: 22; font.family: Theme.num; font.features: Theme.tabular
                                     color: reviewRow.hearing ? Theme.accentText : Theme.muted; wrapMode: Text.NoWrap
                                 }
-                                Copy { text: reviewRow.duration; Layout.preferredWidth: 46; font.family: Theme.mono; font.pixelSize: Theme.px(12); color: Theme.muted; wrapMode: Text.NoWrap }
+                                Copy { text: reviewRow.duration; Layout.preferredWidth: 46; font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12); color: Theme.muted; wrapMode: Text.NoWrap }
                                 Copy {
                                     visible: reviewPage.kindsKnown; Layout.preferredWidth: 56; wrapMode: Text.NoWrap; elide: Text.ElideRight
                                     text: reviewRow.kind ? win.tr("kind_" + reviewRow.kind) : ""
@@ -258,7 +263,7 @@ ColumnLayout {
                                         Layout.fillWidth: true; spacing: 2
                                         Field {
                                             quiet: true; text: reviewRow.proposed; implicitHeight: 28; Layout.leftMargin: -10
-                                            font.pixelSize: Theme.px(14); font.weight: Font.Medium; Layout.fillWidth: true
+                                            font.pixelSize: Theme.item; font.weight: Font.Medium; Layout.fillWidth: true
                                             placeholderText: "—"; enabled: !reviewRow.removed
                                             onTextEdited: backend.names.editReview(reviewRow.index, text)
                                         }
@@ -287,7 +292,7 @@ ColumnLayout {
                                     opacity: reviewRow.removed ? 0.5 : 1
                                     Copy {
                                         Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
-                                        font.family: Theme.mono; font.pixelSize: Theme.px(12)
+                                        font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12)
                                         text: reviewRow.entry >= 0 ? "#" + reviewRow.entryLabel + (reviewRow.entryDuration ? " · " + reviewRow.entryDuration : "") : "—"
                                         color: reviewRow.entry >= 0 ? Theme.sub : Theme.faint
                                     }
@@ -296,7 +301,7 @@ ColumnLayout {
                                         readonly property real gap: Math.abs(reviewRow.diff)
                                         text: win.tr("reviewDiff") + " " + (reviewRow.diff >= 0 ? "+" : "−")
                                               + (gap < 60 ? Math.round(gap) + "s" : Math.floor(gap / 60) + ":" + String(Math.round(gap % 60)).padStart(2, "0"))
-                                        font.family: Theme.mono; font.pixelSize: Theme.px(11); wrapMode: Text.NoWrap
+                                        font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(11); wrapMode: Text.NoWrap
                                         color: gap <= reviewRow.tolerance ? Theme.faint : gap <= reviewRow.tolerance * 3 ? Theme.pendingText : Theme.danger
                                     }
                                 }
@@ -384,7 +389,7 @@ ColumnLayout {
                                 text: win.namesView.reviewSource === "disc" ? win.tr("srcDiscTitle")
                                     : win.namesView.reviewCount === 0 ? win.tr(win.namesView.reviewSource === "paste" ? "srcEmptyPaste" : "srcEmptyImport")
                                     : win.namesView.reviewSource === "paste" ? win.tr("srcPasteTitle") : win.namesView.reviewSourceName
-                                font.pixelSize: Theme.px(15); font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
+                                font.pixelSize: Theme.heading; font.weight: Theme.strong; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
                             }
                             Copy {
                                 visible: win.namesView.reviewCount > 0
@@ -568,13 +573,13 @@ ColumnLayout {
                     color: on ? Theme.accentSoft : pickArea.containsMouse ? Theme.raised : "transparent"
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 10
-                        Copy { text: pick.modelData.number; font.family: Theme.mono; color: Theme.muted; Layout.preferredWidth: 22; wrapMode: Text.NoWrap }
+                        Copy { text: pick.modelData.number; font.family: Theme.num; font.features: Theme.tabular; color: Theme.muted; Layout.preferredWidth: 22; wrapMode: Text.NoWrap }
                         Copy {
                             text: pick.modelData.name; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
                             color: pick.modelData.index < 0 ? Theme.muted : pick.modelData.used && !pick.on ? Theme.faint : Theme.text
                         }
                         Copy { visible: pick.modelData.used && !pick.on; text: win.tr("usedElsewhere"); font.pixelSize: Theme.px(11); color: Theme.faint; wrapMode: Text.NoWrap }
-                        Copy { text: pick.modelData.duration; font.family: Theme.mono; font.pixelSize: Theme.px(12); color: Theme.muted; wrapMode: Text.NoWrap }
+                        Copy { text: pick.modelData.duration; font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12); color: Theme.muted; wrapMode: Text.NoWrap }
                     }
                     MouseArea {
                         id: pickArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor

@@ -71,7 +71,12 @@ class NamesController(SetlistSources, ReleaseSearch, Controller):
                     confidence='removed', detail='', checked=False, seconds=lengths.get(number) or 0,
                     kind=kinds.get(number, ''), **self.entry_fields(None))
 
-    def review_entries(self, entries, origin='edited', mode='auto', show=True):
+    def review_entries(self, entries, origin=None, mode='auto', show=True):
+        # Where the titles came from, for the workspace's source column: the list being reviewed
+        # (online release, paste, import) unless the caller says otherwise.
+        if origin is None:
+            source = self.state.get('reviewSource')
+            origin = source if source in ('disc', 'online', 'paste', 'import') else 'edited'
         if not entries or not self.disc.chapters:
             self.notify(self.tr('noNames'))
             return False
@@ -506,8 +511,12 @@ class NamesController(SetlistSources, ReleaseSearch, Controller):
         for row in self.review_model.rows:
             if row['checked'] and row['proposed'].strip():
                 title = row['proposed'] if self.state['reviewMode'] == 'chapter' else row['proposed'].strip()
-                self.disc.chapter_model.change(current[row['number']], title=title, origin=self.entries_source)
-                if self.entries_source == 'disc':
+                # A candidate typed over in the review is the user's own; one taken as listed keeps the list's source.
+                entry = row['entry']
+                as_listed = 0 <= entry < len(self.review_pool) and self.review_pool[entry].name.strip() == row['proposed'].strip()
+                origin = self.entries_source if as_listed else 'edited'
+                self.disc.chapter_model.change(current[row['number']], title=title, origin=origin)
+                if self.entries_source == 'disc' and as_listed:
                     self.disc.disc_baselines[row['number']] = row['proposed'].strip()
         self.show('main')
 

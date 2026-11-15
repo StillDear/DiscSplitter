@@ -25,7 +25,7 @@ class ExportController(Controller):
     def __init__(self, app):
         super().__init__(app, destination='', resume=False, resumeText='',
                          exportConfirmation='', collisionFiles=[], logs='', result='idle', tracklistAvailable=False,
-                         stage='extracting', current=0, completed=0, failed=0, remaining=0,
+                         stage='extracting', current=0, chapterFraction=0.0, completed=0, failed=0, remaining=0,
                          verified=0, verifyIssues=0, verifyState='off')
         self.flow = ExportFlow()        # checkpoint, confirmations, running job, result
         self.finished_tracklist = ''
@@ -40,7 +40,7 @@ class ExportController(Controller):
                 seconds = float(value)
             except ValueError:
                 return value
-            return f"{int(seconds // 60)}:{seconds % 60:04.1f}"
+            return f"{int(seconds // 60):02d}:{seconds % 60:04.1f}"      # 04:57.0, like the table's 05:00
         expected, actual = issue.expected, issue.actual
         if issue.code == 'duration':
             expected, actual = length(expected), length(actual)
@@ -118,7 +118,7 @@ class ExportController(Controller):
         def work(p):
             playlist_path = Path(manifest.source_playlist)
             image = Path(manifest.source_iso) if manifest.source_iso else None
-            with self.app.preview_mounts.use(playlist_path, image) as path:
+            with self.app.preview_mounts.use(playlist_path, image, direct=manifest.track_numbers == 'engine') as path:
                 # Read the way the job was checkpointed: its track IDs are PIDs (engine) or mkvmerge's numbers.
                 playlist = sources.inspect_playlist(path, use_engine=manifest.track_numbers == 'engine')
                 if not playlist.measured:
@@ -303,7 +303,7 @@ class ExportController(Controller):
         self.log_path = self.new_log_path(output)
         self.log_lines.clear()
         self.app.put(page='export', pipeline=True)
-        self.put(destination=str(output), logs='', stage='extracting', current=0, completed=0,
+        self.put(destination=str(output), logs='', stage='extracting', current=0, chapterFraction=0.0, completed=0,
                  failed=0, remaining=len(plan['indices']), result=self.flow.result)
         for i, row in enumerate(self.disc.chapter_model.rows):
             item = next((p for p in plan['plan'].items if p.chapter.index == row['number']), None)
@@ -358,6 +358,11 @@ class ExportController(Controller):
     @Slot(object)
     def progress(self, message):
         """One pipeline message: the log, the stage and the chapter rows, announced to QML once."""
+        fraction = getattr(message, 'fraction', None)
+        if fraction is not None:            # how far into the running chapter: the bar only, not the log
+            if self.state['current'] == message.chapter:
+                self.put(chapterFraction=fraction)
+            return
         self.log_lines.append(str(message))
         update = dict(logs='\n'.join(self.log_lines))
         event = logic.progress_event(message)
@@ -370,6 +375,8 @@ class ExportController(Controller):
                     self.disc.chapter_model.change(i, status='done')
                 if row['number'] == event.chapter:
                     self.disc.chapter_model.change(i, status=event.status)
+            if event.chapter != self.state['current']:
+                update['chapterFraction'] = 0.0
             update['current'] = event.chapter
         elif event.status in ('failed', 'cancelled'):
             # The job stopped: the chapter being written did not finish (finish_export settles the rest).

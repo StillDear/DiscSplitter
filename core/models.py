@@ -97,6 +97,7 @@ class Playlist:
     reader: str = field(default="mkvmerge", compare=False)
     marks: Optional[list[float]] = field(default=None, compare=False, repr=False)   # chapter starts, from the engine
     main_title: bool = field(default=False, compare=False)   # the engine's pick for the disc's main title
+    marks_exact: bool = field(default=False, compare=False)  # marks from their 45 kHz ticks, not rounded to the ms
 
     @property
     def by_engine(self) -> bool:

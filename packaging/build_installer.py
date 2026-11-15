@@ -8,7 +8,7 @@ Build the Windows installer: dist/DiscSplitter-Setup-<version>.exe
    the version is written next to it (version.txt), where the app reads it.
 2. ffmpeg/ffprobe and mkvmerge/mkvextract/mkvpropedit are copied into its tools\\ folder with their licences;
    the installed app uses them unless the user sets other paths in Settings. The built-in Blu-ray engine
-   (tsMuxeR, compiled from engine/ by engine/build_engine.py, which runs first when needed) goes there too.
+   (tsMuxeR, compiled from engine/ by engine/build_engine.py, which runs first and rebuilds what changed) goes there too.
 3. Inno Setup (packaging/DiscSplitter.iss) packs that folder into the setup wizard.
 
 Tool folders come from the arguments, else the environment (FFMPEG_DIR, MKVTOOLNIX_DIR), else the
@@ -102,8 +102,9 @@ def main() -> None:
                "mkvtoolnix": tool_folder("mkvtoolnix", args.mkvtoolnix_dir)}
     iscc = find_iscc(args.iscc)
     engine_exe = ROOT / "engine" / "bin" / "tsMuxeR.exe"
-    if not engine_exe.is_file():
-        run([sys.executable, ROOT / "engine" / "build_engine.py"])
+    # Always run the engine build: it is incremental, so it is quick when nothing changed,
+    # and an engine source edited since the last build is never packed stale.
+    run([sys.executable, ROOT / "engine" / "build_engine.py"])
 
     if not args.skip_pyinstaller:
         run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
