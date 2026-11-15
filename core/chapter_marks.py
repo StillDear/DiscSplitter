@@ -70,8 +70,12 @@ def read_chapters(mkv_path: Path, preferred_language: str = "eng") -> list[Chapt
         xml_text = xml_text[lt_index:]
     root = ET.fromstring(xml_text)
 
+    # Only the first edition's top-level chapters: that is what mkvmerge -J counts (Playlist.chapter_count)
+    # and what plays. Other editions and nested sub-chapters would add marks the scan never showed.
+    edition = root.find("EditionEntry")
+    atoms = edition.findall("ChapterAtom") if edition is not None else root.findall("ChapterAtom")
     chapters: list[Chapter] = []
-    for i, atom in enumerate(root.iter("ChapterAtom"), start=1):
+    for atom in atoms:
         start_el = atom.find("ChapterTimeStart")
         if start_el is None or start_el.text is None:
             continue
@@ -80,7 +84,7 @@ def read_chapters(mkv_path: Path, preferred_language: str = "eng") -> list[Chapt
 
         chapters.append(
             Chapter(
-                index=i,
+                index=len(chapters) + 1,
                 start_seconds=_timecode_to_seconds(start_el.text),
                 embedded_name=embedded_name,
                 language=language,

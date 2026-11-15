@@ -78,11 +78,29 @@ def load() -> dict[str, Any]:
         return dict(DEFAULTS)
     try:
         data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return dict(DEFAULTS)
+    if not isinstance(data, dict):
         return dict(DEFAULTS)
     merged = dict(DEFAULTS)
-    merged.update(data)
+    merged.update({key: value for key, value in data.items() if _usable(key, value)})
     return merged
+
+
+NUMBERS = ("net_timeout", "duration_tolerance", "font_scale")     # read with float()
+
+
+def _usable(key: str, value: Any) -> bool:
+    """A hand-edited or damaged value falls back to its default instead of failing at start-up."""
+    default = DEFAULTS.get(key)
+    if default is not None and not isinstance(value, type(default)):
+        return False
+    if key in NUMBERS:
+        try:
+            return float(value) > 0
+        except (TypeError, ValueError):
+            return False
+    return True
 
 
 def save(settings: dict[str, Any]) -> None:

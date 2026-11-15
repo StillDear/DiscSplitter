@@ -58,6 +58,28 @@ def render_filename(template: str, number: int, title: str, artist: str = "") ->
     return pattern.format(nn=f"{number:02d}", n=number, title=title, artist=sanitize_filename(artist) if artist else "")
 
 
+# A file name is at most 255 UTF-16 units on NTFS, and many tools still fail past 260 for the whole
+# path. Leave room for " (2)", ".partial" and the extension, and keep the path itself in reach.
+MAX_STEM = 150
+MAX_PATH = 250
+MIN_STEM = 40
+
+
+def _units(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def fit_stem(stem: str, folder: Path, extension: str) -> str:
+    """Shorten a file name stem so the name, and if possible the full path, stays within Windows' limits."""
+    room = MAX_PATH - _units(str(folder)) - 1 - _units(f" (99).partial.{extension}")
+    limit = max(MIN_STEM, min(MAX_STEM, room))
+    if _units(stem) <= limit:
+        return stem
+    while stem and _units(stem) > limit:
+        stem = stem[:-1]
+    return stem.rstrip(" .") or "Untitled"
+
+
 @dataclass
 class PlannedOutput:
     chapter: "Chapter"
@@ -95,6 +117,7 @@ def plan_output_files(
             stem = base
             if stem.split(".", 1)[0].rstrip().upper() in _WINDOWS_RESERVED_NAMES:
                 stem = f"_{stem}"
+        stem = fit_stem(stem, output_folder, container)
         stems.append(stem)
         key = stem.casefold()
         name_counts[key] = name_counts.get(key, 0) + 1

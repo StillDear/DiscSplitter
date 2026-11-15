@@ -16,6 +16,7 @@ route from there.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
 import re
@@ -218,6 +219,16 @@ def chapter_at(path: Path, seconds: float, tolerance: float = 0.5) -> Optional[i
 
 
 # ------------------------------------------------------------------ export
+def in_copy(path: Path, tracks: list[Track]) -> list[Track]:
+    """
+    The same tracks as numbered in a full remux() copy. The copy holds only the streams this
+    module reads (video, audio, subtitles), numbered from 0 in title order, so a title with any
+    other stream (navigation data, an unknown type) has different numbers there than in ffprobe.
+    """
+    position = {t.track_id: i for i, t in enumerate(inspect(path).tracks)}
+    return [dataclasses.replace(t, track_id=position[t.track_id]) for t in tracks]
+
+
 def remux(path: Path, output: Path, *, tracks: Optional[list[Track]] = None,
           progress_cb: Optional[Callable[[str], None]] = None,
           cancel_event: Optional[threading.Event] = None) -> Path:

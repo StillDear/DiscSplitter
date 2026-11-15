@@ -105,8 +105,7 @@ class DiscController(Controller):
             self.app.set_config(last_source_folder=str(source))
             mb_album = self.app.names.start_over(guessed[0], guessed[1])
             self.put(sidecars=[str(p) for p in sidecars], artist=guessed[0], album=guessed[1])
-            self.playlist_model.replace([dict(label=self.playlist_label(s.playlist), chosen=False,
-                                              **self.card_texts(s, self.cfg.get('language', 'zh'))) for s in scores])
+            self.playlist_model.replace([self.playlist_card(s) for s in scores])
             self.app.metadata.for_source(str(source), guessed[0], mb_album, guessed[2])
             if scores:
                 self.selectPlaylist(0)
@@ -119,6 +118,10 @@ class DiscController(Controller):
             self.put(sidecars=[], artist='', album='')
             self.report(exc)
         self.task(work, done, failed, label='scanning')
+
+    def playlist_card(self, score):
+        return dict(label=self.playlist_label(score.playlist), chosen=False,
+                    **self.card_texts(score, self.cfg.get('language', 'zh')))
 
     def forget_chapters(self):
         self.chapters = []
@@ -326,6 +329,20 @@ class DiscController(Controller):
     def restore_job(self, playlist, audio, source_size, manifest):
         """Put a checkpointed export back on screen: its playlist, tracks, chapters, titles and ticks."""
         self.playlist, self.audio, self.source_size = playlist, audio, source_size
+        # The playlist cards and the scanned disc follow the job, so picking another playlist or
+        # rescanning afterwards behaves as after a scan of this disc.
+        key = (str(playlist.path), str(playlist.iso_image or ''))
+        index = next((i for i, s in enumerate(self.playlists)
+                      if (str(s.playlist.path), str(s.playlist.iso_image or '')) == key), None)
+        if index is None:
+            self.playlists = sources.score_playlists([playlist])
+            self.playlist_model.replace([self.playlist_card(s) for s in self.playlists])
+            index = 0
+        else:
+            self.playlists[index] = replace(self.playlists[index], playlist=playlist)
+        for i in range(len(self.playlist_model.rows)):
+            self.playlist_model.change(i, chosen=i == index)
+        self.scanned_source = str(Path(self.state['source'])) if self.state['source'] else None
         self.put(outputFormat=manifest.container)
         self.populate_tracks(manifest.audio_track_ids or [manifest.audio_track_id], manifest.subtitle_track_ids,
                              keep_video=manifest.video_track_id is not None)

@@ -164,3 +164,68 @@ def test_network_jobs_leave_the_selection_editable(backend, qt_app):
     assert backend.task(lambda progress: None, lambda result: None) is False     # but no second job
     gate.set()
     wait_idle(backend, qt_app)
+
+
+def test_only_the_first_editions_own_chapters_are_read(monkeypatch):
+    from core import chapter_marks
+    xml = ('<Chapters><EditionEntry>'
+           '<ChapterAtom><ChapterTimeStart>00:00:00.000</ChapterTimeStart>'
+           '<ChapterAtom><ChapterTimeStart>00:00:30.000</ChapterTimeStart></ChapterAtom></ChapterAtom>'
+           '<ChapterAtom><ChapterTimeStart>00:04:00.000</ChapterTimeStart></ChapterAtom>'
+           '</EditionEntry><EditionEntry>'
+           '<ChapterAtom><ChapterTimeStart>00:00:00.000</ChapterTimeStart></ChapterAtom>'
+           '</EditionEntry></Chapters>')
+    monkeypatch.setattr(core.tools, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 0, xml, ''))
+    found = chapter_marks.read_chapters(Path('x.mkv'))
+    assert [(c.index, c.start_seconds) for c in found] == [(1, 0.0), (2, 240.0)]
+
+
+def test_a_dvd_title_is_cut_by_its_copys_track_numbers(monkeypatch):
+    from core import dvd
+    title = core.models.Playlist(Path('VIDEO_TS/VTS_01_0.IFO'), [core.models.Track(0, 'video', 'MPEG-2'),
+                                 core.models.Track(2, 'audio', 'AC-3'), core.models.Track(3, 'audio', 'LPCM')])
+    monkeypatch.setattr(dvd, 'inspect', lambda path: title)       # stream 1 (navigation data) is not copied
+    assert [t.track_id for t in dvd.in_copy(title.path, title.tracks[2:])] == [2]
+    assert [t.track_id for t in dvd.in_copy(title.path, title.tracks)] == [0, 1, 2]
+
+
+def test_long_titles_are_shortened_to_fit_windows_paths(tmp_path):
+    from core import naming
+    folder = tmp_path / ('d' * 60)
+    planned = naming.plan_output_files([core.models.Chapter(1, 0, 10, name='长' * 300),
+                                        core.models.Chapter(2, 10, 20, name='长' * 301)], folder)
+    names = [p.path.name for p in planned]
+    assert len(set(names)) == 2
+    assert all(len(name) <= naming.MAX_STEM + 8 for name in names)
+    assert all(len(str(p.path)) <= max(naming.MAX_PATH, len(str(folder)) + naming.MIN_STEM + 12) for p in planned)
+
+
+def test_a_damaged_setting_falls_back_to_its_default(tmp_path, monkeypatch):
+    path = tmp_path / '.disc_splitter' / 'settings.json'
+    path.parent.mkdir()
+    path.write_text(json.dumps({'net_timeout': 'soon', 'waveform': 'yes', 'language': 'en', 'layout': []}), encoding='utf-8')
+    monkeypatch.setattr(settings, 'SETTINGS_PATH', path)
+    loaded = settings.load()
+    assert (loaded['net_timeout'], loaded['waveform'], loaded['language'], loaded['layout']) == ('15', True, 'en', {})
+    path.write_text('[1, 2]', encoding='utf-8')
+    assert settings.load() == settings.DEFAULTS
+
+
+def test_a_resumed_job_shows_its_own_playlist_card(backend, qt_app, monkeypatch, tmp_path):
+    from test_backend import setup_disc, wait_idle
+    from test_logic import manifest
+    playlist = setup_disc(backend)
+    backend.put(source=str(tmp_path / 'disc'))
+    backend.disc.playlists = core.sources.score_playlists([core.models.Playlist(Path('other/00002.mpls'), [], 1, 60)])
+    output = tmp_path / 'Album'
+    m = manifest(output, 'cancelled')
+    m.audio_track_id = 1
+    core.manifest.write_manifest(output / '_work', m)
+    backend.exporter.flow.manifest = m
+    monkeypatch.setattr(core.sources, 'inspect_playlist', lambda path: playlist)
+    monkeypatch.setattr(core.pipeline, 'run_full_pipeline', lambda *a, **k: [])
+    backend.exporter.resume()
+    wait_idle(backend, qt_app)
+    assert [s.playlist.path for s in backend.disc.playlists] == [playlist.path]
+    assert [r['chosen'] for r in backend.disc.playlist_model.rows] == [True]
+    assert backend.disc.scanned_source == str(tmp_path / 'disc')

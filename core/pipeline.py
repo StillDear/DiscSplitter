@@ -180,9 +180,14 @@ def run_full_pipeline(
             selected = [ch for ch in chapters if chapter_indices is None or ch.index in chapter_indices]
             if direct:
                 # Video files carry only their song titles: no album tags, cover or folder.jpg.
+                video = [video_track] if keep_video and video_track is not None else []
+                streams = (video, audio_tracks, subtitle_tracks)
+                if dvd.is_title(playlist.path):         # cut from the title's copy, whose numbers differ
+                    streams = tuple(dvd.in_copy(playlist.path, group) for group in streams)
+                video, cut_audio, cut_subtitles = streams
                 results = split.split_mkv_direct(
-                    source, selected, output_folder, audio_tracks=audio_tracks, subtitle_tracks=subtitle_tracks,
-                    video_track=video_track if keep_video else None, **common)
+                    source, selected, output_folder, audio_tracks=cut_audio, subtitle_tracks=cut_subtitles,
+                    video_track=video[0] if video else None, **common)
             else:
                 # A resumed job keeps the tags it started with.
                 tagging.write_folder_cover(metadata, output_folder)
