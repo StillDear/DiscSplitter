@@ -289,10 +289,16 @@ RowLayout {
                             Field { id: qArtist; text: metaPage.meta.album.artist || ""; Layout.fillWidth: true; onAccepted: metaPage.searchOnline(); Accessible.name: win.tr("artist") }
                             Label { text: win.tr("album") }
                             Field { id: qAlbum; text: metaPage.meta.album.album || ""; Layout.fillWidth: true; onAccepted: metaPage.searchOnline(); Accessible.name: win.tr("album") }
-                            Disclosure {
-                                id: metaBarcodeToggle; Layout.columnSpan: 2
-                                text: win.tr("barcodeToggle"); enabled: !win.appView.working
-                                onOpenChanged: if (open) qBarcode.forceActiveFocus()
+                            // The barcode toggle, and across from it a check on the chosen source
+                            RowLayout {
+                                Layout.columnSpan: 2; Layout.fillWidth: true; spacing: 8
+                                Disclosure {
+                                    id: metaBarcodeToggle
+                                    text: win.tr("barcodeToggle"); enabled: !win.appView.working
+                                    onOpenChanged: if (open) qBarcode.forceActiveFocus()
+                                }
+                                Item { Layout.fillWidth: true }
+                                SourceCheck { source: metaPage.source }
                             }
                             Label { visible: metaBarcodeToggle.open; text: win.tr("barcodeShort") }
                             Field { id: qBarcode; visible: metaBarcodeToggle.open; mono: true; Layout.fillWidth: true; placeholderText: win.tr("barcodePlaceholder"); onAccepted: metaPage.searchOnline(); Accessible.name: win.tr("barcode") }

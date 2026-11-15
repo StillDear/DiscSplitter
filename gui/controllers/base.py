@@ -62,8 +62,8 @@ class Controller(View):
             self.app.changed.emit()
 
     def show(self, page):
-        """Go to a page of the app."""
-        self.app.put(page=page)
+        """Go to a page of the app (a sub-page remembers where Back leads)."""
+        self.app.show_page(page)
 
     def task(self, *args, **kwargs):
         return self.app.task(*args, **kwargs)

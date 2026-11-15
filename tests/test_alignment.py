@@ -132,3 +132,21 @@ def test_get_titles_reopens_the_last_used_source(backend, qt_app):
     backend.names.openTitles()                      # paste: open that tab empty, waiting for a new paste
     assert (backend.state['reviewSource'], backend.state['reviewCount'], backend.state['reviewCanAlign']) == ('paste', 0, False)
     assert {r['confidence'] for r in backend.names.review_model.rows} == {'waiting'} and backend.state['reviewChecked'] == 0
+
+
+def test_back_from_review_returns_to_the_workspace(backend, qt_app):
+    """The review page is opened by the names controller, not navigate(); Back must still lead to the workspace
+    (it used to follow a stale return page, e.g. the start page the app opened on, or settings opened from there)."""
+    backend.navigate('settings')                    # from the start page: Back would lead there
+    backend.back()
+    backend.disc.chapters = chapters([60, 60])
+    backend.disc.rebuild_chapters({})
+    backend.navigate('main')
+    backend.names.openOnline()
+    assert backend.state['page'] == 'review'
+    backend.back()
+    assert backend.state['page'] == 'main'
+    backend.names.reviewPaste('One\nTwo')
+    assert backend.state['page'] == 'review'        # a paste from the workspace opens the review too
+    backend.back()
+    assert backend.state['page'] == 'main'

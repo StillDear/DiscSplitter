@@ -454,10 +454,16 @@ ColumnLayout {
                         Field { id: artist; text: win.namesView.mbArtist; Layout.fillWidth: true; onAccepted: queryForm.run(); Accessible.name: win.tr("artist") }
                         Copy { text: win.tr("album"); color: Theme.muted; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
                         Field { id: album; text: win.namesView.mbAlbum; Layout.fillWidth: true; onAccepted: queryForm.run(); Accessible.name: win.tr("album") }
-                        Disclosure {
-                            id: barcodeToggle; Layout.columnSpan: 2
-                            text: win.tr("barcodeToggle"); enabled: !win.appView.working
-                            onOpenChanged: if (open) barcode.forceActiveFocus()
+                        // The barcode toggle, and across from it a check on the chosen source
+                        RowLayout {
+                            Layout.columnSpan: 2; Layout.fillWidth: true; spacing: 8
+                            Disclosure {
+                                id: barcodeToggle
+                                text: win.tr("barcodeToggle"); enabled: !win.appView.working
+                                onOpenChanged: if (open) barcode.forceActiveFocus()
+                            }
+                            Item { Layout.fillWidth: true }
+                            SourceCheck { source: win.namesView.titleSource || "musicbrainz" }
                         }
                         Copy { visible: barcodeToggle.open; text: win.tr("barcodeShort"); color: Theme.muted; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap }
                         Field { id: barcode; visible: barcodeToggle.open; mono: true; Layout.fillWidth: true; placeholderText: win.tr("barcodePlaceholder"); onAccepted: queryForm.run(); Accessible.name: win.tr("barcode") }

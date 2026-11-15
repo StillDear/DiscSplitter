@@ -60,7 +60,7 @@ class Backend(View):
         cfg = settings.load()
         super().__init__(None, page='start', returnPage='start', toolNames='', busy=False, working=False, pipeline=False, status='ready', toolMissing=False,
                          systemAccent='', systemScale=100, startScale=str(cfg.get('interface_scale', 'system')),
-                         recentExports=[], netTest=[])
+                         recentExports=[], netTest=[], sourceCheck={})
         self.smoke = smoke
         self.cfg = cfg
         self.pool = QThreadPool(self)
@@ -255,12 +255,17 @@ class Backend(View):
             return
         if page == 'main' and not self.has_disc():
             page = 'start'      # an empty workspace is never a destination
+        self.show_page(page)
+        if page == 'settings':
+            self.metadata.refresh_cover_cache()
+
+    def show_page(self, page):
+        """Go to a page; entering a sub-page remembers the page it was opened from, for Back.
+        Every page change goes through here (controllers too), so Back never returns to a stale page."""
         here = self.state['page']
         if page in self.SUB_PAGES and here not in self.SUB_PAGES:
             self.put(returnPage=here)
         self.put(page=page)
-        if page == 'settings':
-            self.metadata.refresh_cover_cache()
 
     @Slot()
     def back(self):
@@ -377,6 +382,21 @@ class Backend(View):
         self.task(work, done, lambda exc: self.put(netTest=[]) or self.report(exc),
                   begin=dict(netTest=[dict(source=s, label=names[s], state='running', ms=0, detail='')
                                       for s in metadata_sources.SOURCES]), blocking=False)
+
+    @Slot(str)
+    def checkSource(self, source):
+        """Reach the one catalogue picked beside an online search; the result stays beside it."""
+        if source not in metadata_sources.SOURCES:
+            return
+        if self.cfg.get('proxy_mode') == 'custom' and not self.cfg.get('proxy_url'):
+            self.put(sourceCheck=dict(source=source, state='error', ms=0, detail=self.tr('proxyMissing')))
+            return
+        def done(result):
+            state, ms, detail = result
+            self.put(sourceCheck=dict(source=source, state=state, ms=ms, detail=detail))
+        self.task(lambda progress: metadata_sources.check(source), done,
+                  lambda exc: self.put(sourceCheck=dict(source=source, state='error', ms=0, detail=self.error_text(exc))),
+                  begin=dict(sourceCheck=dict(source=source, state='running', ms=0, detail='')), blocking=False)
 
     @Slot()
     def requestClose(self):
