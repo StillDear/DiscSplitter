@@ -121,11 +121,14 @@ Item {
         }
     }
     component VolumeControl: RowLayout {
+        // slim: the slider takes whatever width the row gives it (down to a short stub) instead of a fixed 84 px
+        property bool slim: false
         spacing: 6
         Icon { kind: "volume"; ink: Theme.muted; Layout.preferredWidth: 16; Layout.preferredHeight: 16 }
         Slider {
             id: volumeSlider
             Layout.preferredWidth: 84; Layout.preferredHeight: 18; padding: 0
+            Layout.fillWidth: parent.slim; Layout.minimumWidth: parent.slim ? 36 : 84
             from: 0; to: 1; value: bar.volume
             onMoved: bar.volume = value
             Accessible.name: win.tr("previewVolume")
@@ -204,7 +207,7 @@ Item {
             anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 6
             StepButtons {}
             ColumnLayout {
-                Layout.fillWidth: true; Layout.leftMargin: 8; spacing: 3
+                Layout.fillWidth: true; Layout.leftMargin: 8; Layout.minimumWidth: 160; spacing: 3
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
                     Copy { text: win.previewView.previewTitle; font.weight: Font.DemiBold; elide: Text.ElideRight; wrapMode: Text.NoWrap; Layout.fillWidth: true }
@@ -226,8 +229,15 @@ Item {
                 }
             }
             SplitButton { Layout.leftMargin: 4 }
-            TrackSwitch { Layout.leftMargin: 8; Layout.maximumWidth: 320 }
-            VolumeControl { Layout.leftMargin: 10 }
+            // At most a quarter of the row, so the waveform beside the title always keeps its room;
+            // long track names shorten (the hint shows them whole).
+            TrackSwitch {
+                id: audioTracks
+                Layout.leftMargin: 8; fill: true; Layout.minimumWidth: 0
+                Layout.preferredWidth: Math.min(implicitWidth, 320, bar.width * 0.25)
+                options: win.previewView.previewTracks.map(function(label, i) { return { key: String(i), label: label, hint: label } })
+            }
+            VolumeControl { Layout.leftMargin: 10; slim: true; Layout.preferredWidth: 106; Layout.minimumWidth: 60 }
             CloseButton { Layout.leftMargin: 4 }
         }
 
@@ -238,7 +248,8 @@ Item {
             Rectangle {
                 id: screen
                 Layout.fillHeight: true; Layout.preferredWidth: Math.round(height * 16 / 9)
-                Layout.maximumWidth: parent.width * 0.62
+                // The controls beside it need ~230 px; only in a very narrow window does the picture give way
+                Layout.maximumWidth: Math.min(parent.width * 0.62, parent.width - 16 - 230)
                 radius: 8; color: "#000000"; clip: true
                 VideoOutput { id: panelPicture; anchors.fill: parent; fillMode: VideoOutput.PreserveAspectFit }
                 Copy {
@@ -261,50 +272,52 @@ Item {
                 }
                 HoverHandler { id: screenHover }
             }
-            // Title on top, the timeline in the middle, the controls along the bottom: about 160 px, so the
-            // whole column fits the smallest panel (minimumVideoHeight) and nothing is ever cut off.
+            // Beside the picture, which keeps its size: a narrow column, so every row stacks and shrinks
+            // instead of sitting side by side. Top: title and close, the track, the audio switch on a line
+            // of its own. Bottom: the waveform across the full width, the times under it, then the buttons
+            // with the volume. No row needs more than ~220 px, so nothing is pushed out of view.
             ColumnLayout {
                 id: side
-                Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
+                Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 0; spacing: 0
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
                     ColumnLayout {
-                        Layout.fillWidth: true; spacing: 3
+                        Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 3
                         Copy { text: win.previewView.previewTitle; font.pixelSize: Theme.heading; font.weight: Theme.strong; elide: Text.ElideRight; wrapMode: Text.NoWrap; Layout.fillWidth: true }
                         Copy { text: win.previewView.previewTrack; color: Theme.muted; font.pixelSize: Theme.px(12); elide: Text.ElideRight; wrapMode: Text.NoWrap; Layout.fillWidth: true }
                     }
                     CloseButton { Layout.alignment: Qt.AlignTop }
                 }
+                // Audio track: a full-width switch; long names shorten (the hint shows them whole)
+                TrackSwitch {
+                    Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.topMargin: 12
+                    fill: true; itemHeight: Math.round(26 * Math.max(1, Theme.fontScale))
+                    options: win.previewView.previewTracks.map(function(label, i) { return { key: String(i), label: label, hint: label } })
+                }
                 Item { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 10 }
+                Scrubber {
+                    Layout.fillWidth: true; Layout.preferredHeight: waveHeight
+                    waveHeight: bar.waveOn ? Math.round(Math.max(32, Math.min(64, bar.height * 0.2))) : 18
+                }
                 RowLayout {
-                    Layout.fillWidth: true; spacing: 10
+                    Layout.fillWidth: true; Layout.topMargin: 4; spacing: 8
+                    visible: !bar.loading           // the picture says it is being prepared
                     Copy {
-                        visible: !bar.loading
-                        text: bar.time(player.position); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12); color: Theme.muted
-                        wrapMode: Text.NoWrap; Layout.preferredWidth: Math.max(implicitWidth, 40)
+                        text: bar.time(player.position); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.caption; color: Theme.muted
+                        wrapMode: Text.NoWrap
                     }
-                    Scrubber {
-                        Layout.fillWidth: true; Layout.preferredHeight: waveHeight
-                        waveHeight: bar.waveOn ? Math.round(Math.max(32, Math.min(64, bar.height * 0.2))) : 18
-                    }
+                    Item { Layout.fillWidth: true }
                     Copy {
-                        visible: !bar.loading           // the picture says it is being prepared
-                        text: bar.total(); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.px(12); color: Theme.muted
-                        wrapMode: Text.NoWrap; horizontalAlignment: Text.AlignRight
-                        Layout.preferredWidth: Math.max(implicitWidth, 40)
+                        text: bar.total(); font.family: Theme.num; font.features: Theme.tabular; font.pixelSize: Theme.caption; color: Theme.muted
+                        wrapMode: Text.NoWrap
                     }
                 }
-                Item { Layout.preferredHeight: 10 }
                 RowLayout {
-                    Layout.fillWidth: true; spacing: 8
+                    Layout.fillWidth: true; Layout.topMargin: 8; spacing: 6
                     StepButtons {}
-                    SplitButton { Layout.leftMargin: 6 }
-                    Item { Layout.fillWidth: true; Layout.minimumWidth: 8 }
-                    TrackSwitch {
-                        fill: true; itemHeight: Math.round(26 * Math.max(1, Theme.fontScale))
-                        Layout.maximumWidth: Math.max(180, bar.width * 0.3)     // not the column's own width: a loop
-                    }
-                    VolumeControl { Layout.leftMargin: 8 }
+                    SplitButton { Layout.leftMargin: 4 }
+                    Item { Layout.fillWidth: true; Layout.minimumWidth: 4 }
+                    VolumeControl { Layout.maximumWidth: 120; Layout.fillWidth: true; Layout.minimumWidth: 60; slim: true }
                 }
             }
         }

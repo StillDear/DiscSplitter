@@ -23,14 +23,19 @@ ColumnLayout {
     component HeadText: Copy { color: Theme.faint; font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap; elide: Text.ElideRight }
     // One surface filling the window (no title bar or footer): the table on the left, the title
     // source with the page's own controls on the right, divided by a hairline.
+    // The preview panel (from Main) docks here, under the page's main content; the panel on the right
+    // runs the full height beside it.
+    property alias previewSlot: previewSlot
     RowLayout {
         Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
 
+        // Width comes from what the right column leaves, never from the header's buttons.
+        ColumnLayout {
+            Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 0; Layout.minimumWidth: 0; spacing: 0
         // ---------- Review table ----------
         Card {
             flat: true; clip: true
-            // Width comes from what the right column leaves, never from the header's buttons.
-            Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 0; Layout.minimumWidth: 0; padding: 20
+            Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; padding: 20
             ColumnLayout {
                 anchors.fill: parent; spacing: 12
                 RowLayout {
@@ -328,6 +333,9 @@ ColumnLayout {
                     }
                 }
             }
+        }
+
+            ColumnLayout { id: previewSlot; Layout.fillWidth: true; Layout.fillHeight: false; spacing: 0 }  // a layout fills by default; this one is only as tall as the panel in it (0 when there is none)
         }
 
         Splitter {

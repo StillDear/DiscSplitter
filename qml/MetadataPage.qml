@@ -50,6 +50,13 @@ RowLayout {
     }
     CoverCropDialog { id: cropDialog; objectName: "coverCrop"; win: metaPage.win }
 
+    // The preview panel (from Main) docks here, under the page's main content; the panel on the right
+    // runs the full height beside it.
+    property alias previewSlot: previewSlot
+    ColumnLayout {
+        Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 0; spacing: 0
+    RowLayout {
+        Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; spacing: metaPage.spacing
     // ---------- Left: header and cover ----------
     Card {
         flat: true; padding: 20
@@ -240,6 +247,10 @@ RowLayout {
                 }
             }
         }
+    }
+
+    }
+        ColumnLayout { id: previewSlot; Layout.fillWidth: true; Layout.fillHeight: false; spacing: 0 }  // a layout fills by default; this one is only as tall as the panel in it (0 when there is none)
     }
 
     Splitter {

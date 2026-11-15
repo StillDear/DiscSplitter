@@ -168,21 +168,23 @@ ApplicationWindow {
             }
             StartPage { win: rootWindow }
             Workspace { id: workspace; win: rootWindow }
-            ReviewPage { win: rootWindow }
+            ReviewPage { id: reviewPage; win: rootWindow }
             ExportPage { win: rootWindow }
             DonePage { win: rootWindow }
             SettingsPage { id: settingsPage; win: rootWindow }
-            MetadataPage { win: rootWindow }
+            MetadataPage { id: metadataPage; win: rootWindow }
         }
 
-        // The preview panel and its height handle. On the workspace it docks under the left and centre columns
-        // (the streams column keeps the full height); on the other pages it runs along the bottom of the window.
+        // The preview panel and its height handle. On the pages with a panel down the right (workspace, review,
+        // metadata) it docks under the rest, so that panel keeps the full height; elsewhere it runs along the
+        // bottom of the window.
         ColumnLayout {
             id: previewArea
-            parent: win.appView.page === "main" ? workspace.previewSlot : pageColumn
+            parent: ({ main: workspace.previewSlot, review: reviewPage.previewSlot,
+                       metadata: metadataPage.previewSlot })[win.appView.page] || pageColumn
             // (not previewBar.visible: a hidden parent hides the bar too, and it could never come back)
             visible: previewBar.Layout.preferredHeight > 0
-            Layout.fillWidth: true; spacing: 0
+            Layout.fillWidth: true; Layout.fillHeight: false; spacing: 0   // as tall as the panel, not a share of the page
             Splitter {
                 vertical: false; visible: previewBar.visible && previewBar.video
                 // Takes no room of its own: it overlaps the gap (or, flush, the hairline) between the two.

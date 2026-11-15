@@ -862,7 +862,7 @@ Rectangle {
         }
 
         }
-            ColumnLayout { id: previewSlot; Layout.fillWidth: true; spacing: 0 }
+            ColumnLayout { id: previewSlot; Layout.fillWidth: true; Layout.fillHeight: false; spacing: 0 }  // a layout fills by default; this one is only as tall as the panel in it (0 when there is none)
         }
 
         Splitter {
