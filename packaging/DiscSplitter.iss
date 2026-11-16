@@ -27,7 +27,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#OutputDir}
-OutputBaseFilename=DiscSplitter-Setup-{#AppVersion}
+OutputBaseFilename=DiscSplitter_{#AppVersion}_Windows_x64_Setup
 SetupIconFile=..\disc_splitter.ico
 UninstallDisplayIcon={app}\DiscSplitter.exe
 ; ultra64's 1 GB dictionary runs the (32-bit) compiler out of memory; max with a separate

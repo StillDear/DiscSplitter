@@ -120,7 +120,7 @@ TrueHD Atmos、DTS-HD MA、LPCM 和 PGS 字幕逐位复制。M2TS 按光盘自�
 
 ## 下载安装
 
-1. 从 [最新版本](https://github.com/StillDear/DiscSplitter/releases/latest) 下载 `DiscSplitter-Setup-<版本号>.exe`。
+1. 从 [最新版本](https://github.com/StillDear/DiscSplitter/releases/latest) 下载 `DiscSplitter_<版本号>_Windows_x64_Setup.exe`。
 2. 运行安装包，按提示完成安装。
 3. 从开始菜单打开 **DiscSplitter**，然后打开一张光盘。
 

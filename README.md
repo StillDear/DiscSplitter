@@ -120,7 +120,7 @@ Cuts land on the disc's exact chapter marks (its 45 kHz ticks). The engine start
 
 ## Download and install
 
-1. Download `DiscSplitter-Setup-<version>.exe` from the [latest release](https://github.com/StillDear/DiscSplitter/releases/latest).
+1. Download `DiscSplitter_<version>_Windows_x64_Setup.exe` from the [latest release](https://github.com/StillDear/DiscSplitter/releases/latest).
 2. Run it and follow the installer.
 3. Start **DiscSplitter** from the Start menu and open a disc.
 

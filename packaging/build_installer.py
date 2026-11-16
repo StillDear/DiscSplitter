@@ -1,5 +1,5 @@
 """
-Build the Windows installer: dist/DiscSplitter-Setup-<version>.exe
+Build the Windows installer: dist/DiscSplitter_<version>_Windows_x64_Setup.exe
 
     .venv\\Scripts\\python.exe packaging\\build_installer.py [--version 2026.11.13]
         [--ffmpeg-dir DIR] [--mkvtoolnix-dir DIR] [--iscc PATH] [--skip-pyinstaller]
@@ -140,7 +140,7 @@ def main() -> None:
 
     run([iscc, "/Q", f"/DAppVersion={args.version}", f"/DSourceDir={APP_DIR}", f"/DOutputDir={ROOT / 'dist'}",
          PACKAGING / "DiscSplitter.iss"])
-    setup = ROOT / "dist" / f"DiscSplitter-Setup-{args.version}.exe"
+    setup = ROOT / "dist" / f"DiscSplitter_{args.version}_Windows_x64_Setup.exe"
     print(f"\nInstaller: {setup}  ({setup.stat().st_size / 2**20:.1f} MB)")
 
 
