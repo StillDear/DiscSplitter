@@ -8,14 +8,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 
-from PySide6.QtCore import QIODevice, QSaveFile, QUrl, Slot
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtCore import QUrl, Slot
+from PySide6.QtGui import QDesktopServices
 
-from core import jobs, manifest as job_manifest, models, naming, pipeline, sources, space, tracklist, verify
+from core import jobs, manifest as job_manifest, models, naming, pipeline, sources, space, verify
 from .. import settings
 from .. import logic
 from ..export_flow import ExportFlow, Phase
-from .base import Controller, local_path
+from .base import Controller
 
 
 class ExportController(Controller):
@@ -24,11 +24,10 @@ class ExportController(Controller):
 
     def __init__(self, app):
         super().__init__(app, destination='', resume=False, resumeText='',
-                         exportConfirmation='', collisionFiles=[], logs='', result='idle', tracklistAvailable=False,
+                         exportConfirmation='', collisionFiles=[], logs='', result='idle',
                          stage='extracting', current=0, chapterFraction=0.0, completed=0, failed=0, remaining=0,
                          verified=0, verifyIssues=0, verifyState='off')
         self.flow = ExportFlow()        # checkpoint, confirmations, running job, result
-        self.finished_tracklist = ''
         self.log_path = None
         self.log_lines = deque(maxlen=800)     # the export log shown on the export screen
         self.verify_results = []
@@ -403,14 +402,10 @@ class ExportController(Controller):
             stopped = row['status'] in ('running', 'failed')    # progress() may already have marked it
             status = 'done' if row['file'] in complete else ('cancelled' if cancelled else 'failed' if stopped else 'pending')
             self.disc.chapter_model.change(i, status=status)
-        titles = {r['number']: r['title'] for r in self.disc.chapter_model.rows
-                  if r['included'] and r['status'] == 'done' and r['title'].strip()}
-        self.finished_tracklist = tracklist.export_chapter_tracklist(titles) if titles else ''
         self.remember_export(sum(r['status'] == 'done' for r in self.disc.chapter_model.rows))
         # The outcome first, then the page: whatever watches the state (the taskbar, the finished notification)
         # must never see the job over while the result still says "running".
         self.put(result=result,
-                 tracklistAvailable=bool(self.finished_tracklist),
                  completed=sum(r['status'] == 'done' for r in self.disc.chapter_model.rows),
                  failed=sum(r['status'] == 'failed' for r in self.disc.chapter_model.rows),
                  remaining=sum(r['included'] and r['status'] in {'pending', 'cancelled'} for r in self.disc.chapter_model.rows))
@@ -419,23 +414,6 @@ class ExportController(Controller):
         self.refresh_resume(self.flow.output)
         if exc and not cancelled:
             self.report(exc)
-
-    @Slot(result=bool)
-    def copyFinishedTracklist(self):
-        if not self.finished_tracklist:
-            return False
-        QGuiApplication.clipboard().setText(self.finished_tracklist)
-        return True
-
-    @Slot(str)
-    def saveFinishedTracklist(self, url):
-        if not self.finished_tracklist:
-            return
-        path = local_path(url)
-        data = self.finished_tracklist.encode('utf-8')
-        file = QSaveFile(path)
-        if not file.open(QIODevice.WriteOnly) or file.write(data) != len(data) or not file.commit():
-            self.notify(self.tr('tracklistSaveFailed').format(detail=file.errorString()))
 
     @Slot()
     def cancel(self):

@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 import QtQuick.Layouts
 RowLayout {
     id: donePage
@@ -12,17 +11,7 @@ RowLayout {
     readonly property string outcome: unfinished > 0 || (win.exportView.result !== "done" && win.exportView.completed === 0) ? "bad"
                                       : flagged ? "warn" : "good"
     spacing: 12
-    property bool copiedTracklist: false
     onVisibleChanged: if (visible) resultPop.restart()
-    Timer { id: copiedTimer; interval: 1800; onTriggered: donePage.copiedTracklist = false }
-    FileDialog {
-        id: saveTracklist
-        title: win.tr("saveTracklist")
-        fileMode: FileDialog.SaveFile
-        nameFilters: [win.tr("tracklistJsonFilter")]
-        defaultSuffix: "json"
-        onAccepted: backend.exporter.saveFinishedTracklist(selectedFile.toString())
-    }
     SequentialAnimation {
         id: resultPop
         PropertyAction { target: resultBadge; property: "scale"; value: Theme.animate ? 0.4 : 1 }
@@ -125,21 +114,6 @@ RowLayout {
             RowLayout {
                 Layout.fillWidth: true; spacing: 8
                 Copy { text: win.tr("outputFile"); font.pixelSize: Theme.title; font.weight: Theme.strong; Layout.fillWidth: true; wrapMode: Text.NoWrap }
-                ActionButton {
-                    text: win.tr(donePage.copiedTracklist ? "tracklistCopied" : "copyTracklist")
-                    enabled: win.exportView.tracklistAvailable && !win.appView.working
-                    onClicked: {
-                        if (backend.exporter.copyFinishedTracklist()) {
-                            donePage.copiedTracklist = true
-                            copiedTimer.restart()
-                        }
-                    }
-                }
-                ActionButton {
-                    text: win.tr("saveTracklist")
-                    enabled: win.exportView.tracklistAvailable && !win.appView.working
-                    onClicked: saveTracklist.open()
-                }
                 Badge { tone: "good"; text: win.tr("done") + " " + win.exportView.completed }
                 Badge { visible: donePage.unfinished > 0; tone: "danger"; text: win.tr("unfinishedShort") + " " + donePage.unfinished }
             }

@@ -65,7 +65,8 @@ def test_every_name_source_requires_review_and_only_checked_apply(backend):
     assert backend.disc.chapter_model.rows[2]['origin'] == 'edited'
 
 
-def test_finished_tracklist_round_trips_exact_titles_and_chapters(backend, qt_app, tmp_path):
+def test_chapter_tracklist_round_trips_exact_titles_and_chapters(backend, qt_app, tmp_path):
+    # The done page no longer writes these files, but tracklists saved earlier still import as they were.
     setup_disc(backend)
     titles = {1: ' 15 ', 3: '03 - 君に会いたくなるから / Live: "2025" ☆'}
     backend.disc.rebuild_chapters(titles)
@@ -73,16 +74,9 @@ def test_finished_tracklist_round_trips_exact_titles_and_chapters(backend, qt_ap
     backend.disc.setChapterIncluded(0, False)
     backend.disc.unselectUnnamedChapters()
     assert [row['included'] for row in backend.disc.chapter_model.rows] == [False, False, True]
-    backend.disc.setChapterIncluded(0, True)
-    backend.disc.chapter_model.change(0, file='15.mkv')
-    backend.disc.chapter_model.change(2, file='sanitized.mkv')
-    running_export(backend, tmp_path)
-    backend.exporter.finish_export(None, [tmp_path / '15.mkv', tmp_path / 'sanitized.mkv'])
-    assert backend.exporter.copyFinishedTracklist()
-    copied = qt_app.clipboard().text()
+    copied = core.tracklist.export_chapter_tracklist(titles)
     saved = tmp_path / 'concert.tracklist.json'
-    backend.exporter.saveFinishedTracklist(str(saved))
-    assert saved.read_text(encoding='utf-8') == copied
+    saved.write_text(copied, encoding='utf-8')
 
     backend.disc.rebuild_chapters({2: 'Existing title'})
     backend.names.reviewPaste(copied)
