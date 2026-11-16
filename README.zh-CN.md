@@ -27,6 +27,8 @@
 
 <br>
 
+**DiscSplitter** 是一个免费、开源的 Windows 软件（MIT 许可证），用来把演唱会蓝光、DVD 或 MKV 文件按章节拆成一首歌一个文件。可以导出原样复制各条流的 M2TS 或 MKV、仅音频的 MKV，或带标签的 FLAC；文件名来自歌单，歌单可以从 MusicBrainz、Apple Music、Deezer、Discogs 搜索，也可以粘贴、填网页链接或从照片里识别。
+
 很多演唱会光盘是一整段正片，每首歌一个章节，章节名却是空的或者只有编号。DiscSplitter 会找出正片，从光盘、在线数据库、网页或一张照片里拿到歌单，提出每个章节对应哪首歌，由你逐条核对，再把你保留的章节一个章节切成一个文件。**拆分依据是章节**：它不会靠听声音识别歌曲，没有单独章节的歌需要你自己定分界。
 
 <table>
@@ -178,6 +180,38 @@ DiscSplitter 不需要账号，没有任何统计上报，也不检查更新。�
 除此之外，光盘、文件和设置都只留在你的电脑上。
 
 ## 常见问题
+
+<details>
+<summary><b>怎么把演唱会蓝光拆成一首首单曲？</b></summary>
+<br>
+
+在 DiscSplitter 里打开蓝光 ISO 或 `BDMV` 文件夹，它会推荐正片的播放列表。勾选是歌曲的章节，点 **获取曲名** 拿到歌单并核对匹配结果，再导出 M2TS、MKV 或 FLAC。每个保留的章节都会成为一个以曲名命名的文件。没有单独章节的歌，需要你在时间轴上设分界。
+
+</details>
+
+<details>
+<summary><b>能把蓝光演唱会转成 FLAC 吗？</b></summary>
+<br>
+
+能。选 **FLAC**：每首歌一个 FLAC 文件，写入曲名、曲号、专辑、艺人和封面，精确到采样。来源是 TrueHD、DTS-HD MA 或 LPCM 时结果是无损的；来源是有损音轨（AC-3、DTS）时，FLAC 只是保存解码后的声音，不会提升音质。想保留原始的 TrueHD 或 DTS-HD 码流，就选 **MKV（仅音频）**。
+
+</details>
+
+<details>
+<summary><b>怎么把 MKV 按章节拆分？</b></summary>
+<br>
+
+打开带章节的 MKV（或一整个文件夹），导出 MKV 或 FLAC，每个章节成为一个带曲名的文件。不打开界面的话，`split_now.py` 可以按章节拆分 MKV，曲名从文本文件读取（见 [docs/development.zh-CN.md](docs/development.zh-CN.md#命令行)）。
+
+</details>
+
+<details>
+<summary><b>DiscSplitter 免费吗？和 MKVToolNix、tsMuxeR 有什么不同？</b></summary>
+<br>
+
+免费、开源，MIT 许可证，不需要账号。切割由 tsMuxeR、MKVToolNix 和 FFmpeg 完成；DiscSplitter 补上这些工具留给你自己做的部分：找到正片播放列表、获取并匹配歌单、给文件命名和写标签，以及导出后的检查。
+
+</details>
 
 <details>
 <summary><b>音频会被重新编码吗？</b></summary>

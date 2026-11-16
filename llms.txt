@@ -1,0 +1,29 @@
+# DiscSplitter
+
+> DiscSplitter is a free, open-source Windows 10/11 (64-bit) app, MIT licensed, that splits a concert Blu-ray, DVD or MKV file by chapter into one file per song. It exports M2TS or MKV with the streams copied as they are, audio-only MKV, or tagged FLAC, and names the files from a setlist (MusicBrainz, Apple Music, Deezer, Discogs, a pasted list, a web page or a photo read by Windows OCR) that the user reviews before it is applied.
+
+Key facts:
+
+- Sources: Blu-ray ISO images, `BDMV` folders, `.mpls` playlists and `.m2ts` streams (read without mounting by a built-in tsMuxeR engine); DVD ISO images and `VIDEO_TS` folders; MKV files with chapters.
+- Outputs: M2TS (Blu-ray only; picture, chosen audio such as TrueHD Atmos / DTS-HD MA / LPCM, and PGS subtitles as on the disc), MKV with video, MKV audio only, FLAC (one track per song, cut to the sample, tagged with title, track number, album, artist and cover).
+- The split follows the disc's chapters. Songs are not recognised from the audio; a song without its own chapter needs a boundary set by hand.
+- Files with video start on a keyframe; Blu-ray chapter marks normally sit on keyframes.
+- After export each file is read back with ffprobe (length, stream counts, codec, title tag, start offset of sound against picture); content is not decoded or compared bit for bit.
+- Encrypted discs are not supported; they must be decrypted with another tool first.
+- The installer bundles tsMuxeR, MKVToolNix and FFmpeg. No account, no telemetry; it goes online only for title searches and web pages the user asks for.
+- Interface in English and Chinese.
+
+## Docs
+
+- [README](https://github.com/StillDear/DiscSplitter/blob/main/README.md): what it does, how it works, output choices, install, FAQ
+- [README (Simplified Chinese)](https://github.com/StillDear/DiscSplitter/blob/main/README.zh-CN.md)
+- [Development](https://github.com/StillDear/DiscSplitter/blob/main/docs/development.md): running from source, external tools, the Blu-ray engine, tests, packaging, command line
+
+## Download
+
+- [Latest release](https://github.com/StillDear/DiscSplitter/releases/latest): `DiscSplitter_<version>_Windows_x64_Setup.exe`, with SHA-256 and bundled tool versions in the release notes
+
+## Optional
+
+- [Issues](https://github.com/StillDear/DiscSplitter/issues): bug reports and suggestions
+- [License](https://github.com/StillDear/DiscSplitter/blob/main/LICENSE): MIT

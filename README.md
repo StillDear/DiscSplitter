@@ -27,6 +27,8 @@ English | [简体中文](README.zh-CN.md)
 
 <br>
 
+**DiscSplitter** is a free, open-source Windows app (MIT license) that splits a concert Blu-ray, DVD or MKV file by chapter into one file per song. It exports M2TS or MKV with the streams copied as they are, audio-only MKV, or tagged FLAC, and names the files from a setlist found on MusicBrainz, Apple Music, Deezer or Discogs, pasted, linked from a web page or read from a photo.
+
 Many concert discs are one long programme with a chapter per song and chapter names that are empty or just numbers. DiscSplitter finds the main programme, fetches a setlist from the disc, an online database, a web page or a photo, proposes which song belongs to which chapter, and lets you check every match. Then it cuts one file per chapter you kept. **The split follows the chapters**: it does not recognise songs by listening to them, and a song without its own chapter needs a boundary you set.
 
 <table>
@@ -178,6 +180,38 @@ DiscSplitter has no account, no telemetry and no update check. It only goes onli
 Everything else, including your discs, files and settings, stays on your computer.
 
 ## FAQ
+
+<details>
+<summary><b>How do I split a concert Blu-ray into individual songs?</b></summary>
+<br>
+
+Open the Blu-ray ISO or `BDMV` folder in DiscSplitter. It suggests the main playlist; keep the chapters that are songs, click **Get titles** to fetch the setlist and review the matches, then export M2TS, MKV or FLAC. Each chapter you kept becomes one file named after its song. A song that has no chapter of its own needs a boundary you set in the timeline.
+
+</details>
+
+<details>
+<summary><b>Can I convert a Blu-ray concert to FLAC?</b></summary>
+<br>
+
+Yes. Choose **FLAC**: each song becomes one FLAC file with title, track number, album, artist and cover art, cut to the sample. From TrueHD, DTS-HD MA or LPCM the result is lossless. From a lossy track (AC-3, DTS) FLAC stores that decoded sound and cannot add quality back. To keep the original TrueHD or DTS-HD stream instead, choose **MKV (audio only)**.
+
+</details>
+
+<details>
+<summary><b>How do I split an MKV file by chapters?</b></summary>
+<br>
+
+Open an MKV that has chapters (or a folder of them) and export MKV or FLAC; each chapter becomes one named file. Without the GUI, `split_now.py` splits an MKV by its chapters using names from a text file (see [docs/development.md](docs/development.md#command-line)).
+
+</details>
+
+<details>
+<summary><b>Is DiscSplitter free? How is it different from MKVToolNix or tsMuxeR?</b></summary>
+<br>
+
+It is free and open source under the MIT license, with no account. It uses tsMuxeR, MKVToolNix and FFmpeg to do the cutting and adds what those tools leave to you: finding the main playlist, getting and matching the setlist, naming and tagging the files, and checking them after export.
+
+</details>
 
 <details>
 <summary><b>Will the audio be re-encoded?</b></summary>

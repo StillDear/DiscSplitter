@@ -13,6 +13,10 @@
 | `metadata.webp` | Metadata / 元数据 | "More screenshots" / 「更多截图」 |
 | `export.webp` | Export in progress / 导出进行中 | "More screenshots" / 「更多截图」 |
 
+`social-preview.png` (1280 × 640) is the repository's social preview, shown when a link to it is shared. It is built from `logo.png` and `en/workspace-dark.webp`, and is uploaded by hand in the repository's **Settings → General → Social preview**.
+
+`social-preview.png`（1280 × 640）是仓库的社交预览图，分享仓库链接时显示。它由 `logo.png` 和 `en/workspace-dark.webp` 合成，需要在仓库 **Settings → General → Social preview** 里手动上传。
+
 Taking new ones / 重新拍摄时
 
 - Same window size for every shot (the current set is 2000 × 1194), so the images line up. / 每张窗口大小一致（现在这套是 2000 × 1194），排版才整齐。
