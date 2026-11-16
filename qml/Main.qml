@@ -183,7 +183,8 @@ ApplicationWindow {
             parent: ({ main: workspace.previewSlot, review: reviewPage.previewSlot,
                        metadata: metadataPage.previewSlot })[win.appView.page] || pageColumn
             // (not previewBar.visible: a hidden parent hides the bar too, and it could never come back)
-            visible: previewBar.Layout.preferredHeight > 0
+            // Settings shows no player: what is playing goes on in the background and the panel is back on leaving.
+            visible: previewBar.Layout.preferredHeight > 0 && win.appView.page !== "settings"
             Layout.fillWidth: true; Layout.fillHeight: false; spacing: 0   // as tall as the panel, not a share of the page
             Splitter {
                 vertical: false; visible: previewBar.visible && previewBar.video
