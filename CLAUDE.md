@@ -30,10 +30,21 @@ $env:QT_QPA_PLATFORM = "offscreen"; .venv\Scripts\python.exe app.py --smoke-test
 - 帮助正文写在 `gui/help_content.py`，中英文条目一一对应。帮助里提到的按钮名必须和界面上的完全一致，`tests/test_help.py` 会检查。
 - 不要用依赖字体的符号当图标（例如 ⋯、✓），图标都在 `qml/Icon.qml` 里画。
 
-## 打包与发布
+## 打包命名
 
-- 安装包文件名：`DiscSplitter_<版本号>_Windows_x64_Setup.exe`。
-- 测试包不传版本号，`packaging\build_installer.bat` 默认用当天日期（`YYYY.MM.DD`）。正式版用 `--version <x.y>`，例如 `--version 1.1`。
+| 用途 | 版本号 | 安装包文件名 | 标签 | Release 标题 |
+|---|---|---|---|---|
+| 正式版 | `<主>.<次>`，例如 `1.0`、`1.1` | `DiscSplitter_1.1_Windows_x64_Setup.exe` | `v1.1` | `DiscSplitter 1.1` |
+| 测试包 | 当天日期 `YYYY.MM.DD` | `DiscSplitter_2026.11.16_Windows_x64_Setup.exe` | 不打标签 | 不发布 |
+
+- 文件名的格式是 `DiscSplitter_<版本号>_Windows_x64_Setup.exe`，各部分之间用下划线 `_`，由 `packaging/DiscSplitter.iss` 生成，不要手动改名。
+- 我只说「打包」时，打测试包：不传 `--version`，脚本会默认用当天日期。
+- 我说「发布」「正式版」或者给了版本号时，用 `--version <x.y>` 打正式版。版本号没说清楚就先问我。
+- 版本号只有两段（`1.0`，不是 `1.0.0`）。新功能升次版本号（1.0 → 1.1），大改版升主版本号（1.x → 2.0）。
+- 上传到 Release 的附件名和打包出来的文件名保持一致。
+
+## 发布
+
 - 正式发版的步骤：
   1. 用 `--version` 打包；
   2. 对打包后的程序跑 `--smoke-test`；
