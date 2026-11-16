@@ -15,7 +15,7 @@ python -m venv .venv
 
 ### The Blu-ray engine
 
-`engine\build_engine.py` compiles the Blu-ray engine (tsMuxeR) into `engine\bin\tsMuxeR.exe`. It needs Visual Studio 2022 or its Build Tools with the C++ workload. Without it, Blu-rays are read with MKVToolNix instead and M2TS export is not offered. The upstream version, local patches and how to update them are in [engine/UPSTREAM.md](../engine/UPSTREAM.md).
+`engine\build_engine.py` compiles the Blu-ray engine (tsMuxeR) into `engine\bin\tsMuxeR.exe`. It needs Visual Studio 2022 or its Build Tools with the C++ workload. Without it, Blu-rays are read with MKVToolNix instead (ISO images are then mounted by Windows) and M2TS export is not offered. The upstream version, local patches and how to update them are in [engine/UPSTREAM.md](../engine/UPSTREAM.md).
 
 ### External tools
 
@@ -49,7 +49,7 @@ packaging\build_installer.bat
 
 `build_exe.bat` builds a single portable `DiscSplitter.exe` instead (same `packaging/installer.spec`, one-file mode). That one includes the Blu-ray engine but not MKVToolNix or ffmpeg.
 
-Release builds are attached to [GitHub Releases](https://github.com/StillDear/DiscSplitter/releases), not committed. For a new version, run `packaginguild_installer.bat --version <x.y>`, and update the version in the download and version badges at the top of both READMEs (the repository is private, so the badges cannot read it from the release yet).
+Release builds are attached to [GitHub Releases](https://github.com/StillDear/DiscSplitter/releases), not committed. For a new version, run `packaging\build_installer.bat --version <x.y>`. The download and version badges at the top of both READMEs read the latest release from GitHub, so they need no edit.
 
 ## Command line
 

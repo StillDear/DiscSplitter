@@ -15,7 +15,7 @@ python -m venv .venv
 
 ### 蓝光引擎
 
-`engine\build_engine.py` 会把蓝光引擎（tsMuxeR）编译成 `engine\bin\tsMuxeR.exe`，需要 Visual Studio 2022 或它的生成工具（Build Tools），并装好 C++ 工作负载。没有编译引擎时，蓝光改用 MKVToolNix 读取，也不提供 M2TS 导出。上游版本、本地补丁和更新方法见 [engine/UPSTREAM.md](../engine/UPSTREAM.md)（英文）。
+`engine\build_engine.py` 会把蓝光引擎（tsMuxeR）编译成 `engine\bin\tsMuxeR.exe`，需要 Visual Studio 2022 或它的生成工具（Build Tools），并装好 C++ 工作负载。没有编译引擎时，蓝光改用 MKVToolNix 读取（ISO 镜像这时由 Windows 挂载），也不提供 M2TS 导出。上游版本、本地补丁和更新方法见 [engine/UPSTREAM.md](../engine/UPSTREAM.md)（英文）。
 
 ### 外部工具
 
@@ -49,7 +49,7 @@ packaging\build_installer.bat
 
 `build_exe.bat` 则生成一个单文件的便携版 `DiscSplitter.exe`（同样用 `packaging/installer.spec`，单文件模式）。便携版带蓝光引擎，但不带 MKVToolNix 和 ffmpeg。
 
-发布的安装包上传到 [GitHub Releases](https://github.com/StillDear/DiscSplitter/releases)，不提交进仓库。发新版本时运行 `packaginguild_installer.bat --version <x.y>`，并更新两个 README 顶部下载徽章和版本徽章里的版本号（仓库目前是私有的，徽章还不能自动读取 Release 的版本）。
+发布的安装包上传到 [GitHub Releases](https://github.com/StillDear/DiscSplitter/releases)，不提交进仓库。发新版本时运行 `packaging\build_installer.bat --version <x.y>`。两个 README 顶部的下载徽章和版本徽章会从 GitHub 读取最新 Release 的版本，不用手动改。
 
 ## 命令行
 

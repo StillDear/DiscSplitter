@@ -4,15 +4,17 @@
 
 <h1>DiscSplitter</h1>
 
-**Split a concert Blu-ray, DVD or MKV into one lossless file per song, already named.**
+**Split a concert Blu-ray, DVD or MKV at its chapters into one file per song, named from a setlist you review.**
 
-<a href="https://github.com/StillDear/DiscSplitter/releases/latest"><img src="https://img.shields.io/badge/Download-v1.0%20for%20Windows%20x64-F2A33A?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyLjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTEyIDR2MTFNNyAxMGw1IDUgNS01TTUgMjBoMTQiLz48L3N2Zz4=" alt="Download v1.0 for Windows x64"></a>
+<a href="https://github.com/StillDear/DiscSplitter/releases/latest"><img src="https://img.shields.io/github/v/release/StillDear/DiscSplitter?style=for-the-badge&label=Download%20for%20Windows%20x64&color=F2A33A&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyLjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTEyIDR2MTFNNyAxMGw1IDUgNS01TTUgMjBoMTQiLz48L3N2Zz4=" alt="Download the latest release for Windows x64"></a>
+
+<sub>For unencrypted or already decrypted discs and files. DiscSplitter does not decrypt.</sub>
 
 [How it works](#how-it-works) · [Features](#features) · [Install](#download-and-install) · [Help](#help-and-support) · [FAQ](#faq)
 
 English | [简体中文](README.zh-CN.md)
 
-![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078D4?style=flat-square) ![Version 1.0](https://img.shields.io/badge/version-1.0-F2A33A?style=flat-square) ![License: MIT](https://img.shields.io/badge/license-MIT-3DA639?style=flat-square)
+![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078D4?style=flat-square) ![Latest release](https://img.shields.io/github/v/release/StillDear/DiscSplitter?style=flat-square&label=version&color=F2A33A) ![License: MIT](https://img.shields.io/badge/license-MIT-3DA639?style=flat-square)
 
 </div>
 
@@ -25,29 +27,29 @@ English | [简体中文](README.zh-CN.md)
 
 <br>
 
-A concert disc is one long video with chapter marks and no song names. DiscSplitter opens the disc, finds the main title, gets the setlist from the disc, the web or a photo, lines the songs up with the chapters, and cuts one file per song. **Picture and sound are copied as they are; nothing is re-encoded unless you choose FLAC.**
+Many concert discs are one long programme with a chapter per song and chapter names that are empty or just numbers. DiscSplitter finds the main programme, fetches a setlist from the disc, an online database, a web page or a photo, proposes which song belongs to which chapter, and lets you check every match. Then it cuts one file per chapter you kept. **The split follows the chapters**: it does not recognise songs by listening to them, and a song without its own chapter needs a boundary you set.
 
 <table>
 <tr>
 <td width="33%" valign="top">
 
-### 🎧 Truly lossless
+### 🎧 Streams kept as they are
 
-TrueHD Atmos, DTS-HD MA, LPCM and PGS subtitles are copied bit for bit. M2TS is cut straight from the disc at its own chapter marks.
+M2TS and MKV exports copy the picture, TrueHD Atmos, DTS-HD MA, LPCM and PGS subtitles without re-encoding them. The few exceptions are in the [FAQ](#faq).
 
 </td>
 <td width="33%" valign="top">
 
-### 🏷️ Titles that match
+### 🏷️ Titles you confirm
 
-MusicBrainz, Apple Music, Deezer, Discogs, a pasted list, a web page or a photo. Songs are matched to chapters by length, and you review every match.
+MusicBrainz, Apple Music, Deezer, Discogs, a pasted list, a web page or a photo. Songs are lined up with chapters by length or in order, and nothing is applied until you review it.
 
 </td>
 <td width="33%" valign="top">
 
 ### 💿 Straight from the ISO
 
-A built-in engine reads Blu-ray ISO images and folders without mounting them. One installer, nothing else to set up.
+The installer's built-in engine reads Blu-ray ISO images and folders without mounting them. FFmpeg and MKVToolNix are included too.
 
 </td>
 </tr>
@@ -57,19 +59,24 @@ A built-in engine reads Blu-ray ISO images and folders without mounting them. On
 
 | | You | DiscSplitter |
 |:---:|---|---|
-| **1** | Open a disc image, a `BDMV` / `VIDEO_TS` folder or an MKV | Scores every playlist and picks the main feature, telling you why |
-| **2** | Tick the chapters, audio and subtitles you want | Preselects the best lossless audio and marks which chapters are music, talk or interludes |
-| **3** | Click **Get titles** | Finds a tracklist and lines it up with the chapters by length, for you to review |
-| **4** | Pick M2TS, MKV or FLAC and export | Checks free space, writes one file per song into an album folder and verifies each one |
+| **1** | Open a disc image, a `BDMV` / `VIDEO_TS` folder or an MKV | Scores the playlists and suggests the main programme, telling you why |
+| **2** | Tick the chapters, audio and subtitles you want | Preselects the best audio track (lossless first) and suggests from the waveform which chapters are music, talk or interludes |
+| **3** | Click **Get titles**, then review the matches | Finds a tracklist and proposes a title for each chapter; chapters it cannot match keep their current names until you edit them or leave them out |
+| **4** | Pick M2TS, MKV or FLAC and export | Checks free space, writes one file per chapter into an album folder, then reads each file back |
 
 <p align="center">
-  <img src="docs/images/en/review.webp" width="49%" alt="Review titles: online results matched to chapters by length">
-  <img src="docs/images/en/done.webp" width="49%" alt="Export finished: 23 M2TS files, all checked">
+  <img src="docs/images/en/review.webp" width="900" alt="Review titles: online results matched to chapters by length, with matched, unmatched and removed chapters">
 </p>
+<p align="center"><sub>Reviewing titles from an online search. Matched, unmatched and removed chapters are counted at the top; each proposal is applied only after you confirm it.</sub></p>
 
 <details>
 <summary><b>More screenshots</b></summary>
 <br>
+
+<p align="center">
+  <img src="docs/images/en/done.webp" width="900" alt="A finished M2TS export with every file checked">
+</p>
+<p align="center"><sub>A finished M2TS export.</sub></p>
 
 | | |
 |:---:|:---:|
@@ -86,21 +93,21 @@ A built-in engine reads Blu-ray ISO images and folders without mounting them. On
 - **MKV:** files with chapters, or a whole folder of them.
 
 #### Titles
-- The disc's own chapter names.
+- The disc's own chapter names, when it has them.
 - Online search by artist, album or barcode: MusicBrainz, Apple Music, Deezer and Discogs.
-- A setlist you paste, a web page you link (official site, Wikipedia, a shop), a photo or screenshot (read by the OCR built into Windows), or a `.txt`, `.cue`, `.nfo` or `.json` file.
-- Matched by length or in order; every proposed title is checked by you before it is applied.
+- A setlist you paste, a web page you link (official site, Wikipedia, a shop), a `.txt`, `.cue`, `.nfo` or `.json` file, or a photo or screenshot. Photos are read by the OCR built into Windows, which only reads languages whose OCR support is installed in Windows (for example Japanese for a Japanese setlist).
+- Matched by length or in order; you review every proposed title before it is applied.
 
 #### Chapters and tracks
-- Every audio track with codec, channels, sample rate and bit depth; subtitles can be kept.
-- The waveform marks each chapter as music, interlude or talk, so MCs are easy to leave out.
+- Every audio track with codec, channels, sample rate and bit depth; you choose which to keep, and subtitles can be kept too.
+- A waveform-based guess marks chapters as music, interlude or talk, so MCs are easy to leave out; you can change it.
 - Merge, split at the playhead or move a boundary, with a built-in player.
 
 #### Export
-- **M2TS** straight from a Blu-ray, **MKV** with video, **MKV** audio only, or **FLAC** with tags and cover art.
+- **M2TS** straight from a Blu-ray, **MKV** with video, **MKV** audio only, or **FLAC** with tags and cover art (see [Choosing an output](#choosing-an-output)).
 - Files named after the songs, one album folder per disc.
-- Free space checked first; every file read back afterwards (length, streams, sound and picture in sync).
-- Interrupted exports resume where they stopped.
+- Free space checked first; every finished file is read back and compared with the plan (what is checked is in the [FAQ](#faq)).
+- An interrupted export resumes after the last finished file.
 
 #### App
 - Chinese and English; light, dark or system theme; adjustable interface and text size.
@@ -110,9 +117,9 @@ A built-in engine reads Blu-ray ISO images and folders without mounting them. On
 <summary><b>How M2TS export works</b></summary>
 <br>
 
-Each chapter is cut straight from the disc with the picture, every audio track (TrueHD with its AC-3 core, DTS-HD with its extensions, LPCM) and PGS subtitles exactly as the disc has them, a Dolby Vision enhancement layer included, and the disc's own timestamps, so sound and picture stay in step.
+Each chapter is cut from the disc by the built-in engine with the picture, the audio tracks you chose (TrueHD with its AC-3 core, DTS-HD with its extensions, LPCM) and PGS subtitles as the disc has them, a Dolby Vision enhancement layer included, and the disc's own timestamps.
 
-Cuts land on the disc's exact chapter marks (its 45 kHz ticks). The engine starts reading at the first chosen chapter rather than at the start of the disc, so a chapter near the end takes seconds, not minutes, and chapters close together are cut in one pass. MKV from a Blu-ray is cut the same way; FLAC from a Blu-ray reads only the span the chosen chapters cover.
+Cuts are made at the disc's chapter marks, which normally sit on keyframes. The engine starts reading at the first chosen chapter instead of at the start of the disc, and chapters close together are cut in one pass. MKV from a Blu-ray is cut the same way; FLAC from a Blu-ray reads only the span the chosen chapters cover.
 
 </details>
 
@@ -123,6 +130,15 @@ Cuts land on the disc's exact chapter marks (its 45 kHz ticks). The engine start
 | Blu-ray (ISO, `BDMV`, `.mpls`, `.m2ts`) | ✓ | ✓ | ✓ | ✓ |
 | DVD (ISO, `VIDEO_TS`) | | ✓ | ✓ | ✓ |
 | MKV with chapters | | ✓ | ✓ | ✓ |
+
+### Choosing an output
+
+| Output | What you get | Pick it when |
+|---|---|---|
+| **M2TS** | Picture, chosen audio and subtitles exactly as on the Blu-ray, with the disc's timestamps. No title tag inside the file | You want each song as a piece of the original disc stream |
+| **MKV (video)** | The same streams in Matroska, each file titled with its song | You want video files that most players and libraries handle well |
+| **MKV (audio only)** | The chosen audio tracks in their original format, no picture | You want the original audio (e.g. TrueHD Atmos or several tracks) without the video |
+| **FLAC** | One audio track per file, encoded losslessly, cut to the sample, with title, track number, album, artist and cover | You want a music library. From a lossy track (AC-3, DTS) FLAC keeps that decoded sound and cannot add quality back |
 
 ## Download and install
 
@@ -140,7 +156,7 @@ Cuts land on the disc's exact chapter marks (its 45 kHz ticks). The engine start
 > [!IMPORTANT]
 > The installer is not code-signed, so Windows SmartScreen may say it "protected your PC". Click **More info → Run anyway**. You can check the download against the SHA-256 listed in the release notes first:
 > ```powershell
-> Get-FileHash .\DiscSplitter_1.0_Windows_x64_Setup.exe
+> Get-FileHash .\DiscSplitter_<version>_Windows_x64_Setup.exe
 > ```
 
 > [!NOTE]
@@ -167,15 +183,35 @@ Everything else, including your discs, files and settings, stays on your compute
 <summary><b>Will the audio be re-encoded?</b></summary>
 <br>
 
-No. M2TS and MKV exports copy every stream as it is. Only FLAC encodes, and FLAC is lossless.
+M2TS and MKV exports copy the picture and the audio as they are, with these exceptions:
+
+- **FLAC output** decodes the chosen track and encodes it as FLAC. That is lossless, but the file is a new encode, not the disc's bitstream.
+- **FLAC audio inside an MKV source** is decoded and encoded again as FLAC, because MKVToolNix cannot cut a FLAC track. The samples are the source's own; the compressed data is not identical.
+- **LPCM from a DVD** is rewritten as plain PCM in the MKV. The samples are unchanged.
 
 </details>
 
 <details>
-<summary><b>Why does a file with video sometimes run slightly past the chapter?</b></summary>
+<summary><b>How exact are the cuts?</b></summary>
 <br>
 
-Video can only be cut on a keyframe. A Blu-ray's own chapter marks sit on keyframes, so those cuts are exact (a file may run one picture group past its end). A boundary you move by hand snaps to the next keyframe, usually well under a second away. Audio-only exports cut exactly.
+It depends on what the file holds:
+
+- **With video**, a file has to start on a keyframe. A Blu-ray's chapter marks normally sit on keyframes, so cuts at the disc's own marks land on them; a file can run up to one picture group past its end. A boundary you move by hand snaps to a keyframe, usually less than a second away.
+- **Audio-only MKV** is cut between compressed audio frames, so the edge can be off by up to one frame (a few milliseconds to a few tens of milliseconds, depending on the codec).
+- **FLAC** is cut to the sample.
+
+The check after export allows a margin on each file's length (2.5 s with video, 0.75 s audio-only, 0.25 s FLAC). That margin is how much the check tolerates, not how precise the cut is.
+
+</details>
+
+<details>
+<summary><b>What does the check after export cover?</b></summary>
+<br>
+
+Each finished file is opened with ffprobe and compared with what the export planned: the file exists and can be read, its length is close to its chapter's, it has the expected number of video, audio and subtitle streams, a FLAC file really is FLAC, the title tag is set (M2TS has none), and, when there is video, the first sound starts within 0.25 s of the first picture.
+
+Nothing is decoded, and the content is not compared bit for bit with the source, so the check does not prove that every frame plays or that sound stays in sync all the way through.
 
 </details>
 
@@ -183,7 +219,7 @@ Video can only be cut on a keyframe. A Blu-ray's own chapter marks sit on keyfra
 <summary><b>The online search found nothing. What now?</b></summary>
 <br>
 
-Smaller or regional releases are often missing. Try the album name alone or the barcode, paste the setlist from the concert's web page, link the page itself, or photograph the back cover and let the app read it. **Settings → Online metadata** has proxy and timeout options, and the search page can check the connection.
+Smaller or regional releases are often missing. Try the album name alone or the barcode, paste the setlist from the concert's web page, link the page itself, or photograph the back cover and let the app read it (the language has to be available to Windows OCR). **Settings → Online metadata** has proxy and timeout options, and the search page can check the connection.
 
 </details>
 
@@ -206,7 +242,8 @@ Not yet. It is built and tested on Windows only.
 ## Limitations
 
 - Encrypted discs are not supported; decrypt them first.
-- Cuts that keep the video land on keyframes (see the [FAQ](#faq)).
+- Files are split at chapters. Songs are not detected from the sound, and a disc without per-song chapters needs boundaries set by hand.
+- Cuts that keep the video land on keyframes (see [How exact are the cuts?](#faq)).
 - Windows 10/11, 64-bit only.
 
 ## Build from source
@@ -219,7 +256,12 @@ python -m venv .venv
 .venv\Scripts\python.exe app.py
 ```
 
-Building the Blu-ray engine, running the tests and making the installer are covered in [docs/development.md](docs/development.md). Bug reports and suggestions are welcome as [issues](https://github.com/StillDear/DiscSplitter/issues).
+`pip install` sets up the app itself, not the tools it drives. From source you also need:
+
+- **FFmpeg** (`ffmpeg`, `ffprobe`) and **MKVToolNix** (`mkvmerge`, `mkvextract`, `mkvpropedit`) on your `PATH`, or set in **Settings → External tools**.
+- **The Blu-ray engine**, built with `engine\build_engine.py` (needs Visual Studio 2022 or its Build Tools with the C++ workload). Without it, M2TS export is not offered, and Blu-rays are read through MKVToolNix instead (ISO images are then mounted by Windows).
+
+Details, tests and packaging are in [docs/development.md](docs/development.md). Bug reports and suggestions are welcome as [issues](https://github.com/StillDear/DiscSplitter/issues).
 
 ## License and credits
 
