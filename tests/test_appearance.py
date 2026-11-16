@@ -62,3 +62,17 @@ def test_new_defaults():
     assert settings.DEFAULTS['interface_scale'] == 'system'
     assert settings.DEFAULTS['font_scale'] == '1'
     assert settings.DEFAULTS['motion'] == 'full'
+
+
+@pytest.mark.parametrize('ui_language, expected', [(0x0804, 'zh'), (0x0404, 'zh'), (0x0409, 'en'), (0x0411, 'en')])
+def test_first_start_speaks_the_windows_language(tmp_path, monkeypatch, ui_language, expected):
+    ctypes = pytest.importorskip('ctypes')
+    if not hasattr(ctypes, 'windll'):
+        pytest.skip('Windows only')
+    from gui import settings
+    monkeypatch.setattr(settings, 'SETTINGS_PATH', tmp_path / 'settings.json')
+    monkeypatch.setattr(ctypes.windll.kernel32, 'GetUserDefaultUILanguage', lambda: ui_language)
+    assert settings.load()['language'] == expected
+    # Once settings are saved, the language in them is kept, whatever Windows shows.
+    settings.save(dict(settings.load(), language='zh' if expected == 'en' else 'en'))
+    assert settings.load()['language'] != expected

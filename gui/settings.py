@@ -73,10 +73,23 @@ def adopt_legacy_folder() -> None:
             pass
 
 
+def system_language() -> str:
+    """The interface language for a first start: Chinese when Windows shows Chinese, English otherwise."""
+    try:
+        import ctypes
+        primary = ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF     # LANG_CHINESE = 0x04
+        return "zh" if primary == 0x04 else "en"
+    except (AttributeError, OSError):       # not Windows
+        import locale
+        name = (locale.getlocale()[0] or os.environ.get("LANG", "")).lower()
+        return "zh" if name.startswith(("zh", "chinese")) else "en"
+
+
 def load() -> dict[str, Any]:
     adopt_legacy_folder()
     if not SETTINGS_PATH.exists():
-        return dict(DEFAULTS)
+        # First start: speak the language Windows shows. Settings saved by earlier versions keep theirs.
+        return dict(DEFAULTS, language=system_language())
     try:
         data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):

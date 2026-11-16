@@ -55,6 +55,7 @@ def backend(qt_app, monkeypatch, tmp_path):
     from gui.backend import Backend
     from gui.controllers.exporter import ExportController
     monkeypatch.setattr(settings, 'SETTINGS_PATH', tmp_path / 'settings.json')
+    monkeypatch.setattr(settings, 'system_language', lambda: 'zh')     # the same on every machine
     monkeypatch.setattr(ExportController, 'LOG_DIR', tmp_path / 'logs')
     result = Backend(smoke=True)
     yield result
