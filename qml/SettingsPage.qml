@@ -89,6 +89,26 @@ Item {
                     }
                 }
             }
+            // The way to the help pages, set apart from the settings' own sections.
+            Rectangle { Layout.fillWidth: true; Layout.topMargin: 10; Layout.bottomMargin: 6; Layout.leftMargin: 12; Layout.rightMargin: 12; implicitHeight: 1; color: Theme.line2 }
+            AbstractButton {
+                id: helpLink
+                Layout.fillWidth: true; implicitHeight: 36; hoverEnabled: true
+                Accessible.name: win.tr("help")
+                onClicked: backend.help("guide")
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                background: Rectangle {
+                    radius: 8; color: helpLink.hovered ? Theme.raised : Theme.clear(Theme.raised)
+                    Behavior on color { ColorAnimation { duration: Theme.fast } }
+                }
+                contentItem: Item {
+                    Icon { id: helpGlyph; kind: "help"; x: 16; width: 15; height: 15; anchors.verticalCenter: parent.verticalCenter; ink: helpLink.hovered ? Theme.text : Theme.muted }
+                    Copy {
+                        anchors.left: helpGlyph.right; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                        text: win.tr("help"); wrapMode: Text.NoWrap; color: helpLink.hovered ? Theme.text : Theme.sub
+                    }
+                }
+            }
         }
 
         Flickable {

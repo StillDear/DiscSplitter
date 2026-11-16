@@ -72,6 +72,9 @@ ApplicationWindow {
     function closeDialog() { modal.close() }
     function smokePage(page) { backend.navigate(page) }
     function smokeSection(section) { settingsPage.section = section }
+    function smokeHelp(section) { backend.help(section) }
+    function smokeHelpMenu() { backend.navigate("start"); helpMenu.popup(rootWindow.contentItem, rootWindow.width - helpMenu.width - 16, 48) }
+    function closeHelpMenu() { helpMenu.close() }
     onClosing: function(event) { if (!allowClose) { event.accepted = false; backend.requestClose() } }
     Connections {
         target: backend
@@ -106,15 +109,25 @@ ApplicationWindow {
     }
     AppMenu {
         id: helpMenu
-        AppMenuItem { text: win.tr("tips"); onTriggered: backend.help("tips") }
-        AppMenuItem { text: win.tr("readme"); onTriggered: backend.help("readme") }
-        AppMenuItem { text: win.tr("report"); onTriggered: backend.help("report") }
+        minWidth: 232
+        // Learn, then get unstuck, then about: everything opens in the app except the row marked as leaving it.
+        AppMenuItem { text: win.tr("helpGuide"); iconKind: "book"; hint: "F1"; onTriggered: backend.help("guide") }
+        AppMenuItem { text: win.tr("tips"); iconKind: "bulb"; onTriggered: backend.help("tips") }
+        AppMenuItem { text: win.tr("helpFaq"); iconKind: "help"; onTriggered: backend.help("faq") }
         MenuSeparator {
             topPadding: 4; bottomPadding: 4
             contentItem: Rectangle { implicitHeight: 1; color: Theme.line }
         }
-        AppMenuItem { text: win.tr("about"); onTriggered: backend.help("about") }
+        AppMenuItem { text: win.tr("helpTroubleshootMenu"); iconKind: "lifebuoy"; onTriggered: backend.help("troubleshoot") }
+        AppMenuItem { text: win.tr("projectHome"); iconKind: "external"; external: true; onTriggered: backend.help("readme") }
+        MenuSeparator {
+            topPadding: 4; bottomPadding: 4
+            contentItem: Rectangle { implicitHeight: 1; color: Theme.line }
+        }
+        AppMenuItem { text: win.tr("aboutApp"); iconKind: "info"; onTriggered: backend.help("about") }
     }
+    // F1 opens the guide from any page (the help button sits only on the start page and the workspace).
+    Shortcut { sequence: "F1"; context: Qt.ApplicationShortcut; onActivated: backend.help("guide") }
 
     ColumnLayout {
         id: pageColumn
@@ -153,7 +166,7 @@ ApplicationWindow {
             id: stack
             // Gives way to the preview panel below: the pages scroll, the panel's controls must stay in view.
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0
-            currentIndex: ["start", "main", "review", "export", "done", "settings", "metadata"].indexOf(win.appView.page)
+            currentIndex: ["start", "main", "review", "export", "done", "settings", "metadata", "help"].indexOf(win.appView.page)
             // Page entrance: fade in while settling from a slight zoom.
             onCurrentIndexChanged: {
                 const page = currentIndex >= 0 ? children[currentIndex] : null
@@ -173,6 +186,7 @@ ApplicationWindow {
             DonePage { win: rootWindow }
             SettingsPage { id: settingsPage; win: rootWindow }
             MetadataPage { id: metadataPage; win: rootWindow }
+            HelpPage { id: helpPage; win: rootWindow }
         }
 
         // The preview panel and its height handle. On the pages with a panel down the right (workspace, review,
@@ -183,8 +197,8 @@ ApplicationWindow {
             parent: ({ main: workspace.previewSlot, review: reviewPage.previewSlot,
                        metadata: metadataPage.previewSlot })[win.appView.page] || pageColumn
             // (not previewBar.visible: a hidden parent hides the bar too, and it could never come back)
-            // Settings shows no player: what is playing goes on in the background and the panel is back on leaving.
-            visible: previewBar.Layout.preferredHeight > 0 && win.appView.page !== "settings"
+            // Settings and help show no player: what is playing goes on in the background and the panel is back on leaving.
+            visible: previewBar.Layout.preferredHeight > 0 && win.appView.page !== "settings" && win.appView.page !== "help"
             Layout.fillWidth: true; Layout.fillHeight: false; spacing: 0   // as tall as the panel, not a share of the page
             Splitter {
                 vertical: false; visible: previewBar.visible && previewBar.video
@@ -287,6 +301,12 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true; spacing: 8
                 ActionButton { text: win.dialogKind === "tools" ? win.tr("later") : win.tr("cancel"); onClicked: modal.close() }
+                // Where a problem is reported, a way to the troubleshooting help (not over a running export).
+                ActionButton {
+                    visible: (win.dialogKind === "tools" || win.dialogKind === "error") && !win.appView.pipeline
+                    text: win.tr("helpMore"); ghost: true
+                    onClicked: { modal.close(); backend.help(win.dialogKind === "tools" ? "faq" : "troubleshoot") }
+                }
                 Item { Layout.fillWidth: true }
                 ActionButton { visible: win.dialogKind === "tools"; text: win.tr("checkTools"); enabled: !win.appView.working; primary: true; onClicked: { modal.close(); backend.checkTools() } }
                 ActionButton { visible: win.dialogKind === "collision" || win.dialogKind === "diskSpace"; text: win.tr("anotherFolder"); onClicked: { modal.close(); win.openFolder("output") } }

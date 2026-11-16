@@ -101,16 +101,18 @@ def run(app, backend, window, warnings, screenshots=None):
         for theme in ('dark', 'light', 'system'):
             for page in ('start', 'main', 'review', 'export', 'done', 'settings', 'metadata'):
                 steps.append((language, theme, page))
-            for section in ('files', 'matching', 'appearance', 'help'):
+            for section in ('files', 'matching', 'appearance'):
                 steps.append((language, theme, 'settings:' + section))
+            for section in ('guide', 'tips', 'faq', 'troubleshoot', 'about'):
+                steps.append((language, theme, 'help:' + section))
     # Full-motion pass: every page transition and Behavior runs once, no screenshots.
-    for page in ('start', 'main', 'review', 'export', 'done', 'settings', 'metadata', 'main'):
+    for page in ('start', 'main', 'review', 'export', 'done', 'settings', 'help', 'metadata', 'main'):
         steps.append(('zh', 'dark', 'motion:' + page))
     # The disc copied as M2TS (a Blu-ray the built-in engine read): the format switch, the summary, the stages.
     for language, theme in (('zh', 'dark'), ('en', 'light')):
         for page in ('main', 'export', 'settings'):
             steps.append((language, theme, 'm2ts:' + page))
-    dialogs = iter(('tools', 'collision', 'diskSpace', 'discard', 'resume', 'duplicate', 'closeBusy', 'tips', 'about', 'paste', 'trackinfo', 'videoinfo'))
+    dialogs = iter(('tools', 'collision', 'diskSpace', 'discard', 'resume', 'duplicate', 'closeBusy', 'error', 'helpmenu', 'paste', 'trackinfo', 'videoinfo'))
     def advance():
         if steps:
             language, theme, page = steps.pop(0)
@@ -135,6 +137,8 @@ def run(app, backend, window, warnings, screenshots=None):
             backend.put(pipeline=page == 'export')
             if page.startswith('settings:'):
                 window.smokeSection(page.split(':')[1])
+            elif page.startswith('help:'):
+                window.smokeHelp(page.split(':')[1])
             elif page == 'settings':
                 window.smokeSection('tools')
             if screenshots:
@@ -151,13 +155,19 @@ def run(app, backend, window, warnings, screenshots=None):
                     if screenshots:
                         QTimer.singleShot(400, lambda: window.grabWindow().save(str(screenshots / 'paste.png')))
                     QTimer.singleShot(500, advance)
+                elif kind == 'helpmenu':
+                    window.smokeHelpMenu()
+                    if screenshots:
+                        QTimer.singleShot(300, lambda: window.grabWindow().save(str(screenshots / 'helpmenu.png')))
                 elif kind in ('trackinfo', 'videoinfo'):
                     window.showTrackInfo('audio' if kind == 'trackinfo' else 'video', 0)
                     if screenshots:
                         QTimer.singleShot(60, lambda k=kind: window.grabWindow().save(str(screenshots / f'{k}.png')))
                 else:
                     backend.dialogRequested.emit(kind, backend.tr('toolsHint' if kind == 'tools' else kind))
-                if kind != 'paste':
+                if kind == 'helpmenu':
+                    QTimer.singleShot(400, lambda: (window.closeHelpMenu(), advance()))
+                elif kind != 'paste':
                     QTimer.singleShot(100, advance)
             else:
                 app.exit(1 if warnings else 0)

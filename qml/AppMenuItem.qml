@@ -2,8 +2,13 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 // Menu row matching the app: soft hover fill, accent check mark for the current choice.
+// Optional: iconKind draws an icon on the left; hint shows a shortcut on the right; external marks a row that
+// opens the browser, so it can be told apart from those that stay in the app.
 MenuItem {
     id: item
+    property string iconKind: ""
+    property string hint: ""
+    property bool external: false
     implicitHeight: Math.round(34 * Math.max(1, Theme.fontScale))
     implicitWidth: row.implicitWidth + leftPadding + rightPadding
     leftPadding: 10; rightPadding: 14; topPadding: 0; bottomPadding: 0
@@ -12,16 +17,31 @@ MenuItem {
     arrow: null
     contentItem: RowLayout {
         id: row
-        spacing: 8
+        spacing: 10
         Item {
             visible: item.checkable
             Layout.preferredWidth: 16; Layout.preferredHeight: 16
             Icon { anchors.fill: parent; kind: "check"; ink: Theme.accentText; visible: item.checked }
         }
+        Icon {
+            visible: item.iconKind !== ""
+            kind: item.iconKind || "help"; ink: item.highlighted ? Theme.text : Theme.muted
+            Layout.preferredWidth: 16; Layout.preferredHeight: 16
+        }
         Text {
             text: item.text; font: item.font; Layout.fillWidth: true
             color: !item.enabled ? Theme.faint : item.checked ? Theme.accentText : Theme.text
             elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter
+        }
+        Text {
+            visible: item.hint !== ""
+            text: item.hint; font.family: Theme.ui; font.pixelSize: Theme.px(11); color: Theme.faint
+            Layout.leftMargin: 16; verticalAlignment: Text.AlignVCenter
+        }
+        Icon {
+            visible: item.external
+            kind: "external"; ink: Theme.faint
+            Layout.leftMargin: 16; Layout.preferredWidth: 12; Layout.preferredHeight: 12
         }
     }
     background: Rectangle {

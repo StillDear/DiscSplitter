@@ -7,6 +7,8 @@ network calls run in QThreadPool workers.
 from __future__ import annotations
 
 import atexit
+import platform
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 import shutil
@@ -15,10 +17,10 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 from core import appinfo, engine, jobs, metadata_sources, naming, preview, tools
-from . import settings
+from . import help_content, settings
 from . import logic
 from .controllers.base import View, local_path
 from .controllers.disc import DiscController
@@ -60,7 +62,7 @@ class Backend(View):
         cfg = settings.load()
         super().__init__(None, page='start', returnPage='start', toolNames='', busy=False, working=False, pipeline=False, status='ready', toolMissing=False,
                          systemAccent='', systemScale=100, startScale=str(cfg.get('interface_scale', 'system')),
-                         recentExports=[], netTest=[], sourceCheck={})
+                         recentExports=[], netTest=[], sourceCheck={}, helpSection='guide', helpReturn='start')
         self.smoke = smoke
         self.cfg = cfg
         self.pool = QThreadPool(self)
@@ -158,6 +160,11 @@ class Backend(View):
 
     def tr(self, key):
         return self.texts.get(key, key)
+
+    @Property('QVariantMap', notify=textsChanged)
+    def helpContent(self):
+        """The help page's sections in the interface language (gui/help_content.py)."""
+        return help_content.content(self.cfg.get('language'))
 
     def set_config(self, *, save=True, **values):
         """Change settings: saved to disk (unless save=False or in a smoke run), then announced."""
@@ -263,14 +270,21 @@ class Backend(View):
         """Go to a page; entering a sub-page remembers the page it was opened from, for Back.
         Every page change goes through here (controllers too), so Back never returns to a stale page."""
         here = self.state['page']
-        if page in self.SUB_PAGES and here not in self.SUB_PAGES:
+        if page == 'help':
+            # Help keeps its own way back, so it can open over a sub-page (settings) without losing that page's.
+            if here != 'help':
+                self.put(helpReturn=here)
+        elif page in self.SUB_PAGES and here not in self.SUB_PAGES and here != 'help':
             self.put(returnPage=here)
         self.put(page=page)
 
     @Slot()
     def back(self):
         """Leave a sub-page for the page it was opened from."""
-        self.navigate(self.state['returnPage'] or 'start')
+        if self.state['page'] == 'help':
+            self.navigate(self.state['helpReturn'] or 'start')
+        else:
+            self.navigate(self.state['returnPage'] or 'start')
 
     @Slot(str, str)
     def setPreference(self, key, value):
@@ -464,12 +478,64 @@ class Backend(View):
         if url:
             QDesktopServices.openUrl(QUrl(url))
 
+    HELP_SECTIONS = ('guide', 'tips', 'faq', 'troubleshoot', 'about')
+
     @Slot(str)
     def help(self, topic):
-        if topic == 'about':
-            self.notify(f"{self.tr('aboutText')}\n\n{self.tr('versionLabel')} {appinfo.version()}\n{appinfo.REPOSITORY}", topic)
-        elif topic == 'tips':
-            self.notify(self.tr('tipsText'), topic)
+        """Open a help section in the app, or (readme, report) the project's page in the browser."""
+        if topic in self.HELP_SECTIONS:
+            self.put(helpSection=topic)
+            self.navigate('help')
+        elif topic == 'report':
+            QDesktopServices.openUrl(QUrl(self.issue_url()))
         else:
-            suffix = '/issues' if topic == 'report' else '#readme'
-            QDesktopServices.openUrl(QUrl(appinfo.REPOSITORY + suffix))
+            readme = '/blob/main/README.zh-CN.md' if self.cfg.get('language') == 'zh' else '#readme'
+            QDesktopServices.openUrl(QUrl(appinfo.REPOSITORY + readme))
+
+    def diagnostics(self):
+        """What a bug report needs about this copy, and nothing personal: no paths, no names, no settings."""
+        tools_line = ', '.join(f"{row['tool']} {'ok' if row['available'] else 'missing'}" for row in self.tool_model.rows)
+        return '\n'.join([
+            f'DiscSplitter {appinfo.version()}',
+            f'Windows {platform.release()} ({platform.version()}, {platform.machine()})',
+            f'Python {platform.python_version()}',
+            f"Language: {self.cfg.get('language', 'zh')}",
+            f'Tools: {tools_line or "not checked"}',
+            f'Engine: {engine.version() or "not built"}',
+        ])
+
+    @Property(str, notify=changed)
+    def diagnosticsSummary(self):
+        """One line for the help page: version, Windows, how many tools were found."""
+        rows = self.tool_model.rows
+        found = sum(1 for row in rows if row['available'])
+        return self.tr('diagSummary').format(version=appinfo.version(), windows=platform.release(),
+                                              found=found, total=len(rows))
+
+    def issue_url(self):
+        """A new issue on GitHub with the report's outline filled in; the user pastes the diagnostics."""
+        body = self.tr('issueTemplate').format(diagnostics=self.diagnostics())
+        return appinfo.REPOSITORY + '/issues/new?' + urllib.parse.urlencode({'body': body})
+
+    @Slot()
+    def copyDiagnostics(self):
+        self.copyText(self.diagnostics())
+
+    @Slot(str)
+    def copyText(self, text):
+        QGuiApplication.clipboard().setText(text)
+
+    @Slot()
+    def openLogFolder(self):
+        """The folder the export logs are kept in (made if nothing has been exported yet)."""
+        folder = self.exporter.LOG_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    @Property(str, constant=True)
+    def appVersion(self):
+        return appinfo.version()
+
+    @Property(str, constant=True)
+    def repository(self):
+        return appinfo.REPOSITORY

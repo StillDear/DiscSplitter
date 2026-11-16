@@ -70,6 +70,42 @@ Canvas {
             ctx.closePath()
             ctx.moveTo(15.2, 12)
             ctx.arc(12, 12, 3.2, 0, Math.PI * 2)
+        } else if (kind === "book") {
+            // an open book: two pages meeting at the spine
+            ctx.moveTo(12, 7)
+            ctx.bezierCurveTo(9.5, 5.2, 6, 5, 3.5, 5.6); ctx.lineTo(3.5, 18.4)
+            ctx.bezierCurveTo(6, 17.8, 9.5, 18, 12, 19.6)
+            ctx.bezierCurveTo(14.5, 18, 18, 17.8, 20.5, 18.4); ctx.lineTo(20.5, 5.6)
+            ctx.bezierCurveTo(18, 5, 14.5, 5.2, 12, 7)
+            ctx.lineTo(12, 19.6)
+        } else if (kind === "bulb") {
+            // a light bulb with its base
+            ctx.moveTo(9.2, 15.5)
+            ctx.bezierCurveTo(9.2, 13.5, 6, 12.3, 6, 9)
+            ctx.bezierCurveTo(6, 5.7, 8.7, 3.5, 12, 3.5)
+            ctx.bezierCurveTo(15.3, 3.5, 18, 5.7, 18, 9)
+            ctx.bezierCurveTo(18, 12.3, 14.8, 13.5, 14.8, 15.5)
+            ctx.closePath()
+            ctx.moveTo(9.5, 18.3); ctx.lineTo(14.5, 18.3)
+            ctx.moveTo(10.5, 21); ctx.lineTo(13.5, 21)
+        } else if (kind === "lifebuoy") {
+            ctx.arc(12, 12, 9, 0, Math.PI * 2)
+            ctx.moveTo(15.5, 12)
+            ctx.arc(12, 12, 3.5, 0, Math.PI * 2)
+            for (let i = 0; i < 4; i++) {
+                const a = Math.PI / 4 + i * Math.PI / 2
+                ctx.moveTo(12 + 3.5 * Math.cos(a), 12 + 3.5 * Math.sin(a))
+                ctx.lineTo(12 + 9 * Math.cos(a), 12 + 9 * Math.sin(a))
+            }
+        } else if (kind === "external") {
+            // a box with an arrow leaving it: opens outside the app
+            ctx.moveTo(13, 4.5); ctx.lineTo(19.5, 4.5); ctx.lineTo(19.5, 11)
+            ctx.moveTo(19.5, 4.5); ctx.lineTo(11, 13)
+            ctx.moveTo(16.5, 14); ctx.lineTo(16.5, 19.5); ctx.lineTo(4.5, 19.5); ctx.lineTo(4.5, 7.5); ctx.lineTo(10, 7.5)
+        } else if (kind === "copy") {
+            // two overlapping sheets
+            ctx.rect(8.5, 8.5, 11, 11)
+            ctx.moveTo(5.5, 15.5); ctx.lineTo(4.5, 15.5); ctx.lineTo(4.5, 4.5); ctx.lineTo(15.5, 4.5); ctx.lineTo(15.5, 5.5)
         } else if (kind === "help") {
             ctx.arc(12, 12, 9, 0, Math.PI * 2)
             ctx.moveTo(9.5, 9.5)
