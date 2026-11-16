@@ -209,7 +209,7 @@ Item {
                             title: win.tr("discColors"); hint: win.tr("discColorsHint")
                             Segmented {
                                 options: [{ key: "tint", label: win.tr("discColorsTint") }, { key: "replace", label: win.tr("discColorsReplace") }]
-                                current: backend.config.disc_colors === "replace" ? "replace" : "tint"
+                                current: backend.config.disc_colors === "tint" ? "tint" : "replace"
                                 onPicked: function(key) { backend.setPreference("disc_colors", key) }
                             }
                         }

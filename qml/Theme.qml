@@ -31,9 +31,9 @@ QtObject {
     // Accent
     readonly property color chosenAccent: backend.config.accent === "system" ? (backend.view.systemAccent || "#60CDFF") : (backend.config.accent || "#F2A33A")
     // A copy of the disc (M2TS) has the blue of a Blu-ray (not in the settings, where colours are being chosen):
-    // laid over frames and selected backgrounds, keeping the accent ("tint", the default), or as the accent itself.
+    // as the accent itself ("replace", the default), or laid over frames and selected backgrounds keeping the accent.
     readonly property bool discMode: backend.disc.view.outputFormat === "m2ts" && backend.view.page !== "settings"
-    readonly property bool discReplace: discMode && backend.config.disc_colors === "replace"
+    readonly property bool discReplace: discMode && backend.config.disc_colors !== "tint"
     readonly property bool discTinted: discMode && !discReplace
     readonly property color discBlue: "#3D74E0"
     readonly property color accent: discReplace ? discBlue : chosenAccent
