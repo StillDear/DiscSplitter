@@ -1,5 +1,5 @@
 @echo off
-REM Builds the Windows installer (dist\DiscSplitter_<date>_Windows_x64_Setup.exe), with ffmpeg/ffprobe
+REM Builds the Windows installer (dist\DiscSplitter_<version>_Windows_x64_Setup.exe), with ffmpeg/ffprobe
 REM and mkvmerge/mkvextract bundled. See packaging\build_installer.py for the options.
 REM Needs: python -m pip install -r requirements-dev.txt, and Inno Setup 6.
 

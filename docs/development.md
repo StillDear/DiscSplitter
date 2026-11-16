@@ -41,7 +41,7 @@ The smoke test runs every screen with fake disc data in both languages and all t
 
 ## Packaging
 
-Build the installer (needs Inno Setup 6; writes `dist\DiscSplitter_<version>_Windows_x64_Setup.exe`, where the version defaults to today's date as `YYYY.MM.DD`):
+Build the installer (needs Inno Setup 6; writes `dist\DiscSplitter_<version>_Windows_x64_Setup.exe`, where a test build without `--version` is named after the last release tag and the commit, e.g. `1.0-16dd782`):
 
 ```powershell
 packaging\build_installer.bat

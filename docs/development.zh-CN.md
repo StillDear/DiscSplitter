@@ -41,7 +41,7 @@ $env:QT_QPA_PLATFORM = "offscreen"
 
 ## 打包
 
-制作安装包（需要 Inno Setup 6；生成 `dist\DiscSplitter_<版本号>_Windows_x64_Setup.exe`，版本号默认是当天日期，格式 `YYYY.MM.DD`）：
+制作安装包（需要 Inno Setup 6；生成 `dist\DiscSplitter_<版本号>_Windows_x64_Setup.exe`，不传 `--version` 时是测试包，版本号取上一个正式版标签加当前提交号，例如 `1.0-16dd782`）：
 
 ```powershell
 packaging\build_installer.bat

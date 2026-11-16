@@ -1,7 +1,7 @@
 """
 Build the Windows installer: dist/DiscSplitter_<version>_Windows_x64_Setup.exe
 
-    .venv\\Scripts\\python.exe packaging\\build_installer.py [--version 2026.11.13]
+    .venv\\Scripts\\python.exe packaging\\build_installer.py [--version 1.1]
         [--ffmpeg-dir DIR] [--mkvtoolnix-dir DIR] [--iscc PATH] [--skip-pyinstaller]
 
 1. PyInstaller builds the app as a folder (packaging/installer.spec -> build/installer/DiscSplitter);
@@ -22,7 +22,6 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -82,6 +81,16 @@ def find_iscc(override: str | None) -> Path:
     fail("Inno Setup 6 (ISCC.exe) not found; install it (winget install JRSoftware.InnoSetup) or pass --iscc")
 
 
+def test_version() -> str:
+    """A test build's version when none is given: the last release and the commit, e.g. 1.0-16dd782."""
+    def git(*args):
+        result = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+        return result.stdout.strip() if result.returncode == 0 else ""
+    release = git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*").removeprefix("v") or "0.0"
+    commit = git("rev-parse", "--short", "HEAD")
+    return f"{release}-{commit}" if commit else release
+
+
 def run(command: list) -> None:
     print("\n>", " ".join(str(c) for c in command), flush=True)
     if subprocess.run([str(c) for c in command], cwd=ROOT).returncode:
@@ -90,12 +99,14 @@ def run(command: list) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--version", default=date.today().strftime("%Y.%m.%d"))
+    parser.add_argument("--version", help="release version, e.g. 1.1 or 1.1.1; without it a test build is "
+                                          "named after the last release and the commit, e.g. 1.0-16dd782")
     parser.add_argument("--ffmpeg-dir")
     parser.add_argument("--mkvtoolnix-dir")
     parser.add_argument("--iscc")
     parser.add_argument("--skip-pyinstaller", action="store_true", help="reuse the last app build")
     args = parser.parse_args()
+    args.version = args.version or test_version()
 
     # Find everything first, so a missing tool fails fast rather than after a long build.
     folders = {"ffmpeg": tool_folder("ffmpeg", args.ffmpeg_dir),
