@@ -25,3 +25,6 @@ Thumbs.db
 
 # Release builds go to GitHub Releases, not the repository
 *.exe
+
+# Local rules for Claude Code sessions, kept out of the repository
+CLAUDE.md
