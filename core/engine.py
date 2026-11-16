@@ -445,6 +445,11 @@ def track_line(source: str, track: Track, *, matroska: bool = False, drop_core: 
         params.append(f"lang={track.language}")
     if track.kind == "audio" and props.get("secondary") and not matroska:
         params.append("secondary")
+    # Each key picture of an H.264 cut carries its SPS and PPS, so a player that starts there (a seek, a thumbnail)
+    # can decode it: some discs leave them out at IDR pictures in the middle of a group. Matroska keeps them in its
+    # header instead.
+    if program == "V_MPEG4/ISO/AVC" and not matroska:
+        params.append("contSPS")
     if drop_core and track.codec_id == "A_TRUEHD":
         params.append("drop-ac3-core")
     return f"{program}, {_quote(where)}, " + ", ".join(params)

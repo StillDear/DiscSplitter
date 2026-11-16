@@ -864,11 +864,17 @@ int H264StreamReader::writeAdditionData(uint8_t* dstBuffer, uint8_t* dstEnd, AVP
     // first picture, so without them nothing in that file decoded: this used to be done only with contSPS. The
     // dependent view of a 3D stream keeps the old rule.
     const bool newFileNeedsSpsPps = m_firstFileFrame && !srcSpsPpsFound && !m_mvcSubStream;
+    // With contSPS, also an I picture that carries no SPS and PPS of its own in a stream that does repeat them
+    // elsewhere. A disc encoder can open a new IDR at each cut in the middle of a group without sending the sets
+    // again (measured: 49 of 114 IDR pictures in one concert chapter). Played from the start that decodes, but a
+    // decoder that starts there, after a seek or to draw a thumbnail, has no sets: Windows drew the file green. The
+    // m_spsCounter rule above only covers a stream that holds its sets once.
+    const bool iFrameWithoutSets = m_totalFrameNum > 1 && isIFrame() && !srcSpsPpsFound && !m_mvcSubStream;
     bool spsDiscontinue =
         newFileNeedsSpsPps ||
         (m_h264SPSCont &&
          ((m_spsCounter < 2 && ((m_totalFrameNum > 1 && m_lastSliceIDR) || (m_totalFrameNum > 250 && isIFrame()))) ||
-          (m_firstFileFrame && !srcSpsPpsFound)));
+          (m_firstFileFrame && !srcSpsPpsFound) || iFrameWithoutSets));
     // A picture that carries its own SPS and PPS needs no copy of them. The first IDR picture of a stream taken up in
     // the middle of a group (a cut of a disc clip) came after other pictures and got the copy ahead of its own: SPS
     // and PPS twice in one access unit. Where the stream's own are replaced (replaceToOwnSPS), they are left out and

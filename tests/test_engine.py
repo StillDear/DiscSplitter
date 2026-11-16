@@ -158,6 +158,17 @@ def test_meta_lines_name_each_track_by_pid():
         "D:/x/disc.iso/BDMV/PLAYLIST/00001.mpls"
 
 
+def test_h264_cut_to_m2ts_repeats_parameter_sets():
+    # Every key picture carries its SPS and PPS, so a seek or a thumbnail can start there; Matroska keeps them in its
+    # header, and HEVC gets them from the engine without the option.
+    source = "D:/discs/film.iso/BDMV/PLAYLIST/00800.mpls"
+    avc = Track(0, 'video', 'AVC/H.264/MPEG-4p10', 'V_MPEG4/ISO/AVC', stream_id=0x1011)
+    assert engine.track_line(source, avc) == f'V_MPEG4/ISO/AVC, "{source}", track=4113, contSPS'
+    assert "contSPS" not in engine.track_line(source, avc, matroska=True)
+    hevc = {t.track_id: t for t in tracks()}[4113]
+    assert "contSPS" not in engine.track_line(source, hevc)
+
+
 def test_clock_keeps_microseconds():
     assert engine.clock(407.9915) == "00:06:47.991500"
     assert engine.clock(3723.000001) == "01:02:03.000001"

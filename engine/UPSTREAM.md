@@ -18,7 +18,7 @@ lists a playlist's tracks (by PID) and chapter marks, and cuts a playlist into M
 - Licence: Apache 2.0 (`tsmuxer/LICENSE`, `tsmuxer/NOTICE`). The GUI (Qt), documentation and packaging of
   upstream are not included; nothing here links Qt, libass or libdovi (the last two are only loaded at run time
   when present, and are not shipped).
-- Local changes to the upstream sources: one, `patches/0001-discsplitter-listings.patch` (in `tsMuxer/main.cpp`,
+- Local changes to the upstream sources: two. The first, `patches/0001-discsplitter-listings.patch` (in `tsMuxer/main.cpp`,
   `metaDemuxer.cpp/.h`, `muxerManager.cpp` and `tsPacket.h`, already applied to the snapshot). It adds output
   and one opt-in option; without that option nothing upstream does changes:
   - a playlist listing adds `Mark ticks (45 kHz): …` after each clip's `Marks:` lines: the same marks unrounded,
@@ -34,6 +34,12 @@ lists a playlist's tracks (by PID) and chapter marks, and cuts a playlist into M
     the meta (`--cut-*`, `--custom-chapters`) are counted from it. Refused for 3D playlists;
   - every progress report is followed by `Position: <seconds>`, the timestamp the muxer has reached (from the
     window start when there is one), so the app shows progress by time instead of by bytes read.
+- The second, `patches/0002-key-pictures-carry-parameter-sets.patch` (in `tsMuxer/h264StreamReader.cpp`), widens
+  `contSPS`: an H.264 I picture that carries no SPS and PPS of its own now gets them, also in a stream that repeats
+  them elsewhere. Upstream did so only for a stream that holds them once. Some discs open an IDR picture at a cut in
+  the middle of a group without sending the sets again; a cut of such a chapter decoded from its start but not
+  after a seek, and Windows drew its thumbnail green. Only output with `contSPS` changes, which is Blu-ray output
+  and, from the app, every H.264 track cut to M2TS.
 
   Any further change goes into `patches/` as a `git diff` against the upstream snapshot and is listed here, so
   that an update can re-apply it.
