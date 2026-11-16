@@ -137,6 +137,7 @@ Rectangle {
                             { key: "flac", label: "FLAC", hint: win.tr("modeFlacHint") }
                         ]
                         current: win.discView.outputFormat
+                        sheenKey: "m2ts"            // a copy of the disc shows a disc's sheen
                         enabled: !win.appView.busy
                         onPicked: function(key) { backend.disc.setOutputFormat(key) }
                     }
@@ -154,6 +155,14 @@ Rectangle {
                     Icon {
                         id: discIcon; kind: "disc"; ink: Theme.muted
                         Layout.preferredWidth: 28; Layout.preferredHeight: 28; Layout.alignment: Qt.AlignTop
+                        // Copied as M2TS: the disc in its own colours, turning once as the mode is chosen.
+                        readonly property bool disc: win.discView.outputFormat === "m2ts"
+                        sheen: disc
+                        onDiscChanged: if (disc && Theme.animate) discTilt.restart()
+                        NumberAnimation {
+                            id: discTilt; target: discIcon; property: "sheenAngle"
+                            from: 0; to: Math.PI * 2; duration: 1100; easing.type: Easing.InOutSine
+                        }
                         // Spins while the disc is being scanned or chapters are read.
                         RotationAnimation on rotation {
                             running: Theme.animate && win.appView.working && !win.appView.pipeline
@@ -1101,8 +1110,13 @@ Rectangle {
                         wrapMode: Text.NoWrap; elide: Text.ElideRight
                     }
                     ActionButton {
+                        // A copy of the disc: the disc icon and the disc's sheen
+                        readonly property bool disc: win.discView.outputFormat === "m2ts"
                         text: win.tr("extract"); primary: true; large: true; Layout.fillWidth: true
+                        iconKind: disc ? "disc" : ""; sheen: disc
                         enabled: !win.appView.working && win.discView.chapterSelected > 0 && win.discView.audioSelected > 0
+                        onDiscChanged: if (disc) Qt.callLater(sweep)
+                        onHoveredChanged: if (hovered && disc && enabled) sweep()
                         onClicked: backend.exporter.startExport()
                     }
                 }

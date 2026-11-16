@@ -4,6 +4,11 @@ import QtQuick
 Canvas {
     property string kind: "disc"
     property color ink: Theme.accent
+    // Drawn in a disc's play of colour instead of one ink (a conic spectrum around the centre)
+    property bool sheen: false
+    property real sheenAngle: 0
+    onSheenChanged: requestPaint()
+    onSheenAngleChanged: if (sheen) requestPaint()
     implicitWidth: 24
     implicitHeight: 24
     onKindChanged: requestPaint()
@@ -16,6 +21,12 @@ Canvas {
         ctx.save()
         ctx.scale(width / 24, height / 24)
         ctx.strokeStyle = ink
+        if (sheen) {
+            const spectrum = ctx.createConicalGradient(12, 12, sheenAngle)
+            const stops = ["#5FB8F5", "#8C7BF0", "#E77CBE", "#F0B85C", "#5DCB93", "#5FB8F5"]
+            for (let i = 0; i < stops.length; i++) spectrum.addColorStop(i / (stops.length - 1), stops[i])
+            ctx.strokeStyle = spectrum
+        }
         ctx.lineWidth = 1.8
         ctx.lineCap = "round"
         ctx.lineJoin = "round"

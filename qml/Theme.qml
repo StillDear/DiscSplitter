@@ -11,8 +11,9 @@ QtObject {
     readonly property color segOn: light ? "#FFFFFF" : "#2B313B"
     readonly property color chip: light ? "#ECEEF2" : "#232830"
     // Lines
-    readonly property color line: light ? "#DFE2E7" : "#232830"
-    readonly property color line2: light ? "#CDD2DA" : "#2F3541"
+    // Hairlines and frames; with a blue cast in disc mode (below)
+    readonly property color line: discTint(light ? "#DFE2E7" : "#232830", light ? 0.30 : 0.38)
+    readonly property color line2: discTint(light ? "#CDD2DA" : "#2F3541", light ? 0.34 : 0.42)
     // Text
     readonly property color text: light ? "#15181D" : "#E9EBEE"
     readonly property color sub: light ? "#3A404B" : "#C9CED6"
@@ -28,7 +29,15 @@ QtObject {
     readonly property color pendingBg: light ? "#FBE3E0" : "#3A2427"   // e.g. chapters still without a title
     readonly property color pendingText: light ? "#A3322D" : "#FFB1AA"
     // Accent
-    readonly property color accent: backend.config.accent === "system" ? (backend.view.systemAccent || "#60CDFF") : (backend.config.accent || "#F2A33A")
+    readonly property color chosenAccent: backend.config.accent === "system" ? (backend.view.systemAccent || "#60CDFF") : (backend.config.accent || "#F2A33A")
+    // A copy of the disc (M2TS) has the blue of a Blu-ray (not in the settings, where colours are being chosen):
+    // laid over frames and selected backgrounds, keeping the accent ("tint", the default), or as the accent itself.
+    readonly property bool discMode: backend.disc.view.outputFormat === "m2ts" && backend.view.page !== "settings"
+    readonly property bool discReplace: discMode && backend.config.disc_colors === "replace"
+    readonly property bool discTinted: discMode && !discReplace
+    readonly property color discBlue: "#3D74E0"
+    readonly property color accent: discReplace ? discBlue : chosenAccent
+    function discTint(c, amount) { return discTinted ? Qt.tint(c, Qt.rgba(discBlue.r, discBlue.g, discBlue.b, amount)) : c }
     readonly property real accentLuma: 0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b
     // Text drawn on an accent fill: dark on bright accents, white on deep ones (e.g. Windows blue).
     readonly property color accentInk: accentLuma > 0.45 ? "#14100A" : "#FFFFFF"
@@ -49,8 +58,11 @@ QtObject {
     readonly property real fontScale: Number(backend.config.font_scale) || 1
     function px(size) { return Math.round(size * fontScale) }
     readonly property int rowHeight: Math.round((compact ? 36 : 44) * Math.max(1, fontScale))
-    readonly property color accentSoft: Qt.tint(panel, Qt.rgba(accent.r, accent.g, accent.b, light ? 0.14 : 0.12))
-    readonly property color accentSoft2: Qt.tint(panel, Qt.rgba(accent.r, accent.g, accent.b, light ? 0.26 : 0.22))
+    // Selected backgrounds: the accent, faint; tinted disc mode uses the disc's blue instead
+    readonly property color accentSoft: discTinted ? discTint(panel, light ? 0.12 : 0.14)
+                                                   : Qt.tint(panel, Qt.rgba(accent.r, accent.g, accent.b, light ? 0.14 : 0.12))
+    readonly property color accentSoft2: discTinted ? discTint(panel, light ? 0.22 : 0.24)
+                                                    : Qt.tint(panel, Qt.rgba(accent.r, accent.g, accent.b, light ? 0.26 : 0.22))
     // Type. Chinese falls back from Segoe UI to Microsoft YaHei UI, whose own Latin letters run wider
     // and would crowd the chips and cards, so the family stays Segoe UI in both languages.
     readonly property string ui: "Segoe UI"

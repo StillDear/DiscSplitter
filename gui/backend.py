@@ -290,7 +290,7 @@ class Backend(View):
     def setPreference(self, key, value):
         allowed = {'theme': {'dark', 'light', 'system'}, 'language': {'zh', 'en'},
                    'interface_scale': logic.INTERFACE_SCALES, 'font_scale': logic.FONT_SCALES,
-                   'density': {'comfortable', 'compact'}, 'motion': {'full', 'reduced'},
+                   'density': {'comfortable', 'compact'}, 'motion': {'full', 'reduced'}, 'disc_colors': {'tint', 'replace'},
                    'proxy_mode': {'system', 'none', 'custom'}, 'net_timeout': {'10', '15', '30'},
                    'meta_source': set(metadata_sources.SOURCES), 'itunes_country': logic.ITUNES_COUNTRIES,
                    'cover_size': set(metadata_sources.COVER_SIZES), 'cover_target': {'both', 'embed', 'folder'},

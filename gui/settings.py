@@ -22,6 +22,7 @@ DEFAULTS: dict[str, Any] = {
     "font_scale": "1",
     "density": "comfortable",
     "motion": "full",
+    "disc_colors": "tint",          # M2TS mode: "tint" (blue over frames and selections) | "replace" (blue accent)
     "proxy_mode": "system",       # "system" | "none" | "custom"
     "proxy_url": "",
     "net_timeout": "15",

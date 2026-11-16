@@ -16,6 +16,18 @@ ColumnLayout {
             anchors.fill: parent; spacing: 16
             RowLayout {
                 Layout.fillWidth: true; spacing: 20
+                // Cutting a copy of the disc: the disc, in its own colours, turns while the engine reads it.
+                Icon {
+                    id: spinningDisc
+                    visible: win.discView.outputFormat === "m2ts"; kind: "disc"; sheen: true
+                    Layout.preferredWidth: 44; Layout.preferredHeight: 44; Layout.alignment: Qt.AlignVCenter
+                    RotationAnimation on rotation {
+                        running: Theme.animate && spinningDisc.visible && win.appView.pipeline
+                                 && win.exportView.result !== "cancelling"
+                        from: 0; to: 360; duration: 2400; loops: Animation.Infinite
+                        onRunningChanged: if (!running) spinningDisc.rotation = 0
+                    }
+                }
                 ColumnLayout {
                     Layout.fillWidth: true; spacing: 6
                     Copy { text: (win.discView.album ? win.discView.album + " · " : "") + win.fmt("stageOf", { i: Math.max(1, exportPage.stageIndex + 1) }); color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight }

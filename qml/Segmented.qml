@@ -8,6 +8,10 @@ Rectangle {
     property var options: []
     property string current: ""
     property bool fill: false
+    // The option that shows a disc's sheen when chosen (the M2TS copy of a disc); it sweeps once on being chosen.
+    property string sheenKey: ""
+    onCurrentChanged: if (sheenKey !== "" && current === sheenKey) sweepLater.restart()
+    Timer { id: sweepLater; interval: Theme.normal + 40; onTriggered: indicatorSheen.sweep() }   // once it has slid over
     property int itemHeight: Math.round(28 * Math.max(1, Theme.fontScale))
     signal picked(string key)
     readonly property int currentIndex: {
@@ -29,6 +33,11 @@ Rectangle {
         radius: 6; color: Theme.segOn; border.color: Theme.light ? Theme.line : "transparent"
         Behavior on x { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
         Behavior on width { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
+        Sheen {
+            id: indicatorSheen
+            anchors.fill: parent; radius: parent.radius
+            on: seg.sheenKey !== "" && seg.current === seg.sheenKey
+        }
     }
     RowLayout {
         id: row

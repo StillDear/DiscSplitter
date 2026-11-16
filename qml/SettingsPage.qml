@@ -206,6 +206,14 @@ Item {
                             }
                         }
                         SettingRow {
+                            title: win.tr("discColors"); hint: win.tr("discColorsHint")
+                            Segmented {
+                                options: [{ key: "tint", label: win.tr("discColorsTint") }, { key: "replace", label: win.tr("discColorsReplace") }]
+                                current: backend.config.disc_colors === "replace" ? "replace" : "tint"
+                                onPicked: function(key) { backend.setPreference("disc_colors", key) }
+                            }
+                        }
+                        SettingRow {
                             title: win.tr("language")
                             Segmented {
                                 options: [{ key: "zh", label: "简体中文" }, { key: "en", label: "English" }]
