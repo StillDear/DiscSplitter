@@ -384,11 +384,10 @@ Rectangle {
                     id: timeline
                     readonly property bool waveOn: backend.config.waveform !== false
                     readonly property bool waveShown: waveOn && win.previewView.waveState === "ready" && backend.preview.waveform.length > 1
-                    // With few chapters the list leaves room below it: the waveform takes part of that room.
-                    readonly property real spare: centerColumn.height - chapterHeader.height - listHeader.height
-                                                  - centerColumn.spacing * 3 - chapterList.contentHeight - 116
+                    // One height whatever the chapter count: a short list leaves its room empty below it rather
+                    // than blowing the waveform up to fill it.
                     Layout.fillWidth: true; radius: 10; color: Theme.deep; border.color: Theme.line
-                    Layout.preferredHeight: (waveShown ? Math.round(Math.max(96, Math.min(220, 96 + spare * 0.6))) : 76) + ruler.height + 6
+                    Layout.preferredHeight: (waveShown ? 96 : 76) + ruler.height + 6
                     Behavior on Layout.preferredHeight { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
                     ColumnLayout {
                         anchors.fill: parent; anchors.margins: 12; spacing: 6
