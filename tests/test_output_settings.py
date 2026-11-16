@@ -130,3 +130,29 @@ def test_taskbar_follows_export_progress(backend, qt_app):
     backend.put(page='main')
     d.sync()
     assert calls[-1] == ('state', desktop._Taskbar.NONE)
+
+
+def test_finished_export_is_not_announced_as_failed(backend, qt_app):
+    """The page may leave the export before the result is set: the notification waits for the result."""
+    calls = []
+
+    class FakeTaskbar:
+        def state(self, flag):
+            calls.append(('state', flag))
+
+        def value(self, done, total):
+            pass
+
+    d = desktop.Desktop.__new__(desktop.Desktop)
+    d.backend, d.window, d.taskbar = backend, QWindow(), FakeTaskbar()
+    d.running, d.total, d.error_shown, d.tray = False, 0, False, None
+    d.notify = lambda title, text, failed=False: calls.append(('notify', title, failed))
+    backend.put(pipeline=True, result='running', stage='splitting', remaining=3, completed=0)
+    d.sync()
+    backend.put(page='done', pipeline=False)          # still "running": not over yet
+    d.sync()
+    assert not any(c[0] == 'notify' for c in calls)
+    backend.put(result='done', completed=3)
+    d.sync()
+    assert calls[-1] == ('notify', backend.tr('notifyDoneTitle'), False)
+    assert ('state', desktop._Taskbar.ERROR) not in calls

@@ -407,12 +407,14 @@ class ExportController(Controller):
                   if r['included'] and r['status'] == 'done' and r['title'].strip()}
         self.finished_tracklist = tracklist.export_chapter_tracklist(titles) if titles else ''
         self.remember_export(sum(r['status'] == 'done' for r in self.disc.chapter_model.rows))
-        self.app.put(page='done', pipeline=False)
+        # The outcome first, then the page: whatever watches the state (the taskbar, the finished notification)
+        # must never see the job over while the result still says "running".
         self.put(result=result,
                  tracklistAvailable=bool(self.finished_tracklist),
                  completed=sum(r['status'] == 'done' for r in self.disc.chapter_model.rows),
                  failed=sum(r['status'] == 'failed' for r in self.disc.chapter_model.rows),
                  remaining=sum(r['included'] and r['status'] in {'pending', 'cancelled'} for r in self.disc.chapter_model.rows))
+        self.app.put(page='done', pipeline=False)
         self.apply_verification(verified or [])
         self.refresh_resume(self.flow.output)
         if exc and not cancelled:

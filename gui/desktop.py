@@ -127,7 +127,9 @@ class Desktop(QObject):
     # progress ------------------------------------------------------------
     def sync(self):
         state = self.backend.state
-        running = bool(state.get('pipeline')) and state.get('result') in ('running', 'cancelling')
+        # The job's own result says when it is over (not the page or `pipeline`, which may change first):
+        # ending on anything else would announce a finished export as "not exported".
+        running = state.get('result') in ('running', 'cancelling')
         if running and not self.running:
             self.total = max(1, int(state.get('remaining') or state.get('chapterSelected') or 1))
             self.error_shown = False
