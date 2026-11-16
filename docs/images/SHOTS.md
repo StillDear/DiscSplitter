@@ -1,20 +1,21 @@
-# Screenshots for the README / README 截图清单
+# README screenshots / README 截图
 
-The READMEs already contain the markup for these images inside HTML comments. Drop the files here with the exact names below, then delete the comment's opening `<!--` and closing `-->` lines in both `README.md` and `README.zh-CN.md`.
+`README.md` uses the English set in `en/`, `README.zh-CN.md` the Chinese set in `zh/`. Both sets have the same file names, so a screenshot is replaced by saving the new one over the old.
 
-README 里已经写好了这些图片的代码，放在 HTML 注释里。按下面的文件名把图片放进本文件夹，再把 `README.md` 和 `README.zh-CN.md` 里对应注释开头的 `<!--` 和结尾的 `-->` 两行删掉即可。
+`README.md` 用 `en/` 里的英文界面截图，`README.zh-CN.md` 用 `zh/` 里的中文界面截图。两套文件名相同，替换时直接用新图覆盖旧图即可。
 
-| File / 文件 | Screen / 页面 | What to show / 拍摄内容 | Required / 必需 |
-|---|---|---|:---:|
-| `workspace-light.png` | Workspace, light theme / 工作区，浅色 | A real Blu-ray open, titles filled in, a frame visible in the preview, one row selected / 打开一张真实蓝光，曲名已填好，预览区有画面，选中一行 | ✓ |
-| `workspace-dark.png` | Workspace, dark theme / 工作区，深色 | Same scene as above / 和上面同一画面 | ✓ |
-| `review.png` | Review titles / 核对曲名 | An online search result matched to chapters / 在线搜索结果已对到章节上 | |
-| `done.png` | Export finished / 导出完成 | Files written and verified / 文件已写出并校验通过 | |
+| File / 文件 | Screen / 页面 | Where in the README / 用在哪里 |
+|---|---|---|
+| `workspace-light.webp` | Workspace, light theme / 工作区，浅色 | Top of the page, for readers in light mode / 首屏，浅色模式的访客看到 |
+| `workspace-dark.webp` | Workspace, dark theme / 工作区，深色 | Top of the page, for readers in dark mode / 首屏，深色模式的访客看到 |
+| `review.webp` | Review titles / 确认曲名 | Under "How it works" / 「使用流程」下方 |
+| `done.webp` | Export finished / 导出完成 | Under "How it works" / 「使用流程」下方 |
+| `metadata.webp` | Metadata / 元数据 | "More screenshots" / 「更多截图」 |
+| `export.webp` | Export in progress / 导出进行中 | "More screenshots" / 「更多截图」 |
 
-Tips / 拍摄建议
+Taking new ones / 重新拍摄时
 
-- Window size 1280 × 800 at 100 % scale, so every image has the same width and text stays readable on GitHub. / 窗口 1280 × 800，缩放 100%，所有图宽度一致，在 GitHub 上文字清晰。
-- Use the English interface for `README.md` images if you want separate sets; otherwise one set is fine for both. / 如果想中英文各一套，可以另存 `*-zh.png`；否则一套图两个 README 共用。
-- Hide personal details: user name in paths, drive letters you would rather not show. / 遮掉路径里的用户名等个人信息。
-- Save as PNG; keep each file under about 500 KB (e.g. run it through an optimiser). / 存为 PNG，每张尽量控制在 500 KB 以内。
-- `app.py --smoke-screenshots <folder>` renders every screen with demo data; useful for checking layout, but the README should show a real disc. / `app.py --smoke-screenshots <文件夹>` 能用演示数据导出所有页面，可用来检查布局，但 README 里应该放真实光盘的截图。
+- Same window size for every shot (the current set is 2000 × 1194), so the images line up. / 每张窗口大小一致（现在这套是 2000 × 1194），排版才整齐。
+- WebP keeps each file around 60–170 KB. / 存成 WebP，每张大约 60–170 KB。
+- Check the paths shown on screen for anything you would rather not publish. / 检查画面里显示的路径，有不想公开的信息先遮掉。
+- `app.py --smoke-screenshots <folder>` renders every screen with demo data, useful for checking layout, not for the README. / `app.py --smoke-screenshots <文件夹>` 能用演示数据导出所有页面，适合检查布局，不用于 README。

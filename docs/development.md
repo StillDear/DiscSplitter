@@ -49,7 +49,7 @@ packaging\build_installer.bat
 
 `build_exe.bat` builds a single portable `DiscSplitter.exe` instead (same `packaging/installer.spec`, one-file mode). That one includes the Blu-ray engine but not MKVToolNix or ffmpeg.
 
-Release builds are attached to [GitHub Releases](https://github.com/StillDear/DiscSplitter/releases), not committed.
+Release builds are attached to [GitHub Releases](https://github.com/StillDear/DiscSplitter/releases), not committed. For a new version, run `packaginguild_installer.bat --version <x.y>`, and update the version in the download and version badges at the top of both READMEs (the repository is private, so the badges cannot read it from the release yet).
 
 ## Command line
 

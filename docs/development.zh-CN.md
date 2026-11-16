@@ -49,7 +49,7 @@ packaging\build_installer.bat
 
 `build_exe.bat` 则生成一个单文件的便携版 `DiscSplitter.exe`（同样用 `packaging/installer.spec`，单文件模式）。便携版带蓝光引擎，但不带 MKVToolNix 和 ffmpeg。
 
-发布的安装包上传到 [GitHub Releases](https://github.com/StillDear/DiscSplitter/releases)，不提交进仓库。
+发布的安装包上传到 [GitHub Releases](https://github.com/StillDear/DiscSplitter/releases)，不提交进仓库。发新版本时运行 `packaginguild_installer.bat --version <x.y>`，并更新两个 README 顶部下载徽章和版本徽章里的版本号（仓库目前是私有的，徽章还不能自动读取 Release 的版本）。
 
 ## 命令行
 
