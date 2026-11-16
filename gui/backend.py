@@ -446,6 +446,26 @@ class Backend(View):
 
     OPTIONAL_TOOLS = ('mkvmerge', 'mkvextract', 'mkvpropedit')
 
+    @Slot(str, bool, result=str)
+    def startFolder(self, path, parent):
+        """
+        The folder a file or folder picker opens at, as a file: URL: `path` itself (`parent`: the folder it is
+        in), or the nearest folder above it that exists. "" when there is none, so the picker keeps its own.
+        """
+        text = local_path(path)
+        if not text:
+            return ''
+        folder = Path(text)
+        if parent:
+            folder = folder.parent
+        for candidate in (folder, *folder.parents):
+            try:
+                if candidate.is_dir():
+                    return QUrl.fromLocalFile(str(candidate)).toString()
+            except OSError:
+                continue
+        return ''
+
     @Slot(str, str)
     def locateTool(self, tool, path):
         if tool not in tools.tool_paths():

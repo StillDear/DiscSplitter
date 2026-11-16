@@ -111,6 +111,9 @@ Popup {
         excluded = next
     }
     Timer { id: previewTimer; interval: 160; onTriggered: dialog.run() }
+    // The waveform finished (or was switched off): the non-song chapters are detected again from it
+    readonly property string waveState: win.previewView.waveState
+    onWaveStateChanged: if (opened) refresh()
 
     // A screenshot was read: add its text (or replace what the same screenshot gave before)
     readonly property int ocrSerial: ocrState.serial
@@ -458,7 +461,7 @@ Popup {
                         // The chapters the list fills: from ... to ...
                         RowLayout {
                             visible: dialog.pv.mode === "order"
-                            spacing: 4; height: 26
+                            spacing: 4; height: 32            // as tall as the switches beside it, so all line up
                             HoverHandler { id: rangeHover }
                             ToolTip.visible: rangeHover.hovered; ToolTip.delay: 600; ToolTip.text: win.tr("pasteRangeHint")
                             Copy { text: win.tr("pasteStartAt"); font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap; color: Theme.sub; rightPadding: 2 }
@@ -479,7 +482,7 @@ Popup {
                         }
                         RowLayout {
                             visible: dialog.pv.columns.length > 1
-                            spacing: 6; height: 26
+                            spacing: 6; height: 32
                             Copy { text: win.tr("pasteTitleColumn"); font.pixelSize: Theme.px(12); wrapMode: Text.NoWrap; color: Theme.sub }
                             Segmented {
                                 itemHeight: 26
@@ -520,14 +523,24 @@ Popup {
                                 current: dialog.pv.skip
                                 onPicked: function(key) { dialog.skipMode = key; dialog.chapterChoices = ({}) }
                             }
+                            Item { Layout.fillWidth: true }
+                            // Detection hears music and talk in the waveform: the same switch as on the timeline
+                            OptionSwitch {
+                                visible: dialog.pv.skip === "auto"
+                                label: win.tr("waveform"); hint: win.tr("pasteWaveHint")
+                                checked: backend.config.waveform !== false
+                                onToggled: backend.setPreference("waveform", checked ? "true" : "false")
+                            }
                         }
                         Copy {
                             Layout.fillWidth: true
                             font.pixelSize: Theme.px(11); color: Theme.faint
-                            text: dialog.pv.skip === "auto"
-                                  ? win.fmt(dialog.pv.byWave ? "pasteSkipByWave" : "pasteSkipByLength", { n: dialog.pv.skippedCount })
-                                  : dialog.pv.skip === "none" ? win.tr("pasteSkipNoneHint")
-                                  : win.tr("pasteSkipLinesHint")
+                            readonly property string wave: win.previewView.waveState
+                            text: dialog.pv.skip !== "auto" ? win.tr(dialog.pv.skip === "none" ? "pasteSkipNoneHint" : "pasteSkipLinesHint")
+                                  : dialog.pv.byWave ? win.fmt("pasteSkipByWave", { n: dialog.pv.skippedCount })
+                                  : backend.config.waveform === false ? win.fmt("pasteSkipWaveOff", { n: dialog.pv.skippedCount })
+                                  : wave === "computing" ? win.fmt("pasteSkipWaveComputing", { n: dialog.pv.skippedCount, p: win.previewView.waveProgress })
+                                  : win.fmt("pasteSkipByLength", { n: dialog.pv.skippedCount })
                         }
                         Flow {
                             Layout.fillWidth: true; spacing: 4

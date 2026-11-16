@@ -34,10 +34,18 @@ ApplicationWindow {
     // Playback wording: "试听" (listen) for audio, "播放" when a video is being previewed (key + "Video").
     function playTr(key, video) { return video && t[key + "Video"] ? t[key + "Video"] : tr(key) }
     readonly property bool videoMode: discView.outputFormat !== "flac" && !!discView.hasVideo
-    function openFolder(kind) { browseKind = kind; folderDialog.open() }
-    function openSourceFile() { sourceFileDialog.open() }
+    // Pickers open where the current choice is: the export folder, or the folder the open disc is in.
+    function startAt(dialog, path, parent) {
+        const url = backend.startFolder(path || "", parent)
+        if (url !== "") dialog.currentFolder = url
+    }
+    function openFolder(kind) {
+        browseKind = kind
+        startAt(folderDialog, kind === "source" ? discView.source : discView.output, kind === "source")
+        folderDialog.open()
+    }
+    function openSourceFile() { startAt(sourceFileDialog, discView.source, true); sourceFileDialog.open() }
     function browseTool(tool) { toolName = tool; toolDialog.open() }
-    function importTracklist() { importDialog.open() }
     function pasteTracklist() { pastePopup.open() }
     function openHelp(button) { helpMenu.popup(button, button.width - helpMenu.width, button.height + 4) }
     // The workspace carries its own header pieces (name, mode, language, settings) in its columns.
@@ -94,12 +102,6 @@ ApplicationWindow {
         title: win.tr("chooseSourceFile")
         nameFilters: [win.tr("sourceFileFilter")]
         onAccepted: backend.disc.setSource(selectedFile.toString())
-    }
-    FileDialog {
-        id: importDialog
-        title: win.tr("import")
-        nameFilters: [win.tr("tracklistFilter"), win.tr("allFilesFilter")]
-        onAccepted: backend.names.importFile(selectedFile.toString())
     }
     FileDialog {
         id: toolDialog

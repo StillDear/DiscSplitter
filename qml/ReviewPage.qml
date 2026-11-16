@@ -410,16 +410,16 @@ ColumnLayout {
                         text: win.namesView.reviewSource === "disc" ? win.tr("srcDiscHint") : win.namesView.reviewCount === 0 ? win.tr("srcEmptyHint") : win.tr("srcListHint")
                         color: Theme.sub; font.pixelSize: Theme.px(12); Layout.fillWidth: true; lineHeight: 1.35
                     }
+                    // A file next to the disc is loaded from the workspace; there is no picker for others here.
                     ActionButton {
+                        visible: win.namesView.reviewSource !== "import"
                         text: win.namesView.reviewSource === "disc" ? win.tr("reloadDisc")
-                            : win.namesView.reviewSource === "paste" ? win.tr(win.namesView.reviewCount === 0 ? "paste" : "repaste")
-                            : win.tr(win.namesView.reviewCount === 0 ? "chooseFile" : "otherFile")
+                            : win.tr(win.namesView.reviewCount === 0 ? "paste" : "repaste")
                         primary: win.namesView.reviewSource !== "disc" && win.namesView.reviewCount === 0
                         Layout.fillWidth: true; enabled: !win.appView.working
                         onClicked: {
                             if (win.namesView.reviewSource === "disc") backend.names.reviewEmbedded()
-                            else if (win.namesView.reviewSource === "paste") win.pasteTracklist()
-                            else win.importTracklist()
+                            else win.pasteTracklist()
                         }
                     }
                     Item { Layout.fillHeight: true }

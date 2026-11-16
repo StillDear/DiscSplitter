@@ -18,7 +18,7 @@ ZH = {
         dict(title='选章节和音轨',
              body='勾选要导出的章节、音轨和字幕。音质最好的无损音轨已经默认选好；「内容」列会标出哪些章节是 MC 或过场，方便去掉。'),
         dict(title='获取曲名',
-             body='点「获取曲名」，可以用光盘自带的名字、在线搜索、粘贴曲目或导入文件。软件按时长把歌曲对到章节上，'
+             body='点「获取曲名」，可以用光盘自带的名字、在线搜索、粘贴曲目，或者原盘同目录下的曲目表文件。软件按时长把歌曲对到章节上，'
                   '你在核对页逐条确认后再应用。'),
         dict(title='导出',
              body='在左上角选 M2TS、MKV 或 FLAC，然后导出。导出前会检查剩余空间，导出后逐个检查文件；'
@@ -84,7 +84,7 @@ EN = {
              body='Tick the chapters, audio and subtitles to export. The best lossless audio is already chosen, and the '
                   'Content column marks MCs and interludes so they are easy to leave out.'),
         dict(title='Get titles',
-             body='Click Get titles and use the disc\'s own names, an online search, a pasted list or a file. Songs are '
+             body='Click Get titles and use the disc\'s own names, an online search, a pasted list, or a tracklist file next to the disc. Songs are '
                   'matched to chapters by length, and you check each one on the review page before applying.'),
         dict(title='Export',
              body='Pick M2TS, MKV or FLAC at the top left and export. Free space is checked first and every file is '
