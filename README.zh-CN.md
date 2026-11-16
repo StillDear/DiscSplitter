@@ -192,3 +192,4 @@ DiscSplitter 以 [MIT 许可证](LICENSE) 发布。
 - 蓝光引擎：[tsMuxeR](https://github.com/teaching-droid/tsMuxer)，Apache License 2.0（[许可证](engine/tsmuxer/LICENSE)、[NOTICE](engine/tsmuxer/NOTICE)），用 zlib 编译。
 - 安装包还附带了 [MKVToolNix](https://mkvtoolnix.download/) 和 [ffmpeg](https://ffmpeg.org/)，它们各自的许可证随程序装在 `tools\licenses` 里。
 - 曲目数据来自 [MusicBrainz](https://musicbrainz.org/)、Apple Music、[Deezer](https://www.deezer.com/) 和 [Discogs](https://www.discogs.com/)。
+- 开发过程中得到了 [Claude](https://claude.com/claude-code) 的协助。

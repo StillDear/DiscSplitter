@@ -192,3 +192,4 @@ DiscSplitter is released under the [MIT License](LICENSE).
 - Blu-ray engine: [tsMuxeR](https://github.com/teaching-droid/tsMuxer), Apache License 2.0 ([license](engine/tsmuxer/LICENSE), [notice](engine/tsmuxer/NOTICE)), built with zlib.
 - The installer also ships [MKVToolNix](https://mkvtoolnix.download/) and [ffmpeg](https://ffmpeg.org/) under their own licenses, installed with them in `tools\licenses`.
 - Track data from [MusicBrainz](https://musicbrainz.org/), Apple Music, [Deezer](https://www.deezer.com/) and [Discogs](https://www.discogs.com/).
+- Built with the help of [Claude](https://claude.com/claude-code).
