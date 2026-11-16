@@ -1,82 +1,194 @@
+<div align="center">
+
+<img src="docs/images/logo.png" width="112" alt="DiscSplitter logo">
+
 # DiscSplitter
 
-**Losslessly split Blu-ray, DVD and MKV chapters into named audio or video tracks, with titles matched for you.**
+**Split a concert Blu-ray, DVD or MKV into one lossless file per song, already named.**
 
-把蓝光、DVD、MKV 按章节无损拆成带曲名的音频或视频，曲名自动对上章节。蓝光由内置的 tsMuxeR 引擎直接读取（ISO 无需挂载），并可按章节原样切成 M2TS。
+[**Download for Windows**](https://github.com/StillDear/DiscSplitter/releases/latest) &nbsp;·&nbsp; [How it works](#how-it-works) &nbsp;·&nbsp; [Features](#features) &nbsp;·&nbsp; [FAQ](#faq)
 
-A Windows desktop app (PySide6 / Qt Quick). Open a disc or an MKV, pick the chapters, audio and subtitle tracks you want, get the titles in, and export one file per chapter. Nothing is re-encoded unless you ask for FLAC.
+English &nbsp;|&nbsp; [简体中文](README.zh-CN.md)
 
-Blu-rays are handled by a built-in engine: [tsMuxeR](https://github.com/teaching-droid/tsMuxer), compiled from source in `engine/` and shipped with the app. It reads Blu-ray folders and ISO images directly (no mounting), finds the main title, and cuts chapters into M2TS or MKV straight from the disc. Previews, the waveform and track details read an ISO the same way, without mounting it.
+![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078D4?style=flat-square) ![License: MIT](https://img.shields.io/badge/license-MIT-3DA639?style=flat-square) ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square)
+
+</div>
+
+<!--
+  Hero screenshot. Add docs/images/workspace-light.png and workspace-dark.png
+  (see docs/images/SHOTS.md), then remove this comment's start and end lines.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/workspace-dark.png">
+    <img src="docs/images/workspace-light.png" width="860" alt="DiscSplitter workspace: chapters with song titles, waveform, preview and track list">
+  </picture>
+</p>
+-->
+
+A concert disc is one long video with chapter marks and no song names. DiscSplitter opens the disc, finds the main title, gets the setlist from the disc, the web or a photo, lines the songs up with the chapters, and cuts one file per song. Picture and sound are copied as they are, nothing is re-encoded unless you choose FLAC.
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+**Truly lossless**
+
+TrueHD Atmos, DTS-HD MA, LPCM and PGS subtitles are copied bit for bit. M2TS is cut straight from the disc at its own chapter marks.
+
+</td>
+<td width="33%" valign="top">
+
+**Titles that match**
+
+Searches MusicBrainz, Apple Music, Deezer and Discogs, or reads a pasted list, a web page or a photo. Songs are matched to chapters by length, and you review every match.
+
+</td>
+<td width="33%" valign="top">
+
+**Straight from the ISO**
+
+A built-in tsMuxeR engine reads Blu-ray ISO images and folders without mounting them. One installer, no extra tools to set up.
+
+</td>
+</tr>
+</table>
+
+## How it works
+
+| Step | What you do | What DiscSplitter does |
+|:---:|---|---|
+| **1** | Open a disc image, a `BDMV` / `VIDEO_TS` folder or an MKV | Scores every playlist and picks the main feature, telling you why |
+| **2** | Tick the chapters, audio and subtitle tracks you want | Preselects the best lossless audio and guesses which chapters are music, talk or interludes |
+| **3** | Click **Get titles** | Fetches a tracklist and lines it up with the chapters by length, for you to review |
+| **4** | Pick M2TS, MKV or FLAC and export | Checks free space, cuts one file per song into an album folder and verifies each one |
+
+<!--
+  Step screenshots. Add docs/images/review.png and docs/images/done.png
+  (see docs/images/SHOTS.md), then remove this comment's start and end lines.
+
+<p align="center">
+  <img src="docs/images/review.png" width="49%" alt="Review page: proposed titles matched to chapters by length">
+  <img src="docs/images/done.png" width="49%" alt="Export finished: files written and verified">
+</p>
+-->
 
 ## Features
 
-- **Sources:** unencrypted Blu-ray ISOs and `BDMV` folders (read by the built-in engine without mounting), a single `.mpls` playlist or `.m2ts` stream, DVD ISOs and `VIDEO_TS` folders, MKV files with chapters, or a folder of MKVs. Playlists are scored and the main feature is picked for you (the engine marks the title that plays the most footage), with the reasons shown.
-- **Tracks:** every audio track the playlist has (Atmos, TrueHD, DTS-HD MA, LPCM, ...) with codec, channels, sample rate and bit depth; the best lossless one is preselected. Subtitles can be kept too.
-- **Titles:** from the disc's own chapter names, a pasted or photographed tracklist (OCR), an imported file (`.txt`, `.cue`, `.json`, `.nfo`), or an online search (MusicBrainz, Discogs) by title or barcode. Titles are matched to chapters by length, and every match can be checked and changed on a review page before it is applied.
-- **Content guess:** from the waveform, each chapter is marked as music, interlude, talk or unsure, so MCs and interludes can be taken out of the list. It is a guess and can be changed by hand.
-- **Chapters:** merge, split at the playhead, or move a boundary; a built-in preview player with waveform shows where you are.
-- **Export:** MKV with video, MKV audio-only, M2TS straight from a Blu-ray, or FLAC with tags and cover art. Files are named after the titles, each disc goes into its own album folder, free space is checked first, and every file is read back and verified afterwards (length, streams, and that sound and picture start together).
-- **M2TS (Blu-ray):** each chapter is cut straight from the disc with the picture, every audio track (TrueHD with its AC-3 core, DTS-HD with its extensions, LPCM) and PGS subtitles exactly as the disc has them, a Dolby Vision enhancement layer included, and the disc's own timestamps, so sound and picture stay in step as on the disc. Chapters are cut at the disc's exact marks (its 45 kHz ticks), and the engine starts reading at the first chosen chapter's mark instead of at the start of the disc, so a chapter near the end takes seconds, not minutes; chapters near one another are cut in one pass. MKV from a Blu-ray is cut the same way, each file titled with its song. FLAC from a Blu-ray reads only the span the chosen chapters cover. Progress follows the position in the chapter being cut.
-- **Resumable:** progress is saved as it goes; a cancelled or crashed export picks up where it stopped.
-- Chinese and English interface; dark, light or system theme.
+**Sources**
+- Blu-ray: ISO images and `BDMV` folders (no mounting), or a single `.mpls` playlist or `.m2ts` stream. Discs must be unencrypted.
+- DVD: ISO images and `VIDEO_TS` folders.
+- MKV files with chapters, or a whole folder of them.
 
-## Install
+**Titles**
+- From the disc's own chapter names.
+- Online search by artist, album or barcode: MusicBrainz, Apple Music, Deezer and Discogs (a free Discogs token adds covers).
+- From a setlist you paste, a web page you link (official site, Wikipedia, a shop page), a photo or screenshot (read with the OCR built into Windows), or a `.txt`, `.cue`, `.nfo` or `.json` file.
+- Matched to chapters by length or in order; every proposed title can be checked and changed before it is applied.
 
-Download `DiscSplitter-Setup-<version>.exe` from the releases page and run it. The installer includes everything the app needs, the Blu-ray engine, MKVToolNix and ffmpeg among them, so nothing else has to be installed.
+**Chapters and tracks**
+- Every audio track on the playlist with codec, channels, sample rate and bit depth; subtitles can be kept.
+- A waveform guess marks each chapter as music, interlude, talk or unsure, so MCs are easy to leave out.
+- Merge chapters, split at the playhead or move a boundary, with a built-in player and waveform.
 
-## Run from source
+**Export**
+- **M2TS** straight from a Blu-ray, **MKV** with video, **MKV** audio only, or **FLAC** with tags and cover art.
+- Files are named after the songs and each disc gets its own album folder.
+- Free space is checked first; every file is read back afterwards (length, streams, audio and video in sync).
+- Interrupted exports resume where they stopped.
 
-Python 3.10 or newer on Windows:
+**App**
+- English and Chinese interface; light, dark or system theme.
+
+<details>
+<summary><b>How M2TS export works</b></summary>
+<br>
+
+Each chapter is cut straight from the disc with the picture, every audio track (TrueHD with its AC-3 core, DTS-HD with its extensions, LPCM) and PGS subtitles exactly as the disc has them, a Dolby Vision enhancement layer included, and the disc's own timestamps, so sound and picture stay in step.
+
+Cuts land on the disc's exact chapter marks (its 45 kHz ticks). The engine starts reading at the first chosen chapter rather than at the start of the disc, so a chapter near the end takes seconds, not minutes, and chapters close together are cut in one pass. MKV from a Blu-ray is cut the same way; FLAC from a Blu-ray reads only the span the chosen chapters cover.
+
+</details>
+
+### Supported formats
+
+| Source | M2TS | MKV (video) | MKV (audio only) | FLAC |
+|---|:---:|:---:|:---:|:---:|
+| Blu-ray (ISO, `BDMV`, `.mpls`, `.m2ts`) | ✓ | ✓ | ✓ | ✓ |
+| DVD (ISO, `VIDEO_TS`) | | ✓ | ✓ | ✓ |
+| MKV with chapters | | ✓ | ✓ | ✓ |
+
+## Download and install
+
+1. Download `DiscSplitter-Setup-<version>.exe` from the [latest release](https://github.com/StillDear/DiscSplitter/releases/latest).
+2. Run it and follow the installer.
+3. Start **DiscSplitter** from the Start menu and open a disc.
+
+| | |
+|---|---|
+| **System** | Windows 10 or 11, 64-bit |
+| **Included** | Blu-ray engine (tsMuxeR), MKVToolNix, ffmpeg. Nothing else to install |
+| **Settings and logs** | `%USERPROFILE%\.disc_splitter` |
+
+> [!NOTE]
+> DiscSplitter is not a ripper. Encrypted discs have to be decrypted with another tool first.
+
+## FAQ
+
+<details>
+<summary><b>Will the audio be re-encoded?</b></summary>
+<br>
+
+No. M2TS and MKV exports copy every stream as it is. Only FLAC encodes, and FLAC is lossless.
+
+</details>
+
+<details>
+<summary><b>Why does a cut with video sometimes run slightly past the chapter?</b></summary>
+<br>
+
+Video can only be cut on a keyframe. A Blu-ray's own chapter marks sit on keyframes, so those cuts are exact (a file may run one picture group past its end). A boundary you move by hand snaps to the next keyframe, usually well under a second away. Audio-only exports cut exactly.
+
+</details>
+
+<details>
+<summary><b>The online search found nothing. What now?</b></summary>
+<br>
+
+Smaller or regional releases are often missing. Paste the setlist from the concert's web page, link the page itself, or take a screenshot of the back cover and let the app read it. **Settings → Online metadata** has proxy and timeout options, and the search page can check the connection.
+
+</details>
+
+<details>
+<summary><b>Does it work on macOS or Linux?</b></summary>
+<br>
+
+Not yet. It is built and tested on Windows only.
+
+</details>
+
+## Limitations
+
+- Encrypted discs are not supported; decrypt them first.
+- Cuts that keep the video land on keyframes (see the [FAQ](#faq)).
+- Windows only.
+
+## Build from source
+
+Python 3.10+ on Windows:
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe engine\build_engine.py
 .venv\Scripts\python.exe app.py
 ```
 
-`engine\build_engine.py` compiles the Blu-ray engine into `engine\bin\tsMuxeR.exe`; it needs Visual Studio 2022 or its Build Tools with the C++ workload (see [engine/UPSTREAM.md](engine/UPSTREAM.md)). Without it Blu-rays are read with MKVToolNix as before, and M2TS export is not offered.
+Building the Blu-ray engine, running the tests and making the installer are covered in [docs/development.md](docs/development.md).
 
-Running from source uses ffmpeg (`ffmpeg`, `ffprobe`) and MKVToolNix (`mkvmerge`, `mkvextract`, `mkvpropedit`, all three from the same folder) from your `PATH`, or from paths set in the app (Settings → External tools). With the engine built, Blu-rays need no MKVToolNix at all; it is only needed for MKV sources and MKV from a DVD. DVD sources need an ffmpeg build with `dvdvideo` support.
+## License and credits
 
-Settings, logs and caches are kept in `%USERPROFILE%\.disc_splitter`.
+DiscSplitter is released under the [MIT License](LICENSE).
 
-## Development
-
-```powershell
-.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.venv\Scripts\python.exe -m pytest -q
-$env:QT_QPA_PLATFORM = "offscreen"
-.venv\Scripts\python.exe app.py --smoke-test
-```
-
-The smoke test runs every screen with fake disc data in both languages and all themes, and fails on any Qt/QML warning. `--smoke-screenshots <folder>` also saves an image of each screen. Tests marked `engine` build a small Blu-ray with ffmpeg and the engine and export it end to end; they are skipped while the engine is not built.
-
-Build the installer (needs Inno Setup 6; writes `dist\DiscSplitter-Setup-<version>.exe`):
-
-```powershell
-packaging\build_installer.bat
-```
-
-`build_exe.bat` builds a single portable `DiscSplitter.exe` instead (same `packaging/installer.spec`, one-file mode); that one includes the Blu-ray engine but not MKVToolNix or ffmpeg.
-
-| Path | What is there |
-|---|---|
-| `app.py` | Entry point |
-| `gui/` | The bridge between Python and QML: backend, controllers (`disc`, `preview`, `names`, `metadata`, `exporter`), models, texts |
-| `qml/` | Screens and components |
-| `core/` | Everything without a GUI: sources, tracklists and pasted set lists, online lookups, OCR, previews, naming, tags, splitting, checks, the export pipeline (layers are listed in `core/__init__.py`); `core/engine.py` drives the Blu-ray engine |
-| `engine/` | The Blu-ray engine: tsMuxeR source snapshot, zlib, its CMake build and `build_engine.py` ([UPSTREAM.md](engine/UPSTREAM.md)) |
-| `split_now.py` | Command-line splitter for an MKV that has chapters |
-| `packaging/` | Installer build |
-| `tests/` | Unit, integration and smoke tests |
-
-## Limitations
-
-- Not a ripper: encrypted discs have to be decrypted first.
-- Cuts with video kept land on a keyframe. A Blu-ray's own chapter marks sit on keyframes, so those cuts are exact (a file may run one picture group past its end); a chapter boundary moved by hand moves to the next keyframe, usually well under a second away. Audio-only exports cut exactly.
-- Built and tested on Windows only.
-
-## License
-
-MIT, see [LICENSE](LICENSE). The Blu-ray engine in `engine/tsmuxer` is tsMuxeR under the Apache License 2.0 ([LICENSE](engine/tsmuxer/LICENSE), [NOTICE](engine/tsmuxer/NOTICE)), built with zlib (zlib licence). The installer bundles third-party tools (tsMuxeR, MKVToolNix, ffmpeg) under their own licenses, which are installed next to them in `tools\licenses`.
+- Blu-ray engine: [tsMuxeR](https://github.com/teaching-droid/tsMuxer), Apache License 2.0 ([license](engine/tsmuxer/LICENSE), [notice](engine/tsmuxer/NOTICE)), built with zlib.
+- The installer also ships [MKVToolNix](https://mkvtoolnix.download/) and [ffmpeg](https://ffmpeg.org/) under their own licenses, installed with them in `tools\licenses`.
+- Track data from [MusicBrainz](https://musicbrainz.org/), Apple Music, [Deezer](https://www.deezer.com/) and [Discogs](https://www.discogs.com/).
