@@ -160,6 +160,18 @@ class Playlist:
 
         return max(tracks, key=lambda t: (t.is_lossless, t.channels or 0, t.bits_per_sample or 0))
 
+    def best_music_track(self) -> Optional[Track]:
+        """
+        The track to pre-select for a sound-only (FLAC) export: the lossless
+        stereo mix when the disc has one (the best by sample rate and bit
+        depth), since that is the album-style listen; otherwise the same
+        pick as best_default_audio_track().
+        """
+        stereo = [t for t in self.audio_tracks if t.channels == 2 and t.is_lossless]
+        if stereo:
+            return max(stereo, key=lambda t: (t.sample_rate or 0, t.bits_per_sample or 0))
+        return self.best_default_audio_track()
+
 
 def default_title(index: int) -> str:
     """What a chapter without a title is called (in file names and the title tag)."""

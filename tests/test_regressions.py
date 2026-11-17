@@ -241,44 +241,59 @@ def test_the_timeline_spans_the_whole_programme(backend):
     assert backend.state['timelineChapters'] == [[0, 200], [200, 3800]]
 
 
-def test_switching_to_flac_ticks_the_default_track_not_the_last_one_ticked(backend, qt_app):
+def test_flac_starts_from_the_lossless_stereo_track_however_it_is_chosen(backend, qt_app):
     from test_backend import wait_idle
-    # A concert disc: lossy 5.1 surround plus the lossless stereo mix FLAC starts from.
-    dts = core.models.Track(4352, 'audio', 'DTS', channels=6)
-    stereo = core.models.Track(4353, 'audio', 'LPCM', channels=2, bits_per_sample=24)
+    # A concert disc: LPCM 2.0 and DTS-HD MA 5.1, both lossless, plus a lossy AC-3 commentary.
+    # Video modes start from the surround track; FLAC starts from the stereo mix.
+    stereo = core.models.Track(4352, 'audio', 'LPCM', channels=2, sample_rate=96000, bits_per_sample=24)
+    dts = core.models.Track(4353, 'audio', 'DTS-HD Master Audio', channels=6, sample_rate=96000, bits_per_sample=24)
     ac3 = core.models.Track(4354, 'audio', 'AC-3', channels=2)
     playlist = core.models.Playlist(Path('disc/BDMV/PLAYLIST/00001.mpls'),
-        [core.models.Track(4113, 'video', 'AVC'), dts, stereo, ac3], 3, 300, reader='engine')
-    assert playlist.best_default_audio_track() is stereo
+        [core.models.Track(4113, 'video', 'AVC'), stereo, dts, ac3], 3, 300, reader='engine')
+    assert playlist.best_default_audio_track() is dts and playlist.best_music_track() is stereo
     disc = backend.disc
     disc.playlists = core.sources.score_playlists([playlist])
     disc.playlist_model.replace([disc.playlist_card(s) for s in disc.playlists])
 
-    def flac_ticks():
-        disc.setOutputFormat('flac')
-        return [r['chosen'] for r in disc.audio_model.rows], disc.audio
+    def ticks():
+        return [r['chosen'] for r in disc.audio_model.rows], disc.audio, backend.state['audioRecommended']
 
-    # Picked in FLAC mode from the start: the stereo track.
+    def to_flac():
+        disc.setOutputFormat('flac')
+        return ticks()
+
+    # Picked in FLAC mode from the start: the stereo track, and that is the one marked Recommended.
     disc.setOutputFormat('flac')
     disc.selectPlaylist(0)
     wait_idle(backend, qt_app)          # the chapter read fails (no such disc); the ticks are set before it
-    assert [r['chosen'] for r in disc.audio_model.rows] == [False, True, False] and disc.audio is stereo
-    # MKV, the surround track ticked last, then back to FLAC.
+    assert ticks() == ([True, False, False], stereo, 0)
+    # Picked in MKV mode: the surround track, marked Recommended there.
     disc.setOutputFormat('mkv')
-    disc.selectAudio(0)
-    assert disc.audio is dts
-    assert flac_ticks() == ([False, True, False], stereo)
-    # M2TS ticks everything; take the stereo track out, tick the AC-3 again, then FLAC.
-    disc.setOutputFormat('m2ts')
-    disc.selectAudio(1)
-    disc.selectAudio(2)
+    disc.selectPlaylist(0)
+    wait_idle(backend, qt_app)
+    assert ticks() == ([False, True, False], dts, 1)
+    # MKV -> FLAC, with the AC-3 track ticked last.
     disc.selectAudio(2)
     assert disc.audio is ac3
-    assert flac_ticks() == ([False, True, False], stereo)
+    assert to_flac() == ([True, False, False], stereo, 0)
+    # M2TS ticks everything; take the stereo track out, tick the AC-3 again, then FLAC.
+    disc.setOutputFormat('m2ts')
+    disc.selectAudio(0)
+    disc.selectAudio(2)
+    disc.selectAudio(2)
+    assert disc.audio is ac3 and backend.state['audioRecommended'] == 1
+    assert to_flac() == ([True, False, False], stereo, 0)
     # Nothing ticked in a video mode: FLAC still starts with the stereo track.
     disc.setOutputFormat('mkv')
     disc.setAllTracks('audio', False)
-    assert flac_ticks() == ([False, True, False], stereo)
+    assert to_flac() == ([True, False, False], stereo, 0)
     # A track picked in FLAC mode stays when FLAC is chosen again.
-    disc.selectAudio(0)
-    assert flac_ticks() == ([True, False, False], dts)
+    disc.selectAudio(1)
+    assert to_flac() == ([False, True, False], dts, 0)
+
+
+def test_flac_without_a_lossless_stereo_track_takes_the_best_track():
+    lossy = core.models.Track(1, 'audio', 'AC-3', channels=2)
+    truehd = core.models.Track(2, 'audio', 'TrueHD', channels=6)
+    playlist = core.models.Playlist(Path('a.mpls'), [lossy, truehd], 1, 60)
+    assert playlist.best_music_track() is truehd

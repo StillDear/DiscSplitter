@@ -958,7 +958,7 @@ Rectangle {
                             required property var model
                             width: ListView.view.width
                             title: au.model.title; chips: au.model.chips; extra: au.model.extra
-                            tag: au.index === 0 ? win.tr("recommended") : ""
+                            tag: au.index === win.discView.audioRecommended ? win.tr("recommended") : ""
                             checked: au.chosen; interactive: !win.appView.busy
                             detailsTip: win.tr("tiShow"); accessibleName: au.label
                             onToggled: backend.disc.selectAudio(au.index)

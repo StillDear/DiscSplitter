@@ -26,7 +26,7 @@ class DiscController(Controller):
         super().__init__(
             app, source=cfg.get('last_source_folder', ''), output=cfg.get('last_output_folder', ''),
             sidecars=[], album='', artist='',
-            chapterSelected=0, longClock=False, timelineSeconds=0, timelineChapters=[], audioSelected=0, subtitleSelected=0, unnamedRows=[], originsMixed=False, chaptersEdited=False,
+            chapterSelected=0, longClock=False, timelineSeconds=0, timelineChapters=[], audioSelected=0, audioRecommended=-1, subtitleSelected=0, unnamedRows=[], originsMixed=False, chaptersEdited=False,
             hasVideo=False, keepVideo=False, videoSummary='', videoExtra='', exportEstimate={}, sourceSummary='', chapterKinds={}, chapterKindsManual=[],
             outputFormat=cfg.get('output_container') if cfg.get('output_container') in self.FORMATS else 'mkv',
             canM2ts=False,
@@ -93,7 +93,7 @@ class DiscController(Controller):
             # same disc keeps them, as switching between its playlists does.)
             self.forget_chapters()
         self.show('main')
-        self.put(audioSelected=0, subtitleSelected=0, chapterSelected=0, hasVideo=False, keepVideo=False, canM2ts=False)
+        self.put(audioSelected=0, audioRecommended=-1, subtitleSelected=0, chapterSelected=0, hasVideo=False, keepVideo=False, canM2ts=False)
         keeper = self.app.preview_mounts
         def work(progress):
             keeper.close()
@@ -281,10 +281,10 @@ class DiscController(Controller):
         self.playlist = self.playlists[index].playlist
         for i in range(len(self.playlist_model.rows)):
             self.playlist_model.change(i, chosen=i == index)
-        self.audio = self.playlist.best_default_audio_track()
         self.put(canM2ts=self.m2ts_possible())
         if self.state['outputFormat'] == 'm2ts' and not self.state['canM2ts']:
             self.put(outputFormat='mkv')        # this source cannot be copied as M2TS; the setting stays as it is
+        self.audio = self.default_audio()
         if self.state['outputFormat'] == 'm2ts':
             # A copy of the disc keeps every sound and subtitle track unless some are taken out.
             self.populate_tracks([t.track_id for t in self.playlist.audio_tracks],
@@ -486,6 +486,7 @@ class DiscController(Controller):
             for t in self.playlist.subtitle_tracks])
         has_video = self.playlist.video_track is not None
         self.put(hasVideo=has_video, keepVideo=has_video and keep_video)
+        self.update_recommended_audio()
         self.refresh_video_summary()
         self.update_track_selection()
 
@@ -518,12 +519,26 @@ class DiscController(Controller):
             self.update_track_selection()
         self.refresh_insights()
         self.app.preview.restart_preview()
+        self.update_recommended_audio()
         if output_format == 'flac' and previous != 'flac' and self.playlist is not None:
             # Sound only starts from the same track as when the playlist is picked in FLAC mode, not from
             # whichever track was ticked last in a video mode.
-            default = self.playlist.best_default_audio_track()
+            default = self.default_audio()
             if default is not None:
                 self.selectAudio(self.playlist.audio_tracks.index(default))
+
+    def default_audio(self):
+        """The audio track ticked to begin with: the lossless stereo mix for FLAC, else the best track."""
+        if self.playlist is None:
+            return None
+        if self.state['outputFormat'] == 'flac':
+            return self.playlist.best_music_track()
+        return self.playlist.best_default_audio_track()
+
+    def update_recommended_audio(self):
+        """The track card marked "Recommended" is the one the current format starts from."""
+        default = self.default_audio()
+        self.put(audioRecommended=self.playlist.audio_tracks.index(default) if default is not None else -1)
 
     @Slot(bool)
     def setKeepVideo(self, enabled):

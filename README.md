@@ -62,7 +62,7 @@ The installer's built-in engine reads Blu-ray ISO images and folders without mou
 | | You | DiscSplitter |
 |:---:|---|---|
 | **1** | Open a disc image, a `BDMV` / `VIDEO_TS` folder or an MKV | Scores the playlists and suggests the main programme, telling you why |
-| **2** | Tick the chapters, audio and subtitles you want | Preselects the best audio track (lossless first) and suggests from the waveform which chapters are music, talk or interludes |
+| **2** | Tick the chapters, audio and subtitles you want | Preselects the best audio track (lossless first; for FLAC, the lossless stereo mix when there is one) and suggests from the waveform which chapters are music, talk or interludes |
 | **3** | Click **Get titles**, then review the matches | Finds a tracklist and proposes a title for each chapter; chapters it cannot match keep their current names until you edit them or leave them out |
 | **4** | Pick M2TS, MKV or FLAC and export | Checks free space, writes one file per chapter into an album folder, then reads each file back |
 
