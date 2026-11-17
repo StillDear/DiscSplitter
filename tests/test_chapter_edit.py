@@ -173,6 +173,35 @@ def test_verify_flac_ignores_cover_art_and_checks_the_codec(tmp_path):
     assert result.ok
 
 
+def test_sound_that_ends_before_the_picture_is_not_a_short_file(tmp_path):
+    # A DVD's last chapter ran 361.7 s, its sound 353.1 s: a closing screen with no sound. The FLAC was right.
+    f = tmp_path / 'a.flac'
+    f.write_bytes(b'x')
+    chapter = core.models.Chapter(7, 1414.6, 1776.3)
+    streams = [{'codec_type': 'audio', 'codec_name': 'flac'}]
+
+    def check(length, sound_left, container='flac', keep_video=False):
+        result = core.verify.verify_output(f, chapter, container=container, audio_tracks=[core.models.Track(1, 'audio', 'PCM')],
+                                           subtitle_count=0, keep_video=keep_video, title='',
+                                           probe=lambda p: {'format': {'duration': str(length)}, 'streams': streams})
+        asked = []
+
+        def sound(start, span):
+            asked.append((round(start, 2), round(span, 2)))
+            return sound_left
+        return core.verify.excuse_silent_end(result, chapter, container=container, keep_video=keep_video,
+                                             sound=sound, slack=1.0), result, asked
+
+    excused, result, asked = check(353.1, 1.1)
+    assert excused and result.ok
+    assert asked == [(1765.7, 10.6)]            # read from 2 s before the file ends to the chapter's end
+    excused, result, _ = check(341.7, 22.0)    # the source still has sound there: the file was cut short
+    assert not excused and [i.code for i in result.issues] == ['duration']
+    assert not check(359.7, 4.0)[0]            # even 2 s short is caught
+    assert not check(353.1, None)[0]           # the source could not be read: the issue stands
+    assert not check(353.1, 1.1, container='mkv', keep_video=True)[0]     # a picture copy runs as long as the picture
+
+
 def test_failed_checks_are_shown_and_can_be_exported_again(backend, qt_app, monkeypatch, tmp_path):
     setup_disc(backend)
     backend.put(source='Album', output=str(tmp_path))

@@ -107,6 +107,33 @@ def verify_output(path: Path, chapter: Chapter, *, container: str, audio_tracks:
     return result
 
 
+def excuse_silent_end(result: VerifyResult, chapter: Chapter, *, container: str, keep_video: bool,
+                      sound: Callable[[float, float], Optional[float]], slack: float = 0.1) -> bool:
+    """
+    A file of sound only that is shorter than its chapter because the source's sound ends before the picture does
+    (a closing screen with no sound after the last song): the chapter's length counts its picture, so that is not a
+    file cut short. sound(start, length) gives the seconds of sound the source holds from `start` on the disc's
+    timeline, None when it cannot tell. The tail is read from a little before where the file ends; when the source
+    has no more sound past that point than the file has, the length issue is dropped. slack: how early the source's
+    seek may land (about a second on a DVD). True when the issue was dropped.
+    """
+    issue = next((i for i in result.issues if i.code == "duration"), None)
+    if issue is None or (keep_video and container.lower() != "flac"):
+        return False
+    try:
+        expected, actual = float(issue.expected), float(issue.actual)
+    except ValueError:
+        return False
+    if actual >= expected:
+        return False
+    lead = min(2.0, actual)
+    measured = sound(chapter.start_seconds + actual - lead, expected - actual + lead)
+    if measured is None or measured > lead + duration_tolerance(container, keep_video) + slack:
+        return False
+    result.issues.remove(issue)
+    return True
+
+
 def _start_offset(streams: list[dict]) -> Optional[float]:
     """How much later the first sound starts than the first picture (seconds); None when not stated."""
     def first(kind: str) -> Optional[float]:

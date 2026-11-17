@@ -287,6 +287,27 @@ def render(source: Path, track: models.Track, audio_index: int, start: float, en
     return _finish(tools.run(command, timeout=600, cancel_event=cancel_event), partial, output, "audio")
 
 
+def sound_seconds(source: Path, track: models.Track, audio_index: int, start: float, length: float) -> Optional[float]:
+    """
+    How many seconds of sound one audio track of the source holds in [start, start + length): less than `length`
+    where the track ends before the picture does. None when that cannot be told: the stretch crosses into the next
+    clip of a playlist, or the source cannot be read.
+    """
+    try:
+        args, playable = clip_input(source, track, audio_index, start, length)
+    except (OSError, ValueError, RuntimeError, jobs.Failure):
+        return None
+    if playable < length - 0.01:
+        return None
+    rate = 8000      # one channel of 16-bit samples: enough to count them, cheap to decode
+    try:
+        data = _run_bytes([tools.TOOL_PATHS["ffmpeg"], "-v", "error", *args, "-t", f"{length:.3f}",
+                           "-vn", "-sn", "-dn", "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"], timeout=120)
+    except (OSError, RuntimeError, jobs.Failure, subprocess.SubprocessError):
+        return None
+    return len(data) / (2 * rate)
+
+
 def render_video(source: Path, track: models.Track, audio_index: int, video: models.Track,
                  start: float, end: Optional[float], output: Path,
                  cancel_event: Optional[threading.Event] = None) -> Path:

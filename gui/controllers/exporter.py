@@ -11,7 +11,7 @@ import shutil
 from PySide6.QtCore import QUrl, Slot
 from PySide6.QtGui import QDesktopServices
 
-from core import jobs, manifest as job_manifest, models, naming, pipeline, sources, space, verify
+from core import dvd, jobs, manifest as job_manifest, models, naming, pipeline, preview, sources, space, verify
 from .. import settings
 from .. import logic
 from ..export_flow import ExportFlow, Phase
@@ -339,19 +339,35 @@ class ExportController(Controller):
         items = [p for p in plan['plan'].items if p.chapter.index in chapters]
         progress(jobs.ProgressEvent(f'Checking {len(items)} file(s)', stage='verifying'))
         results = []
-        for item in items:
-            chapter = chapters[item.chapter.index]
-            title = plan['names'].get(chapter.index, '').strip() or models.default_title(chapter.index)
-            result = verify.verify_output(item.path, chapter, container=plan['container'], audio_tracks=audio_tracks,
-                                             subtitle_count=len(plan['subtitle_ids']) if plan['container'] != 'flac' else 0,
-                                             keep_video=keep_video, title=title, video_count=video_count)
-            results.append(result)
-            line = f'Check {item.path.name}: ' + ('OK' if result.ok else '; '.join(
-                f'{i.code} expected {i.expected!r} got {i.actual!r}' if i.expected or i.actual else i.code for i in result.issues))
-            progress(line)
-            if log_path:
-                with Path(log_path).open('a', encoding='utf-8') as f:
-                    f.write(f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}  {line}\n")
+        keeper = preview.MountKeeper()     # the source is read again only for a file of sound that came out short
+        slack = 1.0 if dvd.is_title(playlist.path) else 0.1     # a DVD seek lands up to a second early
+        try:
+            for item in items:
+                chapter = chapters[item.chapter.index]
+                title = plan['names'].get(chapter.index, '').strip() or models.default_title(chapter.index)
+                result = verify.verify_output(item.path, chapter, container=plan['container'], audio_tracks=audio_tracks,
+                                              subtitle_count=len(plan['subtitle_ids']) if plan['container'] != 'flac' else 0,
+                                              keep_video=keep_video, title=title, video_count=video_count)
+                note = ''
+                if audio_tracks and any(i.code == 'duration' for i in result.issues):
+                    track = audio_tracks[0]
+
+                    def sound(start, length, track=track):
+                        with keeper.use(playlist.path, playlist.iso_image) as path:
+                            return preview.sound_seconds(path, track, playlist.audio_tracks.index(track), start, length)
+                    if verify.excuse_silent_end(result, chapter, container=plan['container'], keep_video=keep_video,
+                                                sound=sound, slack=slack):
+                        note = ' (the source has no sound past its end)'
+                results.append(result)
+                line = f'Check {item.path.name}: ' + ('OK' + note if result.ok else '; '.join(
+                    f'{i.code} expected {i.expected!r} got {i.actual!r}' if i.expected or i.actual else i.code
+                    for i in result.issues))
+                progress(line)
+                if log_path:
+                    with Path(log_path).open('a', encoding='utf-8') as f:
+                        f.write(f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}  {line}\n")
+        finally:
+            keeper.close()
         return results
 
     @Slot(object)
