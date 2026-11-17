@@ -19,7 +19,7 @@ import time
 from PySide6.QtCore import QObject, Property, QRunnable, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
-from core import appinfo, engine, jobs, metadata_sources, naming, preview, tools
+from core import appinfo, engine, jobs, local_tags, metadata_sources, naming, preview, tools
 from . import help_content, settings
 from . import logic
 from .controllers.base import View, local_path
@@ -295,6 +295,7 @@ class Backend(View):
                    'meta_source': set(metadata_sources.SOURCES), 'itunes_country': logic.ITUNES_COUNTRIES,
                    'cover_size': set(metadata_sources.COVER_SIZES), 'cover_target': {'both', 'embed', 'folder'},
                    'meta_auto_search': {'true', 'false'},
+                   'local_cover': set(local_tags.COVER_PREFERENCES),
                    'filename_template': set(naming.FILENAME_TEMPLATES),
                    'collision_policy': {'ask', 'skip', 'overwrite'},
                    'chapter_language': {'first', 'eng', 'jpn', 'zho', 'kor'},
@@ -311,6 +312,8 @@ class Backend(View):
         self.set_config(**{key: value})
         if key in self.NETWORK_KEYS:
             self.apply_network()
+        if key == 'local_cover':
+            self.metadata.refresh_local_thumbs()
         if key == 'waveform':
             self.preview.start_waveform() if value else self.preview.stop_waveform()
         if key == 'language':

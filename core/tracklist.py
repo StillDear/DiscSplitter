@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from .models import Chapter
+from .text_encoding import decode_text
 
 
 _LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*[\.\)\-]?\s*")
@@ -95,7 +96,7 @@ def is_setlist_text(path: Path) -> bool:
 
 def read_tracklist_text(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8-sig", errors="replace")
+        return decode_text(path.read_bytes())      # GBK / Shift-JIS / Big5 sheets too, not only UTF-8
     except OSError as exc:
         raise ValueError(f"Could not read {path.name}: {exc}") from exc
 

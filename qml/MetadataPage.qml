@@ -25,9 +25,21 @@ RowLayout {
     readonly property real rightWidth: rightLive > 0 ? rightLive : fit(layoutSizes.meta_right || 360, 0.36)
     readonly property string status: win.metaView.metaStatus || "idle"
     readonly property bool anyApply: applyAlbum || applyCover || applyArtists || applyTitles
+    readonly property bool local: source === "local"
     function searchOnline() {
-        if (!win.appView.working)
+        if (!win.appView.working && !local)
             backend.metadata.metaSearch(source, qArtist.text, qAlbum.text, metaBarcodeToggle.open ? qBarcode.text : "")
+    }
+    // Music files on this computer: picked, or dropped on the lookup panel
+    function readLocal(urls) {
+        if (win.appView.working || !urls || urls.length === 0) return
+        source = "local"
+        backend.metadata.metaReadLocal(urls)
+    }
+    function openMusic(dialog) {
+        const last = backend.config.last_music_folder || ""
+        win.startAt(dialog, last || win.discView.source || "", !last)
+        dialog.open()
     }
     // Up / Down in a track-artist field: carry on in the row above or below.
     function editArtistAt(row) {
@@ -49,6 +61,18 @@ RowLayout {
         onAccepted: backend.metadata.chooseCover(selectedFile.toString())
     }
     CoverCropDialog { id: cropDialog; objectName: "coverCrop"; win: metaPage.win }
+    FolderDialog {
+        id: musicFolderDialog
+        title: win.tr("localPickFolder")
+        onAccepted: metaPage.readLocal([selectedFolder.toString()])
+    }
+    FileDialog {
+        id: musicFilesDialog
+        title: win.tr("localPickFiles")
+        fileMode: FileDialog.OpenFiles
+        nameFilters: [win.tr("musicFilter"), win.tr("allFilesFilter")]
+        onAccepted: metaPage.readLocal(selectedFiles.map(function(u) { return u.toString() }))
+    }
 
     // The preview panel (from Main) docks here, under the page's main content; the panel on the right
     // runs the full height beside it.
@@ -261,10 +285,23 @@ RowLayout {
         onReset: backend.setLayoutSize("meta_right", -1)
     }
 
-    // ---------- Right: online lookup, then what to apply ----------
+    // ---------- Right: online lookup (or music files on this computer), then what to apply ----------
     Card {
+        id: lookupCard
         flat: true; padding: 20
         Layout.preferredWidth: metaPage.rightWidth; Layout.fillHeight: true
+        // Music files or a folder of them dropped here are read as the local source
+        DropArea {
+            id: musicDrop
+            parent: lookupCard; anchors.fill: parent; z: -1
+            enabled: !win.appView.working
+            onEntered: function(drag) { drag.accepted = drag.hasUrls }
+            onDropped: function(drop) { if (drop.hasUrls) metaPage.readLocal(drop.urls.map(function(u) { return u.toString() })) }
+        }
+        Rectangle {
+            parent: lookupCard; anchors.fill: parent; anchors.margins: 6; radius: 12; z: 5
+            visible: musicDrop.containsDrag; color: "transparent"; border.width: 2; border.color: Theme.accent
+        }
         ColumnLayout {
             anchors.fill: parent; spacing: 16
             // The lookup takes what room is left; on a short window it is cut off at the bottom
@@ -275,23 +312,24 @@ RowLayout {
                     anchors.fill: parent; spacing: 16
                     ColumnLayout {
                         Layout.fillWidth: true; spacing: 10
-                        SectionTitle { text: win.tr("onlineMeta"); Layout.fillWidth: true; Layout.preferredHeight: 32 }
+                        SectionTitle { text: win.tr(metaPage.local ? "localMeta" : "onlineMeta"); Layout.fillWidth: true; Layout.preferredHeight: 32 }
                         // Labels in front of their fields, in one column so the fields line up (as on the review page)
                         GridLayout {
                             Layout.fillWidth: true; columns: 2; columnSpacing: 8; rowSpacing: 10
                             Label { text: win.tr("sourceLabel") }
                             SourcePicker {
                                 Layout.fillWidth: true; enabled: !win.appView.working
+                                extra: [{ key: "local", label: win.tr("localFiles") }]
                                 current: metaPage.source
                                 onPicked: function(key) { metaPage.source = key }
                             }
-                            Label { text: win.tr("artist") }
-                            Field { id: qArtist; text: metaPage.meta.album.artist || ""; Layout.fillWidth: true; onAccepted: metaPage.searchOnline(); Accessible.name: win.tr("artist") }
-                            Label { text: win.tr("album") }
-                            Field { id: qAlbum; text: metaPage.meta.album.album || ""; Layout.fillWidth: true; onAccepted: metaPage.searchOnline(); Accessible.name: win.tr("album") }
+                            Label { text: win.tr("artist"); visible: !metaPage.local }
+                            Field { id: qArtist; visible: !metaPage.local; text: metaPage.meta.album.artist || ""; Layout.fillWidth: true; onAccepted: metaPage.searchOnline(); Accessible.name: win.tr("artist") }
+                            Label { text: win.tr("album"); visible: !metaPage.local }
+                            Field { id: qAlbum; visible: !metaPage.local; text: metaPage.meta.album.album || ""; Layout.fillWidth: true; onAccepted: metaPage.searchOnline(); Accessible.name: win.tr("album") }
                             // The barcode toggle, and across from it a check on the chosen source
                             RowLayout {
-                                Layout.columnSpan: 2; Layout.fillWidth: true; spacing: 8
+                                Layout.columnSpan: 2; Layout.fillWidth: true; spacing: 8; visible: !metaPage.local
                                 Disclosure {
                                     id: metaBarcodeToggle
                                     text: win.tr("barcodeToggle"); enabled: !win.appView.working
@@ -300,21 +338,43 @@ RowLayout {
                                 Item { Layout.fillWidth: true }
                                 SourceCheck { source: metaPage.source }
                             }
-                            Label { visible: metaBarcodeToggle.open; text: win.tr("barcodeShort") }
-                            Field { id: qBarcode; visible: metaBarcodeToggle.open; mono: true; Layout.fillWidth: true; placeholderText: win.tr("barcodePlaceholder"); onAccepted: metaPage.searchOnline(); Accessible.name: win.tr("barcode") }
+                            Label { visible: metaBarcodeToggle.open && !metaPage.local; text: win.tr("barcodeShort") }
+                            Field { id: qBarcode; visible: metaBarcodeToggle.open && !metaPage.local; mono: true; Layout.fillWidth: true; placeholderText: win.tr("barcodePlaceholder"); onAccepted: metaPage.searchOnline(); Accessible.name: win.tr("barcode") }
+                            // Local files: which cover to take when the files have both kinds
+                            Label { text: win.tr("localCover"); visible: metaPage.local }
+                            Segmented {
+                                visible: metaPage.local; fill: true; Layout.fillWidth: true
+                                options: [{ key: "embedded", label: win.tr("localCoverEmbedded"), hint: win.tr("localCoverEmbeddedHint") },
+                                          { key: "folder", label: win.tr("localCoverFolder"), hint: win.tr("localCoverFolderHint") }]
+                                current: backend.config.local_cover || "embedded"
+                                onPicked: function(key) { backend.setPreference("local_cover", key) }
+                            }
                         }
                         ActionButton {
+                            visible: !metaPage.local
                             text: metaPage.status === "loading" && win.metaView.metaChosen < 0 ? win.tr("searching") : win.tr("searchMeta")
                             primary: resultList.count === 0; Layout.fillWidth: true; enabled: !win.appView.working
                             onClicked: metaPage.searchOnline()
                         }
+                        RowLayout {
+                            visible: metaPage.local; Layout.fillWidth: true; spacing: 8
+                            ActionButton {
+                                text: metaPage.status === "loading" && win.metaView.metaChosen < 0 ? win.tr("localReading") : win.tr("localPickFolder")
+                                primary: resultList.count === 0; Layout.fillWidth: true; Layout.preferredWidth: 1; enabled: !win.appView.working
+                                onClicked: metaPage.openMusic(musicFolderDialog)
+                            }
+                            ActionButton {
+                                text: win.tr("localPickFiles"); Layout.fillWidth: true; Layout.preferredWidth: 1; enabled: !win.appView.working
+                                onClicked: metaPage.openMusic(musicFilesDialog)
+                            }
+                        }
                     }
                     SectionTitle { text: win.tr("metaResults"); note: resultList.count > 0 ? String(resultList.count) : ""; Layout.fillWidth: true }
                     Rectangle {
-                        readonly property string message: metaPage.status === "loading" && resultList.count === 0 ? win.tr("searching")
+                        readonly property string message: metaPage.status === "loading" && resultList.count === 0 ? win.tr(metaPage.local ? "localReading" : "searching")
                             : metaPage.status === "empty" ? win.tr("noResults")
                             : metaPage.status === "error" ? win.metaView.metaError
-                            : resultList.count === 0 ? win.tr("metaIdle") : ""
+                            : resultList.count === 0 ? win.tr(metaPage.local ? "localIdle" : "metaIdle") : ""
                         visible: message !== ""
                         Layout.fillWidth: true; Layout.preferredHeight: statusText.implicitHeight + 18; radius: 10
                         color: metaPage.status === "error" ? "transparent" : Theme.raised
@@ -339,6 +399,7 @@ RowLayout {
                             required property string detail
                             required property string thumb
                             required property bool chosen
+                            required property string mbid
                             width: ListView.view.width - resultBar.gutter; height: Math.max(resInfo.implicitHeight, 48) + 22; radius: 10
                             color: chosen ? Theme.accentSoft : resHover.hovered ? Theme.field : Theme.raised
                             border.width: chosen ? 2 : 1
@@ -351,15 +412,22 @@ RowLayout {
                                 Icon { anchors.centerIn: parent; width: 20; height: 20; kind: "disc"; ink: Theme.faint; visible: thumbImage.status !== Image.Ready }
                             }
                             ColumnLayout {
-                                id: resInfo; x: 70; y: 11; width: parent.width - x - 12; spacing: 4
+                                id: resInfo; x: 70; y: 11; z: 1; width: parent.width - x - 12; spacing: 4   // above the row's MouseArea, for its button
                                 Copy { text: res.label; font.weight: Font.DemiBold; Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight }
                                 Copy { text: res.detail; color: Theme.muted; font.pixelSize: Theme.px(12); Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight }
                             }
                             MouseArea { anchors.fill: parent; enabled: !win.appView.working; cursorShape: Qt.PointingHandCursor; onClicked: backend.metadata.metaChoose(res.index) }
+                            // Files tagged with a MusicBrainz release: fetch that exact release, no search needed
+                            ActionButton {
+                                parent: resInfo; visible: res.chosen && res.mbid !== ""
+                                text: win.tr("localUseMb"); ghost: true; Layout.topMargin: 2; Layout.leftMargin: -10; Layout.alignment: Qt.AlignLeft
+                                enabled: !win.appView.working
+                                onClicked: backend.metadata.metaUseMusicBrainz(res.index)
+                            }
                         }
                     }
                     Item { Layout.fillHeight: true; visible: resultList.count === 0 }
-                    Copy { text: win.tr("metaPrivacy"); color: Theme.faint; font.pixelSize: Theme.px(11); Layout.fillWidth: true; lineHeight: 1.3 }
+                    Copy { text: win.tr(metaPage.local ? "localPrivacy" : "metaPrivacy"); color: Theme.faint; font.pixelSize: Theme.px(11); Layout.fillWidth: true; lineHeight: 1.3 }
                 }
             }
 

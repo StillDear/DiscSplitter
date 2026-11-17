@@ -74,8 +74,9 @@ def populate(backend):
     backend.metadata.meta['album'].update(artist='Dire Straits', album='Brothers In Arms', album_artist='Dire Straits', date='1985', genre='Rock')
     backend.metadata.setTrackArtist(1, 'Dire Straits feat. Sting')
     backend.metadata.publish_metadata()
-    backend.metadata.meta_model.replace([dict(source='musicbrainz', label='Dire Straits \u2014 Brothers In Arms', detail='Blu-ray \u00b7 2025 \u00b7 9', thumb='', chosen=True),
-                                dict(source='musicbrainz', label='Dire Straits \u2014 Brothers In Arms', detail='CD \u00b7 1985 \u00b7 9', thumb='', chosen=False)])
+    # A local album tagged with its MusicBrainz release (its button shows when chosen), then an online result
+    backend.metadata.meta_model.replace([dict(source='local', label='Dire Straits \u2014 Brothers In Arms', detail='Brothers In Arms \u00b7 FLAC \u00b7 1985 \u00b7 9', thumb='', chosen=True, mbid='mb-smoke'),
+                                dict(source='musicbrainz', label='Dire Straits \u2014 Brothers In Arms', detail='CD \u00b7 1985 \u00b7 9', thumb='', chosen=False, mbid='')])
     backend.put(metaChosen=0, metaStatus='results')
     backend.names.release_model.replace([dict(label='Dire Straits — Brothers In Arms', detail='Blu-ray · 2025', tracks=9, chapters=9, fit='exact', chosen=True, thumb=''),
                                    dict(label='Dire Straits — Brothers In Arms (Deluxe)', detail='CD · 2005', tracks=12, chapters=9, fit='far', chosen=False, thumb='')])
@@ -99,7 +100,7 @@ def run(app, backend, window, warnings, screenshots=None):
     steps = []
     for language in ('zh', 'en'):
         for theme in ('dark', 'light', 'system'):
-            for page in ('start', 'main', 'review', 'export', 'done', 'settings', 'metadata'):
+            for page in ('start', 'main', 'review', 'export', 'done', 'settings', 'metadata', 'metadata:local'):
                 steps.append((language, theme, page))
             for section in ('files', 'matching', 'appearance'):
                 steps.append((language, theme, 'settings:' + section))
@@ -141,6 +142,8 @@ def run(app, backend, window, warnings, screenshots=None):
                 window.smokeHelp(page.split(':')[1])
             elif page == 'settings':
                 window.smokeSection('tools')
+            if page.startswith('metadata'):
+                window.smokeMetaSource('local' if page == 'metadata:local' else 'musicbrainz')
             if screenshots:
                 screenshots.mkdir(parents=True, exist_ok=True)
                 name = f'{language}-{theme}-{name_page}.png'

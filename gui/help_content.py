@@ -35,6 +35,11 @@ ZH = {
              body='在线搜索时点「按条码搜索」，填封底的 UPC / EAN 条码，比按名字搜准确得多。'),
         dict(title='网页和截图也能当曲目表',
              body='在「粘贴曲目」里可以直接输入官网、维基百科等网页地址，或者用「识别截图…」读取封底照片或网页截图。'),
+        dict(title='从已有的音乐文件取标签',
+             body='手上有这张专辑的 CD 抓轨或录音室版文件时，在标签页的数据源里选「本地音乐文件」，'
+                  '点「选择专辑文件夹…」或把文件拖进来。专辑信息、封面、单曲艺人和曲名都能从文件里读，'
+                  '封面可以选内嵌优先还是文件夹图片优先。整张专辑只有一个文件时，会按旁边的 CUE 分成单曲，'
+                  'GBK、Shift-JIS 等编码的 CUE 也能读。'),
         dict(title='整理曲名',
              body='核对页的「去掉括号」可以一次清掉曲名里的 (Live)、[Remaster] 之类的附注。'),
         dict(title='搜索结果带封面',
@@ -105,6 +110,11 @@ EN = {
         dict(title='Web pages and screenshots work too',
              body='In Paste list you can enter a web address (official site, Wikipedia…) or use Read a screenshot… on a '
                   'photo of the back cover or a screenshot of a page.'),
+        dict(title='Tags from music files you already have',
+             body='If you have a CD rip or the studio album, pick Music files on this PC as the source on the tags page, '
+                  'then Choose album folder… or drop the files there. Album info, cover, track artists and titles are '
+                  'read from the files; the cover can come from the embedded picture or the folder image first. An '
+                  'album ripped as one file is split into songs by its CUE sheet, in GBK or Shift-JIS too.'),
         dict(title='Tidy the titles',
              body='Remove brackets on the review page clears notes like (Live) or [Remaster] from every title at once.'),
         dict(title='Covers in search results',

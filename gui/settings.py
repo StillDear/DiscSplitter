@@ -31,6 +31,8 @@ DEFAULTS: dict[str, Any] = {
     "cover_size": "large",         # "standard" | "large" | "original"
     "cover_target": "both",        # "both" | "embed" | "folder"
     "meta_auto_search": False,
+    "local_cover": "embedded",     # cover from local music files: "embedded" picture first, or the "folder" image
+    "last_music_folder": "",       # where the local-files picker on the tags page last read
     "discogs_token": "",          # optional Discogs personal access token
     "mkvmerge_path": "mkvmerge",
     "mkvextract_path": "mkvextract",

@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QTimer, QUrl, Slot
 
-from core import metadata_sources, musicbrainz, tagging
+from core import local_tags, metadata_sources, musicbrainz, tagging
 from .. import settings
 from .. import cover_crop, logic
 from ..models import Rows
@@ -21,11 +21,12 @@ class MetadataController(Controller):
         super().__init__(app, meta=tagging.empty_metadata(), metaStatus='idle', metaError='', metaChosen=-1,
                          canRestoreCover=False, coverCache='', coverInfo='')
         self.meta = tagging.empty_metadata()
-        self.meta_model = Rows(['source', 'label', 'detail', 'thumb', 'chosen'], self)
+        self.meta_model = Rows(['source', 'label', 'detail', 'thumb', 'chosen', 'mbid'], self)
         self.original_cover = ''
         self.cover_crop_margins = {}
         self.meta_owner = None          # source path the metadata belongs to
         self.meta_candidates = []
+        self.local_albums = []          # what the "local files" source read, in the order of its candidates
         self.auto_meta_pending = False
 
     COVER_CACHE = settings.SETTINGS_PATH.parent / 'covers'
@@ -44,6 +45,7 @@ class MetadataController(Controller):
         self.meta_owner = owner
         self.auto_meta_pending = bool(self.cfg.get('meta_auto_search')) and bool(artist or album) and not self.smoke
         self.meta_candidates = []
+        self.local_albums = []
         self.meta_model.replace([])
         for i in range(len(self.disc.chapter_model.rows)):
             self.disc.chapter_model.change(i, artist='')
@@ -177,11 +179,11 @@ class MetadataController(Controller):
         if source not in metadata_sources.SOURCES:
             return
         def done(found):
-            self.meta_candidates = found
+            self.meta_candidates, self.local_albums = found, []
             self.meta_model.replace([dict(
                 source=c.source, label=f'{c.artist} \u2014 {c.title}',
                 detail=' \u00b7 '.join(x for x in (c.detail, self.tr('trackCount').replace('{n}', str(c.track_count)) if c.track_count else '') if x),
-                thumb=c.thumb, chosen=False) for c in found])
+                thumb=c.thumb, chosen=False, mbid='') for c in found])
             self.put(metaStatus='results' if found else 'empty', metaChosen=-1)
         def failed(exc):
             self.put(metaStatus='error', metaError=self.source_error(exc))
@@ -209,6 +211,8 @@ class MetadataController(Controller):
             return
         candidate = self.meta_candidates[row]
         def work(progress):
+            if candidate.source == 'local':
+                return self.local_apply_parts(int(candidate.id), cover)
             info = metadata_sources.fetch(candidate.source, candidate.id)
             cover_file, cover_error = None, ''
             if cover and info.cover_url:
@@ -243,6 +247,85 @@ class MetadataController(Controller):
         def failed(exc):
             self.put(metaStatus='error', metaError=self.source_error(exc))
         self.task(work, done, failed, begin=dict(metaStatus='loading', metaError=''), blocking=False)
+
+    # ---------------------------------------------------------------- local music files
+
+    def local_cover_preference(self):
+        value = self.cfg.get('local_cover', 'embedded')
+        return value if value in local_tags.COVER_PREFERENCES else 'embedded'
+
+    def local_row(self, number, album):
+        cover = local_tags.pick_cover(album, self.local_cover_preference())
+        # The folder, when its name says something the album name does not
+        notes = [album.folder.name if album.folder and album.folder.name.casefold() != album.album.casefold() else '']
+        if len(album.discs) > 1:
+            notes.append(self.tr('localDiscs').replace('{n}', str(len(album.discs))))
+        if any(f.start is not None for f in album.files):
+            notes.append(self.tr('localCue'))      # songs cut from a whole-disc image by its CUE sheet
+        if album.mixed:
+            notes.append(self.tr('localMixed'))
+        candidate = local_tags.candidate(album, number)
+        return dict(source='local', label=f'{album.artist} — {album.album}'.strip(' —'),
+                    detail=' · '.join(x for x in (*notes, candidate.detail,
+                                                       self.tr('trackCount').replace('{n}', str(len(album.files)))) if x),
+                    thumb=QUrl.fromLocalFile(str(cover)).toString() if cover else '', chosen=False,
+                    mbid=album.mb_album)
+
+    @Slot('QVariantList')
+    def metaReadLocal(self, urls):
+        """Read the tags of the music files (or folders of them) the user picked or dropped."""
+        paths = [Path(local_path(str(u))) for u in urls or [] if str(u).strip()]
+        if self.working or not paths:
+            return
+        first = paths[0]
+        self.app.set_config(last_music_folder=str(first if first.is_dir() else first.parent))
+        def done(albums):
+            self.local_albums = albums
+            self.meta_candidates = [local_tags.candidate(a, i) for i, a in enumerate(albums)]
+            self.meta_model.replace([self.local_row(i, a) for i, a in enumerate(albums)])
+            self.put(metaStatus='results', metaChosen=-1)
+            if len(albums) == 1:
+                self.metaChoose(0)
+        def failed(exc):
+            self.put(metaStatus='error', metaError=self.source_error(exc))
+        self.task(lambda p: local_tags.scan(paths, self.COVER_CACHE), done, failed,
+                  begin=dict(metaStatus='loading', metaError=''), blocking=False)
+
+    def refresh_local_thumbs(self):
+        """The cover preference changed: the local results show the cover that would now be used."""
+        for i, candidate in enumerate(self.meta_candidates):
+            if candidate.source == 'local' and 0 <= int(candidate.id) < len(self.local_albums):
+                album = self.local_albums[int(candidate.id)]
+                cover = local_tags.pick_cover(album, self.local_cover_preference())
+                self.meta_model.change(i, thumb=QUrl.fromLocalFile(str(cover)).toString() if cover else '')
+
+    def local_apply_parts(self, number, cover):
+        """What metaApply takes from a local album: its tags, and its cover by the user's preference."""
+        album = self.local_albums[number]
+        cover_file = local_tags.pick_cover(album, self.local_cover_preference()) if cover else None
+        return local_tags.album_info(album), cover_file, self.tr('localNoCover') if cover and not cover_file else ''
+
+    @Slot(int)
+    def metaUseMusicBrainz(self, row):
+        """The local files carry a MusicBrainz release ID: list that release right under them, chosen."""
+        if self.working or not 0 <= row < len(self.meta_model.rows):
+            return
+        mbid = self.meta_model.rows[row].get('mbid') or ''
+        if not mbid:
+            return
+        existing = next((i for i, c in enumerate(self.meta_candidates) if c.source == 'musicbrainz' and c.id == mbid), None)
+        if existing is None:
+            local = self.meta_candidates[row]
+            found = metadata_sources.Candidate('musicbrainz', mbid, local.title, local.artist, local.date,
+                                               local.track_count, 'MusicBrainz',
+                                               f'https://coverartarchive.org/release/{mbid}/front-250')
+            existing = row + 1
+            self.meta_candidates.insert(existing, found)
+            rows = [dict(r) for r in self.meta_model.rows]
+            rows.insert(existing, dict(source='musicbrainz', label=self.meta_model.rows[row]['label'],
+                                       detail=f'MusicBrainz · {mbid[:8]}', thumb=found.thumb, chosen=False, mbid=''))
+            self.meta_model.replace(rows)
+        self.metaChoose(existing)
 
     def refresh_cover_cache(self):
         files = [p for p in self.COVER_CACHE.glob('*') if p.is_file()] if self.COVER_CACHE.is_dir() else []

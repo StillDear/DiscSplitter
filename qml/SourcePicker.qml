@@ -5,9 +5,11 @@ import QtQuick.Controls
 AbstractButton {
     id: picker
     property string current: "musicbrainz"
+    // Sources a page adds after the catalogues (the tags page: music files on this computer)
+    property var extra: []
     readonly property var sources: [
         { key: "itunes", label: "Apple Music" }, { key: "deezer", label: "Deezer" },
-        { key: "musicbrainz", label: "MusicBrainz" }, { key: "discogs", label: "Discogs" }]
+        { key: "musicbrainz", label: "MusicBrainz" }, { key: "discogs", label: "Discogs" }].concat(extra)
     signal picked(string key)
     readonly property string currentLabel: {
         for (let i = 0; i < sources.length; i++) if (sources[i].key === current) return sources[i].label

@@ -81,6 +81,7 @@ ApplicationWindow {
     function smokePage(page) { backend.navigate(page) }
     function smokeSection(section) { settingsPage.section = section }
     function smokeHelp(section) { backend.help(section) }
+    function smokeMetaSource(key) { metadataPage.source = key }
     function smokeHelpMenu() { backend.navigate("start"); helpMenu.popup(rootWindow.contentItem, rootWindow.width - helpMenu.width - 16, 48) }
     function closeHelpMenu() { helpMenu.close() }
     onClosing: function(event) { if (!allowClose) { event.accepted = false; backend.requestClose() } }

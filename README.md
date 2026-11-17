@@ -97,6 +97,7 @@ The installer's built-in engine reads Blu-ray ISO images and folders without mou
 #### Titles
 - The disc's own chapter names, when it has them.
 - Online search by artist, album or barcode: MusicBrainz, Apple Music, Deezer and Discogs.
+- Music files you already have (a CD rip, the studio album): album info, cover, track artists and titles read from their tags, on your computer. An album ripped as one file is split into songs by its CUE sheet.
 - A setlist you paste, a web page you link (official site, Wikipedia, a shop), a `.txt`, `.cue`, `.nfo` or `.json` file, or a photo or screenshot. Photos are read by the OCR built into Windows, which only reads languages whose OCR support is installed in Windows (for example Japanese for a Japanese setlist).
 - Matched by length or in order; you review every proposed title before it is applied.
 
