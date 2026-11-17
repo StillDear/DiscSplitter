@@ -518,9 +518,12 @@ class DiscController(Controller):
             self.update_track_selection()
         self.refresh_insights()
         self.app.preview.restart_preview()
-        if output_format == 'flac' and self.audio is not None:
-            row = self.playlist.audio_tracks.index(self.audio)
-            self.selectAudio(row)
+        if output_format == 'flac' and previous != 'flac' and self.playlist is not None:
+            # Sound only starts from the same track as when the playlist is picked in FLAC mode, not from
+            # whichever track was ticked last in a video mode.
+            default = self.playlist.best_default_audio_track()
+            if default is not None:
+                self.selectAudio(self.playlist.audio_tracks.index(default))
 
     @Slot(bool)
     def setKeepVideo(self, enabled):
